@@ -1,0 +1,83 @@
+# amcrust
+
+Bridges a single Amcrest camera to HomeKit as a native camera/video accessory,
+written in Rust. Run **one instance per camera** — each instance is its own
+standalone HomeKit accessory with independent pairing state, so one camera
+failing or being reconfigured never affects the others.
+
+Supported/tested cameras: Amcrest `IP8M-2696E-AI` and `IP8M-2796E-AI`.
+
+## What it does
+
+- **Live video in the Home app**: HAP RTP stream management with SRTP. Video is
+  taken from the camera's H.264 RTSP substream and stream-copied (no
+  transcoding) to the controller via ffmpeg.
+- **Snapshots**: Home app tile images served from the camera's `snapshot.cgi`
+  via the HAP `POST /resource` endpoint.
+- **AI detection events**: the camera's `eventManager.cgi` stream
+  (`SmartMotionHuman`, `SmartMotionVehicle`, `CrossLineDetection`,
+  `CrossRegionDetection`) feeds two HomeKit motion sensors — one for people,
+  one for vehicles — usable in Home automations and notifications.
+- **HomeKit Secure Video recording**: full implementation of the
+  [secure-video specification](https://github.com/bauer-andreas/secure-video-specification) —
+  camera operating mode, recording management, HomeKit Data Stream transport
+  (HKDF-SHA512 + ChaCha20-Poly1305 framing, DataStream binary encoding), and
+  motion-triggered fragmented-MP4 delivery with a 4 s prebuffer. Recordings are
+  taken from the camera's 4K main stream with **no transcoding**: when a
+  controller selects a recording configuration, amcrust reprograms the camera's
+  main-stream encoder (resolution, fps, GOP = fragment length, bitrate, AAC
+  sample rate) to match, and ffmpeg stream-copies into fMP4. Requires a home
+  hub and iCloud+; see docs/hds-wire-format.md for the wire format reference.
+- **Optional audio** (`--audio`): camera AAC audio transcoded to Opus for live
+  view. Recording audio is AAC-LC stream-copy (toggled by the Home app's
+  recording-audio switch).
+
+## Running
+
+Requires `ffmpeg` on `PATH` (with SRTP support; standard builds have it).
+
+```sh
+AMCREST_USERNAME=admin AMCREST_PASSWORD=... \
+amcrust --name frontyard --host 192.168.1.50
+```
+
+Credentials can also live in a `.env` file. Options (all settable via env vars):
+
+| flag | env | default | |
+|---|---|---|---|
+| `--name` | `CAMERA_NAME` | — | accessory name |
+| `--host` | `CAMERA_HOST` | — | camera IP/hostname |
+| `--username` | `AMCREST_USERNAME` | — | camera API user |
+| `--password` | `AMCREST_PASSWORD` | — | camera API password |
+| `--port` | `HAP_PORT` | `51826` | HAP server port (unique per instance) |
+| `--pin` | `HAP_PIN` | `11122333` | pairing PIN (8 digits) |
+| `--data-dir` | `DATA_DIR` | `./data` | pairing state (`<data-dir>/<name>/`) |
+| `--rtsp-subtype` | `RTSP_SUBTYPE` | `2` | RTSP stream: 0 = main (4K), 1/2 = sub |
+| `--audio` | `AUDIO` | `false` | send Opus audio |
+
+On startup the log prints the pairing PIN; add the accessory in the Home app
+via "Add Accessory → More options…". The instance must be reachable from your
+iOS devices/Home hub on the same network (mDNS + UDP).
+
+Pairing state lives under `DATA_DIR` — keep it across restarts and deploys, or
+the accessory will have to be removed and re-paired in the Home app.
+
+## Architecture
+
+```
+src/
+  main.rs       one camera instance: config, wiring, HAP server startup
+  amcrest.rs    digest-auth camera client: snapshots, RTSP URLs, event stream
+  accessory.rs  HomeKit accessory: stream management + motion sensor services
+  stream.rs     SetupEndpoints/SelectedRTPStreamConfiguration TLV8 negotiation
+                and the ffmpeg RTSP→SRTP media pipeline
+  motion.rs     AI events → motion sensor characteristic updates
+  tlv8.rs       minimal TLV8 encoder/decoder
+hap/            vendored fork of hap-rs (github.com/ewilken/hap-rs), extended
+                with: POST /resource snapshot endpoint, base64 encoding for
+                tlv8/data characteristic values, maintained if-addrs dep
+```
+
+The vendored `hap` fork is necessary because upstream hap-rs has no camera
+support: it lacks the snapshot resource endpoint and transported TLV8
+characteristic values as JSON byte arrays instead of base64 strings.

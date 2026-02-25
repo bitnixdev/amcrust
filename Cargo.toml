@@ -1,0 +1,36 @@
+[workspace]
+members = ["hap"]
+
+[package]
+name = "amcrust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hap = { path = "hap" }
+
+tokio = { version = "1.49.0", features = ["full"] }
+
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "stream"] }
+digest_auth = "0.3"
+log = "0.4"
+env_logger = "0.11"
+futures = "0.3"
+rand = "0.8"
+base64 = "0.22"
+dotenvy = "0.15"
+
+# HomeKit Data Stream (HSV recording)
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+
+# SRTP for the audio RTP path (RFC 3711)
+aes = "0.8"
+ctr = "0.9"
+hmac = "0.12"
+sha1 = "0.10"

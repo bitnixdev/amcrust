@@ -1,0 +1,7 @@
+result
+target
+secrets.env
+.env
+.env.*
+!.env.example
+data/
