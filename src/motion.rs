@@ -19,6 +19,7 @@ const MOTION_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[derive(Clone)]
 pub struct MotionMapper {
+    camera_name: String,
     accessory: pointer::Accessory,
     person_gen: Arc<AtomicU64>,
     vehicle_gen: Arc<AtomicU64>,
@@ -32,11 +33,13 @@ pub struct MotionMapper {
 
 impl MotionMapper {
     pub fn new(
+        camera_name: String,
         accessory: pointer::Accessory,
         motion_active: Arc<std::sync::atomic::AtomicBool>,
         metrics: Arc<Metrics>,
     ) -> Self {
         Self {
+            camera_name,
             accessory,
             person_gen: Arc::new(AtomicU64::new(0)),
             vehicle_gen: Arc::new(AtomicU64::new(0)),
@@ -94,7 +97,10 @@ impl MotionMapper {
 
         match event.action.as_str() {
             "Start" => {
-                info!("{} motion started ({})", label, event.code);
+                info!(
+                    "[{}] {} motion started ({})",
+                    self.camera_name, label, event.code
+                );
                 active.store(true, Ordering::SeqCst);
                 self.motion_active.store(true, Ordering::SeqCst);
                 self.metrics.motion_active(true);
@@ -119,7 +125,10 @@ impl MotionMapper {
                 });
             }
             "Stop" => {
-                info!("{} motion stopped ({})", label, event.code);
+                info!(
+                    "[{}] {} motion stopped ({})",
+                    self.camera_name, label, event.code
+                );
                 active.store(false, Ordering::SeqCst);
                 self.motion_active
                     .store(other_active.load(Ordering::SeqCst), Ordering::SeqCst);

@@ -37,6 +37,7 @@ struct Inner {
 /// SetupDataStreamTransport write and shared by all sessions.
 #[derive(Clone)]
 pub struct HdsServer {
+    camera_name: Arc<str>,
     inner: Arc<Mutex<Inner>>,
     state: Arc<HsvState>,
     /// True while a dataSend recording stream is running (one at a time).
@@ -45,8 +46,9 @@ pub struct HdsServer {
 }
 
 impl HdsServer {
-    pub fn new(state: Arc<HsvState>, metrics: Arc<Metrics>) -> Self {
+    pub fn new(camera_name: String, state: Arc<HsvState>, metrics: Arc<Metrics>) -> Self {
         Self {
+            camera_name: camera_name.into(),
             inner: Arc::new(Mutex::new(Inner {
                 listener: None,
                 prepared: Vec::new(),
@@ -392,7 +394,10 @@ impl Connection {
 
         self.respond(id, 0, Value::dict(vec![("status", Value::Int64(0))]))
             .await?;
-        info!("HomeKit recording started (stream {stream_id})");
+        info!(
+            "[{}] HomeKit recording started (stream {stream_id})",
+            self.server.camera_name
+        );
 
         let cancel = Arc::new(AtomicBool::new(false));
         self.active_stream = Some((stream_id, cancel.clone()));
@@ -401,6 +406,7 @@ impl Connection {
         let state = self.server.state.clone();
         let busy = self.server.recording_busy.clone();
         let metrics = self.server.metrics.clone();
+        let camera_name = self.server.camera_name.clone();
         tokio::spawn(async move {
             if let Err(e) = pump_recording(writer, state, stream_id, cancel).await {
                 metrics.error(ErrorSubsystem::DataStream);
@@ -408,7 +414,7 @@ impl Connection {
             }
             busy.store(false, Ordering::SeqCst);
             metrics.recording_stream_active(false);
-            info!("HomeKit recording stopped (stream {stream_id})");
+            info!("[{camera_name}] HomeKit recording stopped (stream {stream_id})");
         });
 
         Ok(())

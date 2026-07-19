@@ -194,7 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         motion_active.clone(),
         metrics.clone(),
     );
-    let hds = HdsServer::new(hsv_state.clone(), metrics.clone());
+    let hds = HdsServer::new(args.name.clone(), hsv_state.clone(), metrics.clone());
 
     let requested_metrics_addr = std::net::SocketAddr::from(([0, 0, 0, 0], args.metrics_port));
     let (_metrics_server, metrics_addr) =
@@ -333,7 +333,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let event_camera = camera.clone();
     let event_metrics = metrics.clone();
     tokio::spawn(async move { event_camera.run_event_stream(tx, event_metrics).await });
-    let mapper = MotionMapper::new(accessory_ptr, motion_active, metrics);
+    let mapper = MotionMapper::new(args.name.clone(), accessory_ptr, motion_active, metrics);
     tokio::spawn(async move { mapper.run(rx).await });
 
     info!(
