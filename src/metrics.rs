@@ -7,7 +7,7 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::hsv::recording::HsvState;
 
@@ -237,6 +237,46 @@ impl Metrics {
             Self::load(&self.recording_bytes),
         )
     }
+
+    fn stderr_summary(&self) -> String {
+        let person_events =
+            Self::load(&self.event_person_start) + Self::load(&self.event_person_stop);
+        let vehicle_events =
+            Self::load(&self.event_vehicle_start) + Self::load(&self.event_vehicle_stop);
+        let errors = Self::load(&self.errors_event_stream)
+            + Self::load(&self.errors_snapshot)
+            + Self::load(&self.errors_live_stream)
+            + Self::load(&self.errors_data_stream)
+            + Self::load(&self.errors_recording);
+        format!(
+            "amcrust stats: uptime={}s events(person={person_events}, vehicle={vehicle_events}, other={}) snapshots={}/{} live_streams={} recording_fragments={} recording_bytes={} errors={} connections(event={}, live={}, data={}) motion={}",
+            self.started.elapsed().as_secs(),
+            Self::load(&self.event_other),
+            Self::load(&self.snapshot_successes),
+            Self::load(&self.snapshot_requests),
+            Self::load(&self.live_stream_starts),
+            Self::load(&self.recording_fragments),
+            Self::load(&self.recording_bytes),
+            errors,
+            Self::flag(&self.event_stream_connected),
+            Self::load(&self.live_connections),
+            Self::load(&self.data_stream_connections),
+            Self::flag(&self.motion_active),
+        )
+    }
+}
+
+/// Writes one compact, unconditional process summary to stderr every hour.
+pub fn start_hourly_stderr_reporter(metrics: Arc<Metrics>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            eprintln!("{}", metrics.stderr_summary());
+        }
+    })
 }
 
 #[derive(Clone)]
@@ -249,8 +289,9 @@ pub fn start_server(
     addr: SocketAddr,
     metrics: Arc<Metrics>,
     hsv: Arc<HsvState>,
-) -> Result<tokio::task::JoinHandle<()>, Box<dyn std::error::Error>> {
+) -> Result<(tokio::task::JoinHandle<()>, SocketAddr), Box<dyn std::error::Error>> {
     let listener = std::net::TcpListener::bind(addr)?;
+    let bound_addr = listener.local_addr()?;
     listener.set_nonblocking(true)?;
     let state = HttpState { metrics, hsv };
     let service = make_service_fn(move |_| {
@@ -258,11 +299,12 @@ pub fn start_server(
         async move { Ok::<_, Infallible>(service_fn(move |request| handle(request, state.clone()))) }
     });
     let server = Server::from_tcp(listener)?.serve(service);
-    Ok(tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         if let Err(error) = server.await {
             log::error!("metrics HTTP server error: {error}");
         }
-    }))
+    });
+    Ok((handle, bound_addr))
 }
 
 async fn handle(request: Request<Body>, state: HttpState) -> Result<Response<Body>, Infallible> {

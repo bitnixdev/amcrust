@@ -13,8 +13,9 @@ Supported/tested cameras: Amcrest `IP8M-2696E-AI` and `IP8M-2796E-AI`.
   taken from the camera's H.264 RTSP substream and stream-copied (no
   transcoding) through an RTP/RTCP-multiplexing SRTP proxy.
 - **Snapshots**: Home app tile images served from the camera's `snapshot.cgi`
-  via the HAP `POST /resource` endpoint. The exact last JPEG returned for each
-  camera is also written to `<camera-name>.jpg` for transport debugging.
+  via the HAP `POST /resource` endpoint. For transport debugging,
+  `--save-snapshots` writes the most recently served JPEG to
+  `<camera-name>.jpg` (disabled by default).
 - **AI detection events**: the camera's `eventManager.cgi` stream
   (`SmartMotionHuman`, `SmartMotionVehicle`, `CrossLineDetection`,
   `CrossRegionDetection`) feeds two HomeKit motion sensors — one for people,
@@ -57,29 +58,35 @@ amcrust --name frontyard --host 192.168.1.50
 
 Credentials can also live in a `.env` file. Options (all settable via env vars):
 
-| flag | env | default | |
-|---|---|---|---|
-| `--name` | `CAMERA_NAME` | — | accessory name |
-| `--host` | `CAMERA_HOST` | — | camera IP/hostname |
-| `--username` | `AMCREST_USERNAME` | — | camera API user |
-| `--password` | `AMCREST_PASSWORD` | — | camera API password |
-| `--port` | `HAP_PORT` | `51826` | HAP server port (unique per instance) |
-| `--pin` | `HAP_PIN` | `11122333` | pairing PIN (8 digits) |
-| `--data-dir` | `DATA_DIR` | `./data` | pairing state (`<data-dir>/<name>/`) |
-| `--rtsp-subtype` | `RTSP_SUBTYPE` | `2` | RTSP stream: 0 = main (4K), 1/2 = sub |
-| `--audio` | `AUDIO` | `true` | send Opus audio |
-| `--metrics-port` | `METRICS_PORT` | `9090` | `/health` and `/metrics` HTTP port (unique per instance) |
+| flag               | env                | default            |                                                                 |
+| ------------------ | ------------------ | ------------------ | --------------------------------------------------------------- |
+| `--name`           | `CAMERA_NAME`      | —                  | accessory name                                                  |
+| `--host`           | `CAMERA_HOST`      | —                  | camera IP/hostname                                              |
+| `--username`       | `AMCREST_USERNAME` | —                  | camera API user                                                 |
+| `--password`       | `AMCREST_PASSWORD` | —                  | camera API password                                             |
+| `--port`           | `HAP_PORT`         | `51826`            | HAP server port (unique per instance)                           |
+| `--pin`            | `HAP_PIN`          | randomly generated | override the persisted setup PIN (`1234-5678`)                  |
+| `--data-dir`       | `DATA_DIR`         | `./data`           | pairing state (`<data-dir>/<name>/`)                            |
+| `--rtsp-subtype`   | `RTSP_SUBTYPE`     | `2`                | RTSP stream: 0 = main (4K), 1/2 = sub                           |
+| `--audio`          | `AUDIO`            | `true`             | send Opus audio                                                 |
+| `--metrics-port`   | `METRICS_PORT`     | OS-assigned        | `/health` and `/metrics` HTTP port; set explicitly for scraping |
+| `--save-snapshots` | `SAVE_SNAPSHOTS`   | `false`            | write the last served JPEG to `<camera-name>.jpg`               |
 
-For example:
+The selected metrics address is logged at startup. To use a stable port:
 
 ```sh
+amcrust --name frontyard --host 192.168.1.50 --metrics-port 9090
 curl http://localhost:9090/health
 curl http://localhost:9090/metrics
 ```
 
-On startup the log prints the pairing PIN; add the accessory in the Home app
-via "Add Accessory → More options…". The instance must be reachable from your
-iOS devices/Home hub on the same network (mDNS + UDP).
+A compact process summary is also written directly to stderr every hour,
+regardless of the configured log filter.
+
+On first startup, each camera gets its own random setup PIN, persisted with its
+pairing state. The log prints it as `1234-5678`; add the accessory in the Home
+app via "Add Accessory → More options…". The instance must be reachable from
+your iOS devices/Home hub on the same network (mDNS + UDP).
 
 Pairing state lives under `DATA_DIR` — keep it across restarts and deploys, or
 the accessory will have to be removed and re-paired in the Home app.

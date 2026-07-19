@@ -3,7 +3,7 @@
 //! services (operating mode, recording management, data stream transport).
 
 use futures::FutureExt;
-use log::{info, warn};
+use log::{debug, warn};
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 use serde_json::json;
 use std::sync::Arc;
@@ -357,7 +357,7 @@ async fn build_recording_management(
     svc.active.on_update_async(Some(move |_old: u8, new: u8| {
         let hsv = hsv_.clone();
         async move {
-            info!("recording management active = {new}");
+            debug!("recording management active = {new}");
             hsv.recording_active.store(new == 1, Ordering::SeqCst);
             hsv.persist().await;
             hsv.sync_recorder().await;
@@ -473,7 +473,7 @@ async fn build_data_stream(
 
                 match hds.setup(&secret, salt).await {
                     Ok((port, accessory_salt)) => {
-                        info!("data stream session prepared on port {port}");
+                        debug!("data stream session prepared on port {port}");
                         let params = tlv8::Writer::new().u16(0x01, port).build();
                         let full = tlv8::Writer::new()
                             .u8(0x01, 0)

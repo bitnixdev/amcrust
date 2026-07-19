@@ -9,7 +9,8 @@ mod tlv8;
 
 use clap::Parser;
 use futures::FutureExt;
-use log::{info, warn};
+use log::{debug, info, warn};
+use rand::Rng;
 use tokio::sync::broadcast;
 
 use hap::{
@@ -54,9 +55,9 @@ struct Args {
     #[arg(long, env = "HAP_PORT")]
     port: Option<u16>,
 
-    /// HomeKit pairing PIN (8 digits)
-    #[arg(long, env = "HAP_PIN", default_value = "11122333")]
-    pin: String,
+    /// Override the generated HomeKit setup PIN (8 digits)
+    #[arg(long, env = "HAP_PIN")]
+    pin: Option<String>,
 
     /// Directory for HomeKit pairing state (per-camera subdirectory is created)
     #[arg(long, env = "DATA_DIR", default_value = "./data")]
@@ -71,14 +72,21 @@ struct Args {
     audio: bool,
 
     /// HTTP port for Prometheus metrics and health checks
-    #[arg(long, env = "METRICS_PORT", default_value = "9090")]
+    #[arg(long, env = "METRICS_PORT", default_value = "0")]
     metrics_port: u16,
+
+    /// Save the most recently served snapshot as <camera-name>.jpg
+    #[arg(long, env = "SAVE_SNAPSHOTS")]
+    save_snapshots: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
-    env_logger::init();
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("warn,amcrust=info,libmdns=error"),
+    )
+    .init();
 
     let args = Args::parse();
     let metrics = Metrics::new();
@@ -115,6 +123,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = match storage.load_config().await {
         Ok(mut config) => {
             config.redetermine_local_ip();
+            if let Some(pin) = args.pin.as_deref() {
+                config.pin = parse_pin(pin)?;
+            } else if config.pin == legacy_default_pin() {
+                config.pin = generate_pin();
+                info!("replaced legacy default HomeKit setup code with a unique generated code");
+            }
             if let Some(port) = args.port {
                 config.port = port;
             } else if std::net::TcpListener::bind((config.host, config.port)).is_err() {
@@ -132,7 +146,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Err(_) => {
             let mut config = Config {
-                pin: parse_pin(&args.pin)?,
+                pin: match args.pin.as_deref() {
+                    Some(pin) => parse_pin(pin)?,
+                    None => generate_pin(),
+                },
                 name: args.name.clone(),
                 category: AccessoryCategory::IpCamera,
                 ..Default::default()
@@ -159,6 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let local_ip = config.host;
     let hap_port = config.port;
+    let setup_code = format_setup_code(&config.pin);
 
     let streams = StreamManager::new(
         camera.rtsp_url(args.rtsp_subtype),
@@ -178,8 +196,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let hds = HdsServer::new(hsv_state.clone(), metrics.clone());
 
-    let metrics_addr = std::net::SocketAddr::from(([0, 0, 0, 0], args.metrics_port));
-    let _metrics_server = metrics::start_server(metrics_addr, metrics.clone(), hsv_state.clone())?;
+    let requested_metrics_addr = std::net::SocketAddr::from(([0, 0, 0, 0], args.metrics_port));
+    let (_metrics_server, metrics_addr) =
+        metrics::start_server(requested_metrics_addr, metrics.clone(), hsv_state.clone())?;
+    let _stats_reporter = metrics::start_hourly_stderr_reporter(metrics.clone());
     info!("health and metrics HTTP server on {metrics_addr}");
 
     let camera_accessory_probe = CameraAccessory::new(
@@ -241,6 +261,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let snapshot_host = camera.host.clone();
     let snapshot_name = args.name.clone();
     let snapshot_metrics = metrics.clone();
+    let save_snapshots = args.save_snapshots;
     server
         .set_snapshot_handler(Box::new(move |width, height, reason| {
             let snapshots = snapshots.clone();
@@ -264,7 +285,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         None => -70401,
                         _ => -70412,
                     };
-                    info!(
+                    debug!(
                         "snapshot rejected ({width}x{height}, reason {reason:?}) → status {status}"
                     );
                     return Ok(hap::pointer::SnapshotResult::HapStatus(status));
@@ -273,12 +294,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match &result {
                     Ok(image) => {
                         metrics.snapshot_success();
-                        let filename = snapshot_filename(&name);
-                        if let Err(e) = tokio::fs::write(&filename, &image.bytes).await {
-                            warn!("[{name}@{host}] could not save snapshot to {filename}: {e}");
+                        if save_snapshots {
+                            let filename = snapshot_filename(&name);
+                            if let Err(e) = tokio::fs::write(&filename, &image.bytes).await {
+                                warn!("[{name}@{host}] could not save snapshot to {filename}: {e}");
+                            }
                         }
-                        info!(
-                            "[{name}@{host}] snapshot served ({width}x{height}, reason {reason:?}, {} bytes, source #{}, age {}ms, source {:016x}, output {:016x}, saved {filename})",
+                        debug!(
+                            "[{name}@{host}] snapshot served ({width}x{height}, reason {reason:?}, {} bytes, source #{}, age {}ms, source {:016x}, output {:016x}, saved={save_snapshots})",
                             image.bytes.len(),
                             image.source_generation,
                             image.source_age.as_millis(),
@@ -314,8 +337,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move { mapper.run(rx).await });
 
     info!(
-        "HomeKit accessory '{}' on port {} — pairing PIN: {}",
-        args.name, hap_port, args.pin
+        "HomeKit accessory '{}' on port {} — setup code: {}",
+        args.name, hap_port, setup_code
     );
 
     let handle = server.run_handle();
@@ -385,4 +408,42 @@ fn parse_pin(pin: &str) -> Result<Pin, Box<dyn std::error::Error>> {
         .try_into()
         .map_err(|_| format!("PIN must contain exactly 8 digits: {pin}"))?;
     Ok(Pin::new(digits)?)
+}
+
+fn generate_pin() -> Pin {
+    let mut rng = rand::thread_rng();
+    loop {
+        let digits = std::array::from_fn(|_| rng.gen_range(0..=9));
+        if let Ok(pin) = Pin::new(digits) {
+            return pin;
+        }
+    }
+}
+
+fn legacy_default_pin() -> Pin {
+    Pin::new([1, 1, 1, 2, 2, 3, 3, 3]).expect("legacy default PIN is valid")
+}
+
+fn format_setup_code(pin: &Pin) -> String {
+    let digits: String = pin
+        .to_string()
+        .chars()
+        .filter(char::is_ascii_digit)
+        .collect();
+    let (first, second) = digits.split_at(4);
+    format!("{first}-{second}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn setup_pin_accepts_dashed_or_undashed_input_and_displays_four_four() {
+        let dashed = parse_pin("1112-2333").unwrap();
+        let undashed = parse_pin("11122333").unwrap();
+
+        assert_eq!(dashed, undashed);
+        assert_eq!(format_setup_code(&dashed), "1112-2333");
+    }
 }

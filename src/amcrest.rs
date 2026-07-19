@@ -3,7 +3,7 @@
 
 use chrono::{DateTime, Utc};
 use digest_auth::AuthContext;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use reqwest::Client;
 use tokio::sync::broadcast;
 use tokio::time::{Duration, sleep};
@@ -411,7 +411,7 @@ impl AmcrestClient {
                 refused.join(", ")
             );
         } else {
-            info!("[{}] AI/motion detection profile verified", self.host);
+            debug!("[{}] AI/motion detection profile verified", self.host);
         }
         Ok(())
     }
@@ -753,7 +753,7 @@ impl AmcrestClient {
         metrics: std::sync::Arc<crate::metrics::Metrics>,
     ) {
         loop {
-            info!("[{}] connecting to event stream...", self.host);
+            debug!("[{}] connecting to event stream...", self.host);
             match self.stream_events(&tx, &metrics).await {
                 Ok(()) => warn!("[{}] event stream ended, reconnecting...", self.host),
                 Err(e) => {
@@ -775,7 +775,7 @@ impl AmcrestClient {
         let path = format!("/cgi-bin/eventManager.cgi?action=attach&codes=[{EVENT_CODES}]");
         let resp = self.get(&path).await?;
 
-        info!("[{}] connected, streaming events...", self.host);
+        debug!("[{}] connected, streaming events...", self.host);
         metrics.event_stream_connected(true);
 
         let mut buffer = String::new();

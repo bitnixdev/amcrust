@@ -91,13 +91,13 @@ impl HdsServer {
                     loop {
                         match listener.accept().await {
                             Ok((stream, addr)) => {
-                                info!("HDS connection from {addr}");
+                                debug!("HDS connection from {addr}");
                                 let server = server.clone();
                                 server.metrics.data_stream_opened();
                                 tokio::spawn(async move {
                                     if let Err(e) = server.handle_connection(stream).await {
                                         server.metrics.error(ErrorSubsystem::DataStream);
-                                        info!("HDS connection ended: {e}");
+                                        debug!("HDS connection ended: {e}");
                                     }
                                     server.metrics.data_stream_closed();
                                 });
@@ -299,7 +299,7 @@ impl Connection {
                 .send(&response_header, &Value::Dict(vec![]))
                 .await?;
             self.hello_done = true;
-            info!("HDS session established");
+            debug!("HDS session established");
             return Ok(());
         }
 
@@ -326,7 +326,7 @@ impl Connection {
             match topic {
                 "close" => {
                     let stream_id = message.get("streamId").and_then(|v| v.as_i64());
-                    info!("dataSend close for stream {stream_id:?}");
+                    debug!("dataSend close for stream {stream_id:?}");
                     if let Some((active_id, _)) = &self.active_stream {
                         if stream_id == Some(*active_id) || stream_id.is_none() {
                             self.stop_active_stream();
@@ -392,7 +392,7 @@ impl Connection {
 
         self.respond(id, 0, Value::dict(vec![("status", Value::Int64(0))]))
             .await?;
-        info!("dataSend recording stream {stream_id} opened");
+        debug!("dataSend recording stream {stream_id} opened");
 
         let cancel = Arc::new(AtomicBool::new(false));
         self.active_stream = Some((stream_id, cancel.clone()));
@@ -435,7 +435,7 @@ async fn pump_recording(
     };
     let prebuffer_fragments = prebuffer.len();
     let prebuffer_bytes: usize = prebuffer.iter().map(|fragment| fragment.data.len()).sum();
-    info!(
+    debug!(
         "recording stream {stream_id}: sending {}-byte init and {prebuffer_fragments} prebuffer fragments ({prebuffer_bytes} bytes)",
         init.len()
     );
@@ -457,7 +457,7 @@ async fn pump_recording(
 
     for fragment in prebuffer {
         if cancel.load(Ordering::SeqCst) {
-            info!("recording stream {stream_id}: cancelled during prebuffer");
+            debug!("recording stream {stream_id}: cancelled during prebuffer");
             return Ok(());
         }
         let seq = sequence.fetch_add(1, Ordering::SeqCst);
@@ -477,7 +477,7 @@ async fn pump_recording(
     let mut inactive_since: Option<Instant> = None;
     loop {
         if cancel.load(Ordering::SeqCst) {
-            info!(
+            debug!(
                 "recording stream {stream_id}: controller closed after {fragment_count} fragments ({media_bytes} bytes)"
             );
             return Ok(());
@@ -508,7 +508,7 @@ async fn pump_recording(
         fragment_count += 1;
         media_bytes += fragment.data.len();
         if end_of_stream {
-            info!(
+            debug!(
                 "recording stream {stream_id}: end of stream sent after {fragment_count} fragments ({media_bytes} bytes, {}s post-motion tail)",
                 RECORDING_TAIL.as_secs()
             );

@@ -1,6 +1,6 @@
 //! Maps Amcrest AI detection events onto the HomeKit motion sensor services.
 
-use log::{debug, info, warn};
+use log::{debug, warn};
 use serde_json::json;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -94,7 +94,7 @@ impl MotionMapper {
 
         match event.action.as_str() {
             "Start" => {
-                info!("{} motion started ({})", label, event.code);
+                debug!("{} motion started ({})", label, event.code);
                 active.store(true, Ordering::SeqCst);
                 self.motion_active.store(true, Ordering::SeqCst);
                 self.metrics.motion_active(true);
@@ -119,7 +119,7 @@ impl MotionMapper {
                 });
             }
             "Stop" => {
-                info!("{} motion stopped ({})", label, event.code);
+                debug!("{} motion stopped ({})", label, event.code);
                 active.store(false, Ordering::SeqCst);
                 self.motion_active
                     .store(other_active.load(Ordering::SeqCst), Ordering::SeqCst);

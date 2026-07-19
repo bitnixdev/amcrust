@@ -2,7 +2,7 @@
 //! the camera's RTSP feed into fMP4 (init segment + keyframe-aligned
 //! fragments), which we parse into segments and keep in a rolling prebuffer.
 
-use log::{error, info, warn};
+use log::{debug, error, warn};
 use std::collections::VecDeque;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -94,7 +94,7 @@ impl Recorder {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
-        info!(
+        debug!(
             "starting recording pipeline ({}ms fragments)",
             config.fragment_ms
         );
@@ -140,7 +140,7 @@ impl Recorder {
         state.config = None;
         if let Some(mut child) = state.child.take() {
             let _ = child.start_kill();
-            info!("recording pipeline stopped");
+            debug!("recording pipeline stopped");
         }
         state.init_segment = None;
         state.prebuffer.clear();
@@ -221,7 +221,7 @@ impl Recorder {
                     }
                     if state.init_segment.is_none() {
                         state.init_segment = Some(Arc::new(init.clone()));
-                        info!("recorder: init segment ready ({} bytes)", init.len());
+                        debug!("recorder: init segment ready ({} bytes)", init.len());
                     }
                     // Keep enough fragments to cover the prebuffer window.
                     state.prebuffer.push_back(complete.clone());

@@ -1,7 +1,7 @@
 //! HomeKit camera RTP stream management: SetupEndpoints / SelectedRTPStreamConfiguration
 //! TLV8 negotiation and the ffmpeg RTSP→SRTP media pipeline.
 
-use log::{error, info, warn};
+use log::{debug, error, warn};
 use rand::Rng;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process::Stdio;
@@ -209,7 +209,7 @@ impl StreamManager {
             audio_out_socket: Some(audio_out_socket),
         };
 
-        info!(
+        debug!(
             "stream setup: controller {}:{} (video) :{} (audio); accessory :{} (video RTP/RTCP) :{} (audio RTP/RTCP)",
             controller_ip, video_port, audio_port, video_local_port, audio_local_port,
         );
@@ -317,15 +317,15 @@ impl StreamManager {
                 .await;
             }
             Some(COMMAND_END) => {
-                info!("stream end requested");
+                debug!("stream end requested");
                 self.end_session(session_id).await;
             }
             Some(COMMAND_SUSPEND) => {
-                info!("stream suspend requested");
+                debug!("stream suspend requested");
                 self.end_session(session_id).await;
             }
             Some(COMMAND_RESUME) | Some(COMMAND_RECONFIGURE) => {
-                info!("stream resume/reconfigure requested (ignored)");
+                debug!("stream resume/reconfigure requested (ignored)");
             }
             other => warn!("unknown stream command: {other:?}"),
         }
@@ -373,7 +373,7 @@ impl StreamManager {
         }
         self.metrics.set_live_connections(inner.children.len());
 
-        info!(
+        debug!(
             "selected live audio: Opus mono {}Hz, {}ms packets, payload {}, max {}kbps, RTCP {:.3}s",
             audio_rate_hz,
             audio_packet_time,
@@ -442,7 +442,7 @@ impl StreamManager {
         let audio_enabled =
             self.audio && !session.audio_key.is_empty() && session.audio_out_socket.is_some();
 
-        info!("starting video ffmpeg → {video_dest}");
+        debug!("starting video ffmpeg → {video_dest}");
         match video_cmd.spawn() {
             Ok(mut child) => {
                 if let Some(stderr) = child.stderr.take() {
@@ -514,7 +514,7 @@ impl StreamManager {
                         .stderr(Stdio::piped());
                     audio_cmd.kill_on_drop(true);
 
-                    info!("starting audio ffmpeg → {audio_dest}");
+                    debug!("starting audio ffmpeg → {audio_dest}");
                     match audio_cmd.spawn() {
                         Ok(mut child) => {
                             if let Some(stderr) = child.stderr.take() {
@@ -561,7 +561,7 @@ impl StreamManager {
             Some(sid) => {
                 if let Some(mut child) = inner.children.remove(&sid) {
                     let _ = child.start_kill();
-                    info!("stream stopped");
+                    debug!("stream stopped");
                 }
                 if let Some(mut child) = inner.audio_children.remove(&sid) {
                     let _ = child.start_kill();
@@ -676,10 +676,10 @@ fn spawn_media_proxy(
                             }
                             sent_rtp += 1;
                             if sent_rtp == 1 {
-                                info!("{label} proxy: first RTP packet → {dest}");
+                                debug!("{label} proxy: first RTP packet → {dest}");
                             }
                             if label == "video" && !logged_keyframe && h264_contains_idr(packet) {
-                                info!("video proxy: first H.264 keyframe packet → {dest}");
+                                debug!("video proxy: first H.264 keyframe packet → {dest}");
                                 logged_keyframe = true;
                             }
                         }
@@ -696,7 +696,7 @@ fn spawn_media_proxy(
                         }
                         sent_rtcp += 1;
                         if sent_rtcp == 1 {
-                            info!("{label} proxy: first SRTCP sender report → {dest}");
+                            debug!("{label} proxy: first SRTCP sender report → {dest}");
                         }
                     }
                 }
@@ -708,7 +708,7 @@ fn spawn_media_proxy(
                         }
                         received_feedback += 1;
                         if received_feedback == 1 {
-                            info!("{label} proxy: first controller SRTCP feedback received");
+                            debug!("{label} proxy: first controller SRTCP feedback received");
                         }
                     }
                 }

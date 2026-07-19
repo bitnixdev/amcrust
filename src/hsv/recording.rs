@@ -1,7 +1,7 @@
 //! HSV recording state: supported/selected recording configuration TLVs,
 //! persistence, and camera encoder adjustment so recordings are stream-copied.
 
-use log::{info, warn};
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -127,7 +127,7 @@ impl HsvState {
             warn!("could not parse selected recording configuration");
             return;
         };
-        info!(
+        debug!(
             "selected recording config: {}x{}@{} {}kbps, iframe {}ms, fragment {}ms, prebuffer {}ms, audio rate code {}",
             config.width,
             config.height,
