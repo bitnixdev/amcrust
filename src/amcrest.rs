@@ -4,7 +4,9 @@
 use chrono::{DateTime, Utc};
 use digest_auth::AuthContext;
 use log::{debug, error, info, warn};
+use md5::{Digest, Md5};
 use reqwest::Client;
+use serde_json::{Value, json};
 use tokio::sync::broadcast;
 use tokio::time::{Duration, sleep};
 
@@ -13,19 +15,63 @@ const EVENT_CODES: &str =
     "SmartMotionHuman,SmartMotionVehicle,CrossLineDetection,CrossRegionDetection";
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
-fn encode_config_component(value: &str) -> String {
-    use std::fmt::Write;
-
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(byte as char)
+fn config_key_pointer(name: &str, key: &str) -> Option<String> {
+    let path = key.strip_prefix(name)?;
+    let bytes = path.as_bytes();
+    let mut pointer = String::new();
+    let mut position = 0;
+    while position < bytes.len() {
+        match bytes[position] {
+            b'.' => {
+                position += 1;
+                let start = position;
+                while position < bytes.len() && !matches!(bytes[position], b'.' | b'[') {
+                    position += 1;
+                }
+                if start == position {
+                    return None;
+                }
+                pointer.push('/');
+                pointer.push_str(&path[start..position]);
             }
-            _ => write!(&mut encoded, "%{byte:02X}").expect("writing to String cannot fail"),
+            b'[' => {
+                position += 1;
+                let start = position;
+                while position < bytes.len() && bytes[position].is_ascii_digit() {
+                    position += 1;
+                }
+                if start == position || bytes.get(position) != Some(&b']') {
+                    return None;
+                }
+                pointer.push('/');
+                pointer.push_str(&path[start..position]);
+                position += 1;
+            }
+            _ => return None,
         }
     }
-    encoded
+    Some(pointer)
+}
+
+fn config_value_like(current: &Value, desired: &str) -> Option<Value> {
+    match current {
+        Value::Bool(_) => desired.parse::<bool>().ok().map(Value::Bool),
+        Value::Number(number) if number.is_i64() => desired
+            .parse::<i64>()
+            .ok()
+            .map(|value| Value::Number(value.into())),
+        Value::Number(number) if number.is_u64() => desired
+            .parse::<u64>()
+            .ok()
+            .map(|value| Value::Number(value.into())),
+        Value::Number(_) => desired
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number),
+        Value::String(_) => Some(Value::String(desired.to_string())),
+        _ => None,
+    }
 }
 
 #[derive(Clone)]
@@ -124,35 +170,172 @@ impl AmcrestClient {
             .to_string())
     }
 
-    async fn apply_supported_settings(
+    async fn rpc_login(&self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let challenge = self
+            .rpc_post(
+                "/RPC2_Login",
+                &json!({
+                    "method": "global.login",
+                    "params": {
+                        "userName": self.username,
+                        "password": "",
+                        "clientType": "Web3.0"
+                    },
+                    "id": 1
+                }),
+            )
+            .await?;
+        let session = challenge
+            .get("session")
+            .and_then(Value::as_str)
+            .ok_or("RPC2 login challenge omitted session")?;
+        let authorization = challenge
+            .get("params")
+            .and_then(|params| params.as_object())
+            .ok_or("RPC2 login challenge omitted params")?;
+        let realm = authorization
+            .get("realm")
+            .and_then(Value::as_str)
+            .ok_or("RPC2 login challenge omitted realm")?;
+        let random = authorization
+            .get("random")
+            .and_then(Value::as_str)
+            .ok_or("RPC2 login challenge omitted random")?;
+        let password_hash = format!(
+            "{:X}",
+            Md5::digest(format!("{}:{realm}:{}", self.username, self.password))
+        );
+        let login_hash = format!(
+            "{:X}",
+            Md5::digest(format!("{}:{random}:{password_hash}", self.username))
+        );
+        let login = self
+            .rpc_post(
+                "/RPC2_Login",
+                &json!({
+                    "method": "global.login",
+                    "params": {
+                        "userName": self.username,
+                        "password": login_hash,
+                        "clientType": "Web3.0",
+                        "authorityType": "Default",
+                        "passwordType": "Default"
+                    },
+                    "id": 2,
+                    "session": session
+                }),
+            )
+            .await?;
+        Self::require_rpc_success(&login, "global.login")?;
+        Ok(session.to_string())
+    }
+
+    async fn rpc_post(
         &self,
-        current: &str,
-        desired: Vec<(String, String)>,
-    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-        let updates: Vec<_> = desired
-            .into_iter()
-            .filter(|(key, value)| {
-                let prefix = format!("table.{key}=");
-                let expected = format!("table.{key}={value}");
-                current.lines().any(|line| line.starts_with(&prefix))
-                    && !current.lines().any(|line| line.trim() == expected)
-            })
-            .collect();
-        for batch in updates.chunks(12) {
-            let params = batch
-                .iter()
-                .map(|(key, value)| {
-                    format!(
-                        "{}={}",
-                        encode_config_component(key),
-                        encode_config_component(value)
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("&");
-            self.set_config(&params).await?;
+        endpoint: &str,
+        body: &Value,
+    ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+        let response = self
+            .client
+            .post(format!("http://{}{}", self.host, endpoint))
+            // This is the content type used by the camera's own web client,
+            // even though the request body itself is JSON.
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                "application/x-www-form-urlencoded; charset=UTF-8",
+            )
+            .body(serde_json::to_vec(body)?)
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(format!("RPC2 HTTP status {} for {endpoint}", response.status()).into());
         }
-        Ok(updates.len())
+        Ok(serde_json::from_slice(&response.bytes().await?)?)
+    }
+
+    fn require_rpc_success(
+        response: &Value,
+        method: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if response.get("result").and_then(Value::as_bool) == Some(true) {
+            return Ok(());
+        }
+        Err(format!("RPC2 {method} failed: {response}").into())
+    }
+
+    async fn rpc_get_config(
+        &self,
+        session: &str,
+        name: &str,
+        id: u64,
+    ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+        let response = self
+            .rpc_post(
+                "/RPC2",
+                &json!({
+                    "method": "configManager.getConfig",
+                    "params": { "name": name },
+                    "id": id,
+                    "session": session
+                }),
+            )
+            .await?;
+        Self::require_rpc_success(&response, "configManager.getConfig")?;
+        response
+            .get("params")
+            .and_then(|params| params.get("table"))
+            .cloned()
+            .ok_or_else(|| format!("RPC2 getConfig {name} omitted params.table").into())
+    }
+
+    async fn rpc_set_config(
+        &self,
+        session: &str,
+        name: &str,
+        table: &Value,
+        id: u64,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let response = self
+            .rpc_post(
+                "/RPC2",
+                &json!({
+                    "method": "configManager.setConfig",
+                    "params": { "name": name, "table": table, "options": [] },
+                    "id": id,
+                    "session": session
+                }),
+            )
+            .await?;
+        Self::require_rpc_success(&response, "configManager.setConfig")
+    }
+
+    async fn apply_supported_settings_rpc(
+        &self,
+        name: &str,
+        desired: &[(String, String)],
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        let session = self.rpc_login().await?;
+        let mut table = self.rpc_get_config(&session, name, 3).await?;
+        let mut updates = 0;
+        for (key, desired_value) in desired {
+            let Some(pointer) = config_key_pointer(name, key) else {
+                continue;
+            };
+            let Some(current) = table.pointer_mut(&pointer) else {
+                continue;
+            };
+            let Some(value) = config_value_like(current, desired_value) else {
+                continue;
+            };
+            if *current != value {
+                *current = value;
+                updates += 1;
+            }
+        }
+        if updates > 0 {
+            self.rpc_set_config(&session, name, &table, 4).await?;
+        }
+        Ok(updates)
     }
 
     fn unapplied_supported_settings(current: &str, desired: &[(String, String)]) -> Vec<String> {
@@ -183,14 +366,6 @@ impl AmcrestClient {
         .into_iter()
         .map(|(key, value)| (key.to_string(), value.to_string()))
         .collect();
-        let resp = self
-            .get("/cgi-bin/configManager.cgi?action=getConfig&name=SmartMotionDetect")
-            .await?;
-        let body = resp.text().await?;
-        let smart_updates = self
-            .apply_supported_settings(&body, smart_profile.clone())
-            .await?;
-
         let mut motion = vec![
             ("MotionDetect[0].Enable".into(), "true".into()),
             ("MotionDetect[0].Level".into(), "3".into()),
@@ -304,85 +479,71 @@ impl AmcrestClient {
         }
         // SmartMotion is the only analytics engine we use. Explicitly disable
         // any legacy face/IVS rule and its camera-side actions.
-        let resp = self
-            .get("/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalyseRule")
-            .await?;
-        let analyse_body = resp.text().await?;
+        let analyse_profile = [
+            ("VideoAnalyseRule[0][0].Enable", "false"),
+            ("VideoAnalyseRule[0][0].TrackEnable", "false"),
+            ("VideoAnalyseRule[0][0].Config.FeatureEnable", "false"),
+            (
+                "VideoAnalyseRule[0][0].Config.FeatureExtractEnable",
+                "false",
+            ),
+            (
+                "VideoAnalyseRule[0][0].Config.DuplicateRemoval.Enable",
+                "false",
+            ),
+            (
+                "VideoAnalyseRule[0][0].Config.FaceBeautification.Enable",
+                "false",
+            ),
+            ("VideoAnalyseRule[0][0].Config.FilterUnAliveEnable", "false"),
+            ("VideoAnalyseRule[0][0].Config.snapObjRectEnable", "0"),
+            (
+                "VideoAnalyseRule[0][0].EventHandler.AlarmOutEnable",
+                "false",
+            ),
+            ("VideoAnalyseRule[0][0].EventHandler.BeepEnable", "false"),
+            (
+                "VideoAnalyseRule[0][0].EventHandler.ExAlarmOutEnable",
+                "false",
+            ),
+            (
+                "VideoAnalyseRule[0][0].EventHandler.LightingLink.Enable",
+                "false",
+            ),
+            ("VideoAnalyseRule[0][0].EventHandler.LogEnable", "false"),
+            ("VideoAnalyseRule[0][0].EventHandler.MMSEnable", "false"),
+            ("VideoAnalyseRule[0][0].EventHandler.MailEnable", "false"),
+            ("VideoAnalyseRule[0][0].EventHandler.MatrixEnable", "false"),
+            ("VideoAnalyseRule[0][0].EventHandler.MessageEnable", "false"),
+            ("VideoAnalyseRule[0][0].EventHandler.PtzLinkEnable", "false"),
+            ("VideoAnalyseRule[0][0].EventHandler.RecordEnable", "false"),
+            (
+                "VideoAnalyseRule[0][0].EventHandler.SnapshotEnable",
+                "false",
+            ),
+            (
+                "VideoAnalyseRule[0][0].EventHandler.SnapshotTitleEnable",
+                "false",
+            ),
+            ("VideoAnalyseRule[0][0].EventHandler.VoiceEnable", "false"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect::<Vec<_>>();
         let analyse_updates = self
-            .apply_supported_settings(
-                &analyse_body,
-                [
-                    ("VideoAnalyseRule[0][0].Enable", "false"),
-                    ("VideoAnalyseRule[0][0].TrackEnable", "false"),
-                    ("VideoAnalyseRule[0][0].Config.FeatureEnable", "false"),
-                    (
-                        "VideoAnalyseRule[0][0].Config.FeatureExtractEnable",
-                        "false",
-                    ),
-                    (
-                        "VideoAnalyseRule[0][0].Config.DuplicateRemoval.Enable",
-                        "false",
-                    ),
-                    (
-                        "VideoAnalyseRule[0][0].Config.FaceBeautification.Enable",
-                        "false",
-                    ),
-                    ("VideoAnalyseRule[0][0].Config.FilterUnAliveEnable", "false"),
-                    ("VideoAnalyseRule[0][0].Config.snapObjRectEnable", "0"),
-                    (
-                        "VideoAnalyseRule[0][0].EventHandler.AlarmOutEnable",
-                        "false",
-                    ),
-                    ("VideoAnalyseRule[0][0].EventHandler.BeepEnable", "false"),
-                    (
-                        "VideoAnalyseRule[0][0].EventHandler.ExAlarmOutEnable",
-                        "false",
-                    ),
-                    (
-                        "VideoAnalyseRule[0][0].EventHandler.LightingLink.Enable",
-                        "false",
-                    ),
-                    ("VideoAnalyseRule[0][0].EventHandler.LogEnable", "false"),
-                    ("VideoAnalyseRule[0][0].EventHandler.MMSEnable", "false"),
-                    ("VideoAnalyseRule[0][0].EventHandler.MailEnable", "false"),
-                    ("VideoAnalyseRule[0][0].EventHandler.MatrixEnable", "false"),
-                    ("VideoAnalyseRule[0][0].EventHandler.MessageEnable", "false"),
-                    ("VideoAnalyseRule[0][0].EventHandler.PtzLinkEnable", "false"),
-                    ("VideoAnalyseRule[0][0].EventHandler.RecordEnable", "false"),
-                    (
-                        "VideoAnalyseRule[0][0].EventHandler.SnapshotEnable",
-                        "false",
-                    ),
-                    (
-                        "VideoAnalyseRule[0][0].EventHandler.SnapshotTitleEnable",
-                        "false",
-                    ),
-                    ("VideoAnalyseRule[0][0].EventHandler.VoiceEnable", "false"),
-                ]
-                .into_iter()
-                .map(|(key, value)| (key.to_string(), value.to_string()))
-                .collect(),
-            )
+            .apply_supported_settings_rpc("VideoAnalyseRule", &analyse_profile)
             .await?;
 
         // Updating the legacy analytics engine resets SmartMotion/MotionDetect
-        // on several firmware families. Read them back and apply both profiles
-        // after VideoAnalyseRule, with MotionDetect deliberately last.
-        let resp = self
-            .get("/cgi-bin/configManager.cgi?action=getConfig&name=SmartMotionDetect")
-            .await?;
-        let smart_body = resp.text().await?;
+        // on several firmware families. Apply both profiles after
+        // VideoAnalyseRule, with MotionDetect deliberately last.
         let final_smart_updates = self
-            .apply_supported_settings(&smart_body, smart_profile.clone())
+            .apply_supported_settings_rpc("SmartMotionDetect", &smart_profile)
             .await?;
-        let resp = self
-            .get("/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect")
-            .await?;
-        let final_motion_body = resp.text().await?;
         let motion_updates = self
-            .apply_supported_settings(&final_motion_body, motion.clone())
+            .apply_supported_settings_rpc("MotionDetect", &motion)
             .await?;
-        let total_updates = smart_updates + analyse_updates + final_smart_updates + motion_updates;
+        let total_updates = analyse_updates + final_smart_updates + motion_updates;
         if total_updates > 0 {
             info!(
                 "[{}] requested AI/motion normalization ({} reported settings differed)",
@@ -398,7 +559,15 @@ impl AmcrestClient {
             .get("/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect")
             .await?;
         let verified_motion = resp.text().await?;
-        let mut refused = Self::unapplied_supported_settings(&verified_smart, &smart_profile);
+        let resp = self
+            .get("/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalyseRule")
+            .await?;
+        let verified_analyse = resp.text().await?;
+        let mut refused = Self::unapplied_supported_settings(&verified_analyse, &analyse_profile);
+        refused.extend(Self::unapplied_supported_settings(
+            &verified_smart,
+            &smart_profile,
+        ));
         refused.extend(Self::unapplied_supported_settings(
             &verified_motion,
             &motion,
@@ -1032,4 +1201,43 @@ fn parse_event_line(line: &str) -> Option<CameraEvent> {
         data,
         timestamp: Utc::now(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{config_key_pointer, config_value_like};
+    use serde_json::json;
+
+    #[test]
+    fn converts_flat_config_keys_to_json_pointers() {
+        assert_eq!(
+            config_key_pointer(
+                "MotionDetect",
+                "MotionDetect[0].EventHandler.TimeSection[6][5]"
+            ),
+            Some("/0/EventHandler/TimeSection/6/5".to_string())
+        );
+        assert_eq!(
+            config_key_pointer(
+                "VideoAnalyseRule",
+                "VideoAnalyseRule[0][0].Config.DuplicateRemoval.Enable"
+            ),
+            Some("/0/0/Config/DuplicateRemoval/Enable".to_string())
+        );
+        assert_eq!(
+            config_key_pointer("MotionDetect", "SmartMotionDetect[0].Enable"),
+            None
+        );
+    }
+
+    #[test]
+    fn converts_desired_strings_to_the_existing_json_type() {
+        assert_eq!(config_value_like(&json!(true), "false"), Some(json!(false)));
+        assert_eq!(config_value_like(&json!(30), "5"), Some(json!(5)));
+        assert_eq!(
+            config_value_like(&json!("Middle"), "High"),
+            Some(json!("High"))
+        );
+        assert_eq!(config_value_like(&json!([]), "false"), None);
+    }
 }

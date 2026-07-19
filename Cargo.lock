@@ -71,6 +71,7 @@ dependencies = [
  "hkdf 0.12.4",
  "hyper 0.14.32",
  "log",
+ "md-5",
  "rand 0.8.7",
  "reqwest",
  "serde",
