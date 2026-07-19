@@ -74,6 +74,18 @@ fn config_value_like(current: &Value, desired: &str) -> Option<Value> {
     }
 }
 
+fn unapplied_rpc_settings(name: &str, table: &Value, desired: &[(String, String)]) -> Vec<String> {
+    desired
+        .iter()
+        .filter_map(|(key, desired_value)| {
+            let pointer = config_key_pointer(name, key)?;
+            let current = table.pointer(&pointer)?;
+            let desired = config_value_like(current, desired_value)?;
+            (current != &desired).then(|| key.clone())
+        })
+        .collect()
+}
+
 #[derive(Clone)]
 pub struct AmcrestClient {
     pub host: String,
@@ -334,8 +346,74 @@ impl AmcrestClient {
         }
         if updates > 0 {
             self.rpc_set_config(session, name, &table, 4).await?;
+            let verified = self.rpc_get_config(session, name, 5).await?;
+            let refused = unapplied_rpc_settings(name, &verified, desired);
+            if !refused.is_empty() {
+                return Err(format!(
+                    "camera did not retain {} {name} settings after RPC2 setConfig: {}",
+                    refused.len(),
+                    refused.join(", ")
+                )
+                .into());
+            }
         }
         Ok(updates)
+    }
+
+    pub async fn ensure_recording_encoder(
+        &self,
+        width: u16,
+        height: u16,
+        fps: u8,
+        gop: u32,
+        bitrate_kbps: u32,
+        audio_hz: u32,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        let desired = [
+            ("Encode[0].MainFormat[0].VideoEnable", "true".to_string()),
+            (
+                "Encode[0].MainFormat[0].Video.Compression",
+                "H.264".to_string(),
+            ),
+            ("Encode[0].MainFormat[0].Video.Width", width.to_string()),
+            ("Encode[0].MainFormat[0].Video.Height", height.to_string()),
+            ("Encode[0].MainFormat[0].Video.FPS", fps.to_string()),
+            ("Encode[0].MainFormat[0].Video.GOP", gop.to_string()),
+            (
+                "Encode[0].MainFormat[0].Video.BitRate",
+                bitrate_kbps.to_string(),
+            ),
+            (
+                "Encode[0].MainFormat[0].Video.BitRateControl",
+                "VBR".to_string(),
+            ),
+            ("Encode[0].MainFormat[0].Video.Profile", "Main".to_string()),
+            ("Encode[0].MainFormat[0].Video.Quality", "4".to_string()),
+            ("Encode[0].MainFormat[0].Video.Pack", "DHAV".to_string()),
+            ("Encode[0].MainFormat[0].Video.Priority", "0".to_string()),
+            ("Encode[0].MainFormat[0].Video.SVCTLayer", "1".to_string()),
+            ("Encode[0].MainFormat[0].Video.encodeType", "0".to_string()),
+            (
+                "Encode[0].MainFormat[0].Audio.Compression",
+                "AAC".to_string(),
+            ),
+            (
+                "Encode[0].MainFormat[0].Audio.Frequency",
+                audio_hz.to_string(),
+            ),
+            ("Encode[0].MainFormat[0].Audio.Bitrate", "64".to_string()),
+            ("Encode[0].MainFormat[0].Audio.Depth", "16".to_string()),
+            ("Encode[0].MainFormat[0].Audio.Channels[0]", "0".to_string()),
+            ("Encode[0].MainFormat[0].Audio.Mode", "0".to_string()),
+            ("Encode[0].MainFormat[0].Audio.Pack", "DHAV".to_string()),
+            ("Encode[0].MainFormat[0].AudioEnable", "true".to_string()),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value))
+        .collect::<Vec<_>>();
+        let session = self.rpc_login().await?;
+        self.apply_supported_settings_rpc(&session, "Encode", &desired)
+            .await
     }
 
     fn unapplied_supported_settings(current: &str, desired: &[(String, String)]) -> Vec<String> {
@@ -1206,7 +1284,7 @@ fn parse_event_line(line: &str) -> Option<CameraEvent> {
 
 #[cfg(test)]
 mod tests {
-    use super::{config_key_pointer, config_value_like};
+    use super::{config_key_pointer, config_value_like, unapplied_rpc_settings};
     use serde_json::json;
 
     #[test]
@@ -1240,5 +1318,22 @@ mod tests {
             Some(json!("High"))
         );
         assert_eq!(config_value_like(&json!([]), "false"), None);
+    }
+
+    #[test]
+    fn reports_only_supported_rpc_settings_that_still_differ() {
+        let table = json!([{"Video": {"FPS": 15, "Profile": "Main"}}]);
+        let desired = vec![
+            ("Encode[0].Video.FPS".to_string(), "10".to_string()),
+            ("Encode[0].Video.Profile".to_string(), "Main".to_string()),
+            (
+                "Encode[0].Video.Unsupported".to_string(),
+                "true".to_string(),
+            ),
+        ];
+        assert_eq!(
+            unapplied_rpc_settings("Encode", &table, &desired),
+            vec!["Encode[0].Video.FPS"]
+        );
     }
 }
