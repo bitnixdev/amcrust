@@ -1,6 +1,6 @@
 //! Maps Amcrest AI detection events onto the HomeKit motion sensor services.
 
-use log::{info, warn};
+use log::{debug, info, warn};
 use serde_json::json;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -60,6 +60,10 @@ impl MotionMapper {
     }
 
     async fn handle(&self, event: CameraEvent) {
+        debug!(
+            "camera event index={} timestamp={}",
+            event.index, event.timestamp
+        );
         let (person_iid, vehicle_iid) = motion_service_iids();
 
         // SmartMotion events are explicitly typed; IVS cross-line/region events

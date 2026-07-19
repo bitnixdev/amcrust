@@ -49,7 +49,7 @@ impl TlvHandlerExt for Pairings {
     type ParseResult = HandlerType;
     type Result = tlv::Container;
 
-    fn parse(&self, body: Body) -> BoxFuture<Result<HandlerType, tlv::ErrorContainer>> {
+    fn parse(&self, body: Body) -> BoxFuture<'_, Result<HandlerType, tlv::ErrorContainer>> {
         async {
             let aggregated_body = hyper::body::aggregate(body).await.map_err(|_| {
                 tlv::ErrorContainer::new(StepNumber::Unknown as u8, tlv::Error::Unknown)
@@ -110,7 +110,7 @@ impl TlvHandlerExt for Pairings {
         config: pointer::Config,
         storage: pointer::Storage,
         event_emitter: pointer::EventEmitter,
-    ) -> BoxFuture<Result<tlv::Container, tlv::ErrorContainer>> {
+    ) -> BoxFuture<'_, Result<tlv::Container, tlv::ErrorContainer>> {
         async move {
             match handler {
                 HandlerType::Add {

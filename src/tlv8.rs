@@ -104,6 +104,7 @@ pub fn find_u16(items: &[Item], tag: u8) -> Option<u16> {
     find(items, tag).and_then(|v| v.try_into().ok().map(u16::from_le_bytes))
 }
 
+#[cfg(test)]
 pub fn find_u32(items: &[Item], tag: u8) -> Option<u32> {
     find(items, tag).and_then(|v| v.try_into().ok().map(u32::from_le_bytes))
 }

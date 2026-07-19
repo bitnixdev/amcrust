@@ -52,20 +52,6 @@ impl Value {
             _ => None,
         }
     }
-
-    pub fn as_bool(&self) -> Option<bool> {
-        match self {
-            Value::Bool(b) => Some(*b),
-            _ => None,
-        }
-    }
-
-    pub fn as_data(&self) -> Option<&[u8]> {
-        match self {
-            Value::Data(d) => Some(d),
-            _ => None,
-        }
-    }
 }
 
 // --- Encoding ---
@@ -376,6 +362,7 @@ impl<'a> Decoder<'a> {
 }
 
 /// Decodes a single top-level value.
+#[cfg(test)]
 pub fn decode_one(buf: &[u8]) -> Result<Value, DecodeError> {
     Decoder::new(buf)
         .decode()?

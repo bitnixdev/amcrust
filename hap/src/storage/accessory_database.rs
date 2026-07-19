@@ -136,6 +136,11 @@ impl AccessoryDatabase {
         write_object: WriteObject,
         event_subscriptions: &pointer::EventSubscriptions,
     ) -> Result<WriteResponseObject> {
+        // These optional HAP fields are accepted for wire compatibility. This
+        // implementation does not support additional authorization or remote
+        // writes, so their values intentionally have no effect.
+        let _ = (&write_object.auth_data, write_object.remote);
+
         let mut result_object = WriteResponseObject {
             aid: write_object.aid,
             iid: write_object.iid,
