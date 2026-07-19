@@ -13,4 +13,5 @@ in
       "hap.*"
     ];
     cargoLock.lockFile = ../../Cargo.lock;
+    meta.mainProgram = "amcrust";
   }

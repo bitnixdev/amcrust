@@ -91,6 +91,44 @@ your iOS devices/Home hub on the same network (mDNS + UDP).
 Pairing state lives under `DATA_DIR` — keep it across restarts and deploys, or
 the accessory will have to be removed and re-paired in the Home app.
 
+## NixOS
+
+The flake exposes the package through `overlays.default` and the camera service
+through `nixosModules.default`. Import both into a NixOS configuration:
+
+```nix
+{
+  inputs.amcrust.url = "github:bitnixdev/amcrust";
+
+  outputs = {nixpkgs, amcrust, ...}: {
+    nixosConfigurations.camera-host = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        amcrust.nixosModules.default
+        {
+          nixpkgs.overlays = [amcrust.overlays.default];
+
+          services.amcrust = {
+            enable = true;
+            cameras.frontyard = {
+              host = "192.168.1.50";
+              passwordFile = "/run/secrets/amcrest-frontyard";
+              hapPort = 51826;
+              metricsPort = 9090;
+            };
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+`passwordFile` must contain only the camera API password. It is loaded through
+systemd's credential mechanism and is not copied into the Nix store. Each
+camera creates an independent `amcrust-<name>.service`; pairing state is kept
+under `/var/lib/amcrust` by default.
+
 ## Architecture
 
 ```

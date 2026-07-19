@@ -11,10 +11,12 @@
     };
   };
 
-  outputs = {chips, ...}:
-    chips.lib.use {
+  outputs = inputs @ {chips, ...}:
+    chips.lib.mkFlake {
+      inherit inputs;
       # Generate new devShells with `nix run .#init-dev-shell <GITHUB_USERNAME>`
-      devShellsDir = ./nix/devShells;
-      packagesDir = ./nix/packages;
+      sources.devShells = ./nix/devShells;
+      sources.packages = ./nix/packages;
+      sources.nixosModules = ./nix/nixosModules;
     };
 }
