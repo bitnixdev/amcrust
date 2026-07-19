@@ -3,17 +3,16 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
-        HapCharacteristic,
-		siri_input_type::SiriInputTypeCharacteristic,
-		multifunction_button::MultifunctionButtonCharacteristic,
-		siri_enable::SiriEnableCharacteristic,
-		siri_engine_version::SiriEngineVersionCharacteristic,
-		siri_light_on_use::SiriLightOnUseCharacteristic,
-		siri_listening::SiriListeningCharacteristic,
-		siri_touch_to_use::SiriTouchToUseCharacteristic,
-	},
+        multifunction_button::MultifunctionButtonCharacteristic,
+        siri_enable::SiriEnableCharacteristic,
+        siri_engine_version::SiriEngineVersionCharacteristic,
+        siri_input_type::SiriInputTypeCharacteristic,
+        siri_light_on_use::SiriLightOnUseCharacteristic,
+        siri_listening::SiriListeningCharacteristic,
+        siri_touch_to_use::SiriTouchToUseCharacteristic, HapCharacteristic,
+    },
+    service::HapService,
     HapType,
 };
 
@@ -31,21 +30,21 @@ pub struct SiriService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Siri Input Type characteristic (required).
-	pub siri_input_type: SiriInputTypeCharacteristic,
+    /// Siri Input Type characteristic (required).
+    pub siri_input_type: SiriInputTypeCharacteristic,
 
-	/// Multifunction Button characteristic (optional).
-	pub multifunction_button: Option<MultifunctionButtonCharacteristic>,
-	/// Siri Enable characteristic (optional).
-	pub siri_enable: Option<SiriEnableCharacteristic>,
-	/// Siri Engine Version characteristic (optional).
-	pub siri_engine_version: Option<SiriEngineVersionCharacteristic>,
-	/// Siri Light On Use characteristic (optional).
-	pub siri_light_on_use: Option<SiriLightOnUseCharacteristic>,
-	/// Siri Listening characteristic (optional).
-	pub siri_listening: Option<SiriListeningCharacteristic>,
-	/// Siri Touch To Use characteristic (optional).
-	pub siri_touch_to_use: Option<SiriTouchToUseCharacteristic>,
+    /// Multifunction Button characteristic (optional).
+    pub multifunction_button: Option<MultifunctionButtonCharacteristic>,
+    /// Siri Enable characteristic (optional).
+    pub siri_enable: Option<SiriEnableCharacteristic>,
+    /// Siri Engine Version characteristic (optional).
+    pub siri_engine_version: Option<SiriEngineVersionCharacteristic>,
+    /// Siri Light On Use characteristic (optional).
+    pub siri_light_on_use: Option<SiriLightOnUseCharacteristic>,
+    /// Siri Listening characteristic (optional).
+    pub siri_listening: Option<SiriListeningCharacteristic>,
+    /// Siri Touch To Use characteristic (optional).
+    pub siri_touch_to_use: Option<SiriTouchToUseCharacteristic>,
 }
 
 impl SiriService {
@@ -54,14 +53,29 @@ impl SiriService {
         Self {
             id,
             hap_type: HapType::Siri,
-			siri_input_type: SiriInputTypeCharacteristic::new(id + 1 + 0, accessory_id),
-			multifunction_button: Some(MultifunctionButtonCharacteristic::new(id + 1 + 0 + 1, accessory_id)),
-			siri_enable: Some(SiriEnableCharacteristic::new(id + 1 + 1 + 1, accessory_id)),
-			siri_engine_version: Some(SiriEngineVersionCharacteristic::new(id + 1 + 2 + 1, accessory_id)),
-			siri_light_on_use: Some(SiriLightOnUseCharacteristic::new(id + 1 + 3 + 1, accessory_id)),
-			siri_listening: Some(SiriListeningCharacteristic::new(id + 1 + 4 + 1, accessory_id)),
-			siri_touch_to_use: Some(SiriTouchToUseCharacteristic::new(id + 1 + 5 + 1, accessory_id)),
-			..Default::default()
+            siri_input_type: SiriInputTypeCharacteristic::new(id + 1 + 0, accessory_id),
+            multifunction_button: Some(MultifunctionButtonCharacteristic::new(
+                id + 1 + 0 + 1,
+                accessory_id,
+            )),
+            siri_enable: Some(SiriEnableCharacteristic::new(id + 1 + 1 + 1, accessory_id)),
+            siri_engine_version: Some(SiriEngineVersionCharacteristic::new(
+                id + 1 + 2 + 1,
+                accessory_id,
+            )),
+            siri_light_on_use: Some(SiriLightOnUseCharacteristic::new(
+                id + 1 + 3 + 1,
+                accessory_id,
+            )),
+            siri_listening: Some(SiriListeningCharacteristic::new(
+                id + 1 + 4 + 1,
+                accessory_id,
+            )),
+            siri_touch_to_use: Some(SiriTouchToUseCharacteristic::new(
+                id + 1 + 5 + 1,
+                accessory_id,
+            )),
+            ..Default::default()
         }
     }
 }
@@ -127,54 +141,50 @@ impl HapService for SiriService {
 
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.siri_input_type,
-		];
-		if let Some(c) = &self.multifunction_button {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.siri_enable {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.siri_engine_version {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.siri_light_on_use {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.siri_listening {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.siri_touch_to_use {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![&self.siri_input_type];
+        if let Some(c) = &self.multifunction_button {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.siri_enable {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.siri_engine_version {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.siri_light_on_use {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.siri_listening {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.siri_touch_to_use {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.siri_input_type,
-		];
-		if let Some(c) = &mut self.multifunction_button {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.siri_enable {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.siri_engine_version {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.siri_light_on_use {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.siri_listening {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.siri_touch_to_use {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![&mut self.siri_input_type];
+        if let Some(c) = &mut self.multifunction_button {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.siri_enable {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.siri_engine_version {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.siri_light_on_use {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.siri_listening {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.siri_touch_to_use {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

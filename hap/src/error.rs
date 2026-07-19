@@ -64,5 +64,7 @@ pub enum Error {
 }
 
 impl From<aead::Error> for Error {
-    fn from(_: aead::Error) -> Self { Error::Aead }
+    fn from(_: aead::Error) -> Self {
+        Error::Aead
+    }
 }

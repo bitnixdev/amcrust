@@ -73,7 +73,9 @@ pub fn parse(data: &[u8]) -> Vec<Item> {
         let value = &data[i + 2..end];
 
         match items.last_mut() {
-            Some(last) if last.tag == tag && last.value.len() % 255 == 0 && !last.value.is_empty() => {
+            Some(last)
+                if last.tag == tag && last.value.len() % 255 == 0 && !last.value.is_empty() =>
+            {
                 last.value.extend_from_slice(value);
             }
             _ => items.push(Item {
@@ -88,7 +90,10 @@ pub fn parse(data: &[u8]) -> Vec<Item> {
 
 /// Returns the value of the first item with the given tag.
 pub fn find(items: &[Item], tag: u8) -> Option<&[u8]> {
-    items.iter().find(|i| i.tag == tag).map(|i| i.value.as_slice())
+    items
+        .iter()
+        .find(|i| i.tag == tag)
+        .map(|i| i.value.as_slice())
 }
 
 pub fn find_u8(items: &[Item], tag: u8) -> Option<u8> {
@@ -109,7 +114,11 @@ mod tests {
 
     #[test]
     fn roundtrip_scalars() {
-        let buf = Writer::new().u8(0x01, 7).u16(0x02, 0x1234).u32(0x03, 0xdead_beef).build();
+        let buf = Writer::new()
+            .u8(0x01, 7)
+            .u16(0x02, 0x1234)
+            .u32(0x03, 0xdead_beef)
+            .build();
         let items = parse(&buf);
         assert_eq!(find_u8(&items, 0x01), Some(7));
         assert_eq!(find_u16(&items, 0x02), Some(0x1234));
@@ -131,7 +140,11 @@ mod tests {
     fn delimiter_separates_repeated_tags() {
         let buf = Writer::new().u8(0x01, 1).delimiter().u8(0x01, 2).build();
         let items = parse(&buf);
-        let values: Vec<_> = items.iter().filter(|i| i.tag == 0x01).map(|i| i.value.clone()).collect();
+        let values: Vec<_> = items
+            .iter()
+            .filter(|i| i.tag == 0x01)
+            .map(|i| i.value.clone())
+            .collect();
         assert_eq!(values, vec![vec![1], vec![2]]);
     }
 

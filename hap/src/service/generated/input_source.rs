@@ -3,18 +3,15 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
-        HapCharacteristic,
-		configured_name::ConfiguredNameCharacteristic,
-		input_source_type::InputSourceTypeCharacteristic,
-		is_configured::IsConfiguredCharacteristic,
-		name::NameCharacteristic,
-		current_visibility_state::CurrentVisibilityStateCharacteristic,
-		identifier::IdentifierCharacteristic,
-		input_device_type::InputDeviceTypeCharacteristic,
-		target_visibility_state::TargetVisibilityStateCharacteristic,
-	},
+        configured_name::ConfiguredNameCharacteristic,
+        current_visibility_state::CurrentVisibilityStateCharacteristic,
+        identifier::IdentifierCharacteristic, input_device_type::InputDeviceTypeCharacteristic,
+        input_source_type::InputSourceTypeCharacteristic,
+        is_configured::IsConfiguredCharacteristic, name::NameCharacteristic,
+        target_visibility_state::TargetVisibilityStateCharacteristic, HapCharacteristic,
+    },
+    service::HapService,
     HapType,
 };
 
@@ -32,23 +29,23 @@ pub struct InputSourceService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Configured Name characteristic (required).
-	pub configured_name: ConfiguredNameCharacteristic,
-	/// Input Source Type characteristic (required).
-	pub input_source_type: InputSourceTypeCharacteristic,
-	/// Is Configured characteristic (required).
-	pub is_configured: IsConfiguredCharacteristic,
-	/// Name characteristic (required).
-	pub name: NameCharacteristic,
-	/// Current Visibility State characteristic (required).
-	pub current_visibility_state: CurrentVisibilityStateCharacteristic,
+    /// Configured Name characteristic (required).
+    pub configured_name: ConfiguredNameCharacteristic,
+    /// Input Source Type characteristic (required).
+    pub input_source_type: InputSourceTypeCharacteristic,
+    /// Is Configured characteristic (required).
+    pub is_configured: IsConfiguredCharacteristic,
+    /// Name characteristic (required).
+    pub name: NameCharacteristic,
+    /// Current Visibility State characteristic (required).
+    pub current_visibility_state: CurrentVisibilityStateCharacteristic,
 
-	/// Identifier characteristic (optional).
-	pub identifier: Option<IdentifierCharacteristic>,
-	/// Input Device Type characteristic (optional).
-	pub input_device_type: Option<InputDeviceTypeCharacteristic>,
-	/// Target Visibility State characteristic (optional).
-	pub target_visibility_state: Option<TargetVisibilityStateCharacteristic>,
+    /// Identifier characteristic (optional).
+    pub identifier: Option<IdentifierCharacteristic>,
+    /// Input Device Type characteristic (optional).
+    pub input_device_type: Option<InputDeviceTypeCharacteristic>,
+    /// Target Visibility State characteristic (optional).
+    pub target_visibility_state: Option<TargetVisibilityStateCharacteristic>,
 }
 
 impl InputSourceService {
@@ -57,15 +54,24 @@ impl InputSourceService {
         Self {
             id,
             hap_type: HapType::InputSource,
-			configured_name: ConfiguredNameCharacteristic::new(id + 1 + 0, accessory_id),
-			input_source_type: InputSourceTypeCharacteristic::new(id + 1 + 1, accessory_id),
-			is_configured: IsConfiguredCharacteristic::new(id + 1 + 2, accessory_id),
-			name: NameCharacteristic::new(id + 1 + 3, accessory_id),
-			current_visibility_state: CurrentVisibilityStateCharacteristic::new(id + 1 + 4, accessory_id),
-			identifier: Some(IdentifierCharacteristic::new(id + 1 + 0 + 5, accessory_id)),
-			input_device_type: Some(InputDeviceTypeCharacteristic::new(id + 1 + 1 + 5, accessory_id)),
-			target_visibility_state: Some(TargetVisibilityStateCharacteristic::new(id + 1 + 2 + 5, accessory_id)),
-			..Default::default()
+            configured_name: ConfiguredNameCharacteristic::new(id + 1 + 0, accessory_id),
+            input_source_type: InputSourceTypeCharacteristic::new(id + 1 + 1, accessory_id),
+            is_configured: IsConfiguredCharacteristic::new(id + 1 + 2, accessory_id),
+            name: NameCharacteristic::new(id + 1 + 3, accessory_id),
+            current_visibility_state: CurrentVisibilityStateCharacteristic::new(
+                id + 1 + 4,
+                accessory_id,
+            ),
+            identifier: Some(IdentifierCharacteristic::new(id + 1 + 0 + 5, accessory_id)),
+            input_device_type: Some(InputDeviceTypeCharacteristic::new(
+                id + 1 + 1 + 5,
+                accessory_id,
+            )),
+            target_visibility_state: Some(TargetVisibilityStateCharacteristic::new(
+                id + 1 + 2 + 5,
+                accessory_id,
+            )),
+            ..Default::default()
         }
     }
 }
@@ -132,43 +138,43 @@ impl HapService for InputSourceService {
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.configured_name,
-			&self.input_source_type,
-			&self.is_configured,
-			&self.name,
-			&self.current_visibility_state,
-		];
-		if let Some(c) = &self.identifier {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.input_device_type {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.target_visibility_state {
-		    characteristics.push(c);
-		}
-		characteristics
+            &self.configured_name,
+            &self.input_source_type,
+            &self.is_configured,
+            &self.name,
+            &self.current_visibility_state,
+        ];
+        if let Some(c) = &self.identifier {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.input_device_type {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.target_visibility_state {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.configured_name,
-			&mut self.input_source_type,
-			&mut self.is_configured,
-			&mut self.name,
-			&mut self.current_visibility_state,
-		];
-		if let Some(c) = &mut self.identifier {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.input_device_type {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.target_visibility_state {
-		    characteristics.push(c);
-		}
-		characteristics
+            &mut self.configured_name,
+            &mut self.input_source_type,
+            &mut self.is_configured,
+            &mut self.name,
+            &mut self.current_visibility_state,
+        ];
+        if let Some(c) = &mut self.identifier {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.input_device_type {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.target_visibility_state {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

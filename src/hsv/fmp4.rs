@@ -90,7 +90,10 @@ impl Recorder {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
-        info!("starting recording pipeline ({}ms fragments)", config.fragment_ms);
+        info!(
+            "starting recording pipeline ({}ms fragments)",
+            config.fragment_ms
+        );
         match cmd.spawn() {
             Ok(mut child) => {
                 if let Some(stderr) = child.stderr.take() {
@@ -108,7 +111,10 @@ impl Recorder {
                 let recorder = self.clone();
                 let prebuffer_ms = config.prebuffer_ms;
                 tokio::spawn(async move {
-                    if let Err(e) = recorder.parse_stream(stdout, generation, prebuffer_ms).await {
+                    if let Err(e) = recorder
+                        .parse_stream(stdout, generation, prebuffer_ms)
+                        .await
+                    {
                         // Quiet when this pipeline was deliberately replaced.
                         if recorder.state.lock().await.generation == generation {
                             error!("recorder stream ended: {e}");
@@ -138,7 +144,13 @@ impl Recorder {
 
     /// Returns the init segment and current prebuffer contents, plus a live
     /// subscription for fragments produced from now on.
-    pub async fn snapshot_and_subscribe(&self) -> (Option<Arc<Vec<u8>>>, Vec<Fragment>, broadcast::Receiver<Fragment>) {
+    pub async fn snapshot_and_subscribe(
+        &self,
+    ) -> (
+        Option<Arc<Vec<u8>>>,
+        Vec<Fragment>,
+        broadcast::Receiver<Fragment>,
+    ) {
         let state = self.state.lock().await;
         (
             state.init_segment.clone(),
@@ -219,7 +231,10 @@ impl Recorder {
                 }
                 _ if !init_done => init.extend_from_slice(&box_bytes),
                 other => {
-                    warn!("recorder: unexpected box {:?} mid-stream", String::from_utf8_lossy(other));
+                    warn!(
+                        "recorder: unexpected box {:?} mid-stream",
+                        String::from_utf8_lossy(other)
+                    );
                 }
             }
         }

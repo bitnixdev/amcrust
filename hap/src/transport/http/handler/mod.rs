@@ -5,8 +5,7 @@ use crate::{
     pointer,
     tlv::{self, Encodable},
     transport::http::{status_response, tlv_response},
-    Error,
-    Result,
+    Error, Result,
 };
 
 pub mod accessories;
@@ -34,7 +33,10 @@ pub trait TlvHandlerExt {
     type ParseResult: Send;
     type Result: Encodable;
 
-    fn parse(&self, body: Body) -> BoxFuture<std::result::Result<Self::ParseResult, tlv::ErrorContainer>>;
+    fn parse(
+        &self,
+        body: Body,
+    ) -> BoxFuture<std::result::Result<Self::ParseResult, tlv::ErrorContainer>>;
     fn handle(
         &mut self,
         step: Self::ParseResult,
@@ -49,7 +51,9 @@ pub trait TlvHandlerExt {
 pub struct TlvHandler<T: TlvHandlerExt + Send + Sync>(T);
 
 impl<T: TlvHandlerExt + Send + Sync> From<T> for TlvHandler<T> {
-    fn from(inst: T) -> TlvHandler<T> { TlvHandler(inst) }
+    fn from(inst: T) -> TlvHandler<T> {
+        TlvHandler(inst)
+    }
 }
 
 impl<T: TlvHandlerExt + Send + Sync> HandlerExt for TlvHandler<T> {
@@ -67,7 +71,11 @@ impl<T: TlvHandlerExt + Send + Sync> HandlerExt for TlvHandler<T> {
         async move {
             let response = match self.0.parse(body).await {
                 Err(e) => e.encode(),
-                Ok(step) => match self.0.handle(step, controller_id, config, storage, event_emitter).await {
+                Ok(step) => match self
+                    .0
+                    .handle(step, controller_id, config, storage, event_emitter)
+                    .await
+                {
                     Err(e) => e.encode(),
                     Ok(res) => res.encode(),
                 },
@@ -96,7 +104,9 @@ pub trait JsonHandlerExt {
 pub struct JsonHandler<T: JsonHandlerExt + Send + Sync>(T);
 
 impl<T: JsonHandlerExt + Send + Sync> From<T> for JsonHandler<T> {
-    fn from(inst: T) -> JsonHandler<T> { JsonHandler(inst) }
+    fn from(inst: T) -> JsonHandler<T> {
+        JsonHandler(inst)
+    }
 }
 
 impl<T: JsonHandlerExt + Send + Sync> HandlerExt for JsonHandler<T> {

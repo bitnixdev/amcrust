@@ -3,12 +3,12 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
+        setup_transfer_transport::SetupTransferTransportCharacteristic,
+        supported_transfer_transport_configuration::SupportedTransferTransportConfigurationCharacteristic,
         HapCharacteristic,
-		supported_transfer_transport_configuration::SupportedTransferTransportConfigurationCharacteristic,
-		setup_transfer_transport::SetupTransferTransportCharacteristic,
-	},
+    },
+    service::HapService,
     HapType,
 };
 
@@ -26,11 +26,11 @@ pub struct TransferTransportManagementService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Supported Transfer Transport Configuration characteristic (required).
-	pub supported_transfer_transport_configuration: SupportedTransferTransportConfigurationCharacteristic,
-	/// Setup Transfer Transport characteristic (required).
-	pub setup_transfer_transport: SetupTransferTransportCharacteristic,
-
+    /// Supported Transfer Transport Configuration characteristic (required).
+    pub supported_transfer_transport_configuration:
+        SupportedTransferTransportConfigurationCharacteristic,
+    /// Setup Transfer Transport characteristic (required).
+    pub setup_transfer_transport: SetupTransferTransportCharacteristic,
 }
 
 impl TransferTransportManagementService {
@@ -39,9 +39,13 @@ impl TransferTransportManagementService {
         Self {
             id,
             hap_type: HapType::TransferTransportManagement,
-			supported_transfer_transport_configuration: SupportedTransferTransportConfigurationCharacteristic::new(id + 1 + 0, accessory_id),
-			setup_transfer_transport: SetupTransferTransportCharacteristic::new(id + 1 + 1, accessory_id),
-			..Default::default()
+            supported_transfer_transport_configuration:
+                SupportedTransferTransportConfigurationCharacteristic::new(id + 1 + 0, accessory_id),
+            setup_transfer_transport: SetupTransferTransportCharacteristic::new(
+                id + 1 + 1,
+                accessory_id,
+            ),
+            ..Default::default()
         }
     }
 }
@@ -108,19 +112,19 @@ impl HapService for TransferTransportManagementService {
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.supported_transfer_transport_configuration,
-			&self.setup_transfer_transport,
-		];
-		characteristics
+            &self.supported_transfer_transport_configuration,
+            &self.setup_transfer_transport,
+        ];
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.supported_transfer_transport_configuration,
-			&mut self.setup_transfer_transport,
-		];
-		characteristics
+            &mut self.supported_transfer_transport_configuration,
+            &mut self.setup_transfer_transport,
+        ];
+        characteristics
     }
 }
 

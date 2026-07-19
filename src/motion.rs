@@ -27,7 +27,10 @@ pub struct MotionMapper {
 }
 
 impl MotionMapper {
-    pub fn new(accessory: pointer::Accessory, motion_active: Arc<std::sync::atomic::AtomicBool>) -> Self {
+    pub fn new(
+        accessory: pointer::Accessory,
+        motion_active: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
         Self {
             accessory,
             person_gen: Arc::new(AtomicU64::new(0)),

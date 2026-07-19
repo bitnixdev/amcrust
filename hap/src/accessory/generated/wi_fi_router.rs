@@ -3,10 +3,12 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-	accessory::{AccessoryInformation, HapAccessory},
-	service::{HapService, accessory_information::AccessoryInformationService, wi_fi_router::WiFiRouterService},
-	HapType,
-	Result,
+    accessory::{AccessoryInformation, HapAccessory},
+    service::{
+        accessory_information::AccessoryInformationService, wi_fi_router::WiFiRouterService,
+        HapService,
+    },
+    HapType, Result,
 };
 
 /// Wi-Fi Router accessory.
@@ -65,17 +67,11 @@ impl HapAccessory for WiFiRouterAccessory {
     }
 
     fn get_services(&self) -> Vec<&dyn HapService> {
-        vec![
-            &self.accessory_information,
-            &self.wi_fi_router,
-        ]
+        vec![&self.accessory_information, &self.wi_fi_router]
     }
 
     fn get_mut_services(&mut self) -> Vec<&mut dyn HapService> {
-        vec![
-            &mut self.accessory_information,
-            &mut self.wi_fi_router,
-        ]
+        vec![&mut self.accessory_information, &mut self.wi_fi_router]
     }
 }
 

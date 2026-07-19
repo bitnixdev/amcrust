@@ -3,13 +3,13 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
+        configuration_state::ConfigurationStateCharacteristic,
+        nfc_access_control_point::NfcAccessControlPointCharacteristic,
+        nfc_access_supported_configuration::NfcAccessSupportedConfigurationCharacteristic,
         HapCharacteristic,
-		configuration_state::ConfigurationStateCharacteristic,
-		nfc_access_control_point::NfcAccessControlPointCharacteristic,
-		nfc_access_supported_configuration::NfcAccessSupportedConfigurationCharacteristic,
-	},
+    },
+    service::HapService,
     HapType,
 };
 
@@ -27,13 +27,12 @@ pub struct NfcAccessServiceService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Configuration State characteristic (required).
-	pub configuration_state: ConfigurationStateCharacteristic,
-	/// NFC Access Control Point characteristic (required).
-	pub nfc_access_control_point: NfcAccessControlPointCharacteristic,
-	/// NFC Access Supported Configuration characteristic (required).
-	pub nfc_access_supported_configuration: NfcAccessSupportedConfigurationCharacteristic,
-
+    /// Configuration State characteristic (required).
+    pub configuration_state: ConfigurationStateCharacteristic,
+    /// NFC Access Control Point characteristic (required).
+    pub nfc_access_control_point: NfcAccessControlPointCharacteristic,
+    /// NFC Access Supported Configuration characteristic (required).
+    pub nfc_access_supported_configuration: NfcAccessSupportedConfigurationCharacteristic,
 }
 
 impl NfcAccessServiceService {
@@ -42,10 +41,16 @@ impl NfcAccessServiceService {
         Self {
             id,
             hap_type: HapType::NfcAccessService,
-			configuration_state: ConfigurationStateCharacteristic::new(id + 1 + 0, accessory_id),
-			nfc_access_control_point: NfcAccessControlPointCharacteristic::new(id + 1 + 1, accessory_id),
-			nfc_access_supported_configuration: NfcAccessSupportedConfigurationCharacteristic::new(id + 1 + 2, accessory_id),
-			..Default::default()
+            configuration_state: ConfigurationStateCharacteristic::new(id + 1 + 0, accessory_id),
+            nfc_access_control_point: NfcAccessControlPointCharacteristic::new(
+                id + 1 + 1,
+                accessory_id,
+            ),
+            nfc_access_supported_configuration: NfcAccessSupportedConfigurationCharacteristic::new(
+                id + 1 + 2,
+                accessory_id,
+            ),
+            ..Default::default()
         }
     }
 }
@@ -112,21 +117,21 @@ impl HapService for NfcAccessServiceService {
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.configuration_state,
-			&self.nfc_access_control_point,
-			&self.nfc_access_supported_configuration,
-		];
-		characteristics
+            &self.configuration_state,
+            &self.nfc_access_control_point,
+            &self.nfc_access_supported_configuration,
+        ];
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.configuration_state,
-			&mut self.nfc_access_control_point,
-			&mut self.nfc_access_supported_configuration,
-		];
-		characteristics
+            &mut self.configuration_state,
+            &mut self.nfc_access_control_point,
+            &mut self.nfc_access_supported_configuration,
+        ];
+        characteristics
     }
 }
 

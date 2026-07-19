@@ -9,7 +9,8 @@ use tokio::sync::broadcast;
 use tokio::time::{Duration, sleep};
 
 /// AI detection event codes to subscribe to.
-const EVENT_CODES: &str = "SmartMotionHuman,SmartMotionVehicle,CrossLineDetection,CrossRegionDetection";
+const EVENT_CODES: &str =
+    "SmartMotionHuman,SmartMotionVehicle,CrossLineDetection,CrossRegionDetection";
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
@@ -48,7 +49,10 @@ impl AmcrestClient {
     }
 
     /// Performs a digest-authenticated GET for the given path + query.
-    async fn get(&self, path_and_query: &str) -> Result<reqwest::Response, Box<dyn std::error::Error + Send + Sync>> {
+    async fn get(
+        &self,
+        path_and_query: &str,
+    ) -> Result<reqwest::Response, Box<dyn std::error::Error + Send + Sync>> {
         let url = format!("http://{}{}", self.host, path_and_query);
 
         let resp = self.client.get(&url).send().await?;
@@ -56,7 +60,9 @@ impl AmcrestClient {
             return Ok(resp);
         }
         if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
-            return Err(format!("unexpected status {} for {}", resp.status(), path_and_query).into());
+            return Err(
+                format!("unexpected status {} for {}", resp.status(), path_and_query).into(),
+            );
         }
 
         let www_authenticate = resp
@@ -70,25 +76,45 @@ impl AmcrestClient {
         let mut prompt = digest_auth::parse(&www_authenticate)?;
         let auth_header = prompt.respond(&context)?.to_header_string();
 
-        let resp = self.client.get(&url).header("Authorization", auth_header).send().await?;
+        let resp = self
+            .client
+            .get(&url)
+            .header("Authorization", auth_header)
+            .send()
+            .await?;
         if !resp.status().is_success() {
-            return Err(format!("auth failed with status {} for {}", resp.status(), path_and_query).into());
+            return Err(format!(
+                "auth failed with status {} for {}",
+                resp.status(),
+                path_and_query
+            )
+            .into());
         }
         Ok(resp)
     }
 
     /// Returns the camera's model designation, e.g. "IP8M-2796E-AI".
-    pub async fn get_device_type(&self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let resp = self.get("/cgi-bin/magicBox.cgi?action=getDeviceType").await?;
+    pub async fn get_device_type(
+        &self,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let resp = self
+            .get("/cgi-bin/magicBox.cgi?action=getDeviceType")
+            .await?;
         let body = resp.text().await?;
         // Response format: "type=IP8M-2796E-AI"
-        Ok(body.trim().strip_prefix("type=").unwrap_or(body.trim()).to_string())
+        Ok(body
+            .trim()
+            .strip_prefix("type=")
+            .unwrap_or(body.trim())
+            .to_string())
     }
 
     /// Ensures the camera's AI detection (SmartMotionDetect) is enabled — it's
     /// the source of the person/vehicle events HomeKit motion sensors and
     /// recording triggers depend on.
-    pub async fn ensure_smart_motion(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn ensure_smart_motion(
+        &self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let resp = self
             .get("/cgi-bin/configManager.cgi?action=getConfig&name=SmartMotionDetect")
             .await?;
@@ -96,13 +122,20 @@ impl AmcrestClient {
         if body.contains("table.SmartMotionDetect[0].Enable=true") {
             return Ok(());
         }
-        info!("[{}] enabling SmartMotionDetect (AI person/vehicle events)", self.host);
-        self.set_config("SmartMotionDetect%5B0%5D.Enable=true").await
+        info!(
+            "[{}] enabling SmartMotionDetect (AI person/vehicle events)",
+            self.host
+        );
+        self.set_config("SmartMotionDetect%5B0%5D.Enable=true")
+            .await
     }
 
     /// Applies encoder/config settings via configManager setConfig. `params`
     /// is the raw `Key=Value&Key=Value` query fragment.
-    pub async fn set_config(&self, params: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn set_config(
+        &self,
+        params: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let path = format!("/cgi-bin/configManager.cgi?action=setConfig&{params}");
         let resp = self.get(&path).await?;
         let body = resp.text().await?;
@@ -115,12 +148,17 @@ impl AmcrestClient {
     /// Ensures the live-view substream is enabled and HomeKit-friendly:
     /// H.264, 1280x720, 15 fps with 1 s keyframes. Cameras ship with sub
     /// stream 2 disabled or misconfigured, which breaks live view.
-    pub async fn ensure_live_substream(&self, subtype: u8) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn ensure_live_substream(
+        &self,
+        subtype: u8,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if subtype == 0 {
             return Ok(()); // main stream is managed by the recording config
         }
         let idx = subtype - 1;
-        let resp = self.get("/cgi-bin/configManager.cgi?action=getConfig&name=Encode").await?;
+        let resp = self
+            .get("/cgi-bin/configManager.cgi?action=getConfig&name=Encode")
+            .await?;
         let body = resp.text().await?;
 
         let field = |name: &str| -> Option<String> {
@@ -132,9 +170,15 @@ impl AmcrestClient {
 
         let enabled = field("VideoEnable").as_deref() == Some("true");
         let h264 = field("Video.Compression").as_deref() == Some("H.264");
-        let fps = field("Video.FPS").and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
-        let gop = field("Video.GOP").and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
-        let width = field("Video.Width").and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+        let fps = field("Video.FPS")
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0);
+        let gop = field("Video.GOP")
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0);
+        let width = field("Video.Width")
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0);
         let audio = field("AudioEnable").as_deref() == Some("true");
 
         if enabled && h264 && fps > 0 && gop == fps && width >= 1280 && audio {
@@ -220,7 +264,9 @@ impl AmcrestClient {
 pub struct SnapshotCache {
     client: AmcrestClient,
     latest: std::sync::Arc<tokio::sync::RwLock<Option<(tokio::time::Instant, Vec<u8>)>>>,
-    scaled: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<(u32, u32), (tokio::time::Instant, Vec<u8>)>>>,
+    scaled: std::sync::Arc<
+        tokio::sync::Mutex<std::collections::HashMap<(u32, u32), (tokio::time::Instant, Vec<u8>)>>,
+    >,
 }
 
 const SNAPSHOT_REFRESH: Duration = Duration::from_secs(10);
@@ -267,7 +313,11 @@ impl SnapshotCache {
 
     /// Returns the most recent snapshot scaled to the requested dimensions, as
     /// HAP controllers expect. Scaled variants are cached per size.
-    pub async fn get_scaled(&self, width: u32, height: u32) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn get_scaled(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         {
             let scaled = self.scaled.lock().await;
             if let Some((at, bytes)) = scaled.get(&(width, height)) {
@@ -279,21 +329,26 @@ impl SnapshotCache {
 
         let raw = self.get().await?;
         let bytes = scale_jpeg(raw, width, height).await?;
-        self.scaled
-            .lock()
-            .await
-            .insert((width, height), (tokio::time::Instant::now(), bytes.clone()));
+        self.scaled.lock().await.insert(
+            (width, height),
+            (tokio::time::Instant::now(), bytes.clone()),
+        );
         Ok(bytes)
     }
 }
 
 /// Scales a JPEG to the given size with ffmpeg, preserving aspect ratio.
-async fn scale_jpeg(input: Vec<u8>, width: u32, height: u32) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+async fn scale_jpeg(
+    input: Vec<u8>,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
     use std::process::Stdio;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     // Fit within the requested box without distorting the aspect ratio.
-    let filter = format!("scale='min({width},iw)':'min({height},ih)':force_original_aspect_ratio=decrease");
+    let filter =
+        format!("scale='min({width},iw)':'min({height},ih)':force_original_aspect_ratio=decrease");
 
     let mut child = tokio::process::Command::new("ffmpeg")
         .args(["-hide_banner", "-loglevel", "error"])

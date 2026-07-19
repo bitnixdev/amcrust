@@ -5,14 +5,15 @@ use serde_json::json;
 use crate::{
     pointer,
     transport::http::{handler::JsonHandlerExt, json_response, status_response, Status},
-    HapType,
-    Result,
+    HapType, Result,
 };
 
 pub struct Identify;
 
 impl Identify {
-    pub fn new() -> Identify { Identify }
+    pub fn new() -> Identify {
+        Identify
+    }
 }
 
 impl JsonHandlerExt for Identify {
@@ -32,7 +33,9 @@ impl JsonHandlerExt for Identify {
 
         async move {
             if storage.lock().await.count_pairings().await? > 0 {
-                let body = serde_json::to_vec(&json!({ "status": Status::InsufficientPrivileges as i32 }))?;
+                let body = serde_json::to_vec(
+                    &json!({ "status": Status::InsufficientPrivileges as i32 }),
+                )?;
                 return json_response(body, StatusCode::BAD_REQUEST);
             }
 

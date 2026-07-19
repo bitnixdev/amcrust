@@ -15,7 +15,9 @@ use crate::{
 pub struct Pairings;
 
 impl Pairings {
-    pub fn new() -> Pairings { Pairings }
+    pub fn new() -> Pairings {
+        Pairings
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -49,9 +51,9 @@ impl TlvHandlerExt for Pairings {
 
     fn parse(&self, body: Body) -> BoxFuture<Result<HandlerType, tlv::ErrorContainer>> {
         async {
-            let aggregated_body = hyper::body::aggregate(body)
-                .await
-                .map_err(|_| tlv::ErrorContainer::new(StepNumber::Unknown as u8, tlv::Error::Unknown))?;
+            let aggregated_body = hyper::body::aggregate(body).await.map_err(|_| {
+                tlv::ErrorContainer::new(StepNumber::Unknown as u8, tlv::Error::Unknown)
+            })?;
 
             debug!("received body: {:?}", aggregated_body.chunk());
 
@@ -62,33 +64,40 @@ impl TlvHandlerExt for Pairings {
             match decoded.get(&(Type::Method as u8)) {
                 Some(handler) => match handler[0] {
                     x if x == HandlerNumber::Add as u8 => {
-                        let pairing_id = decoded
-                            .remove(&(Type::Identifier as u8))
-                            .ok_or(tlv::ErrorContainer::new(StepNumber::Res as u8, tlv::Error::Unknown))?;
-                        let ltpk = decoded
-                            .remove(&(Type::PublicKey as u8))
-                            .ok_or(tlv::ErrorContainer::new(StepNumber::Res as u8, tlv::Error::Unknown))?;
-                        let perms = decoded
-                            .remove(&(Type::Permissions as u8))
-                            .ok_or(tlv::ErrorContainer::new(StepNumber::Res as u8, tlv::Error::Unknown))?;
-                        let permissions = Permissions::from_byte(perms[0])
-                            .map_err(|_| tlv::ErrorContainer::new(StepNumber::Res as u8, tlv::Error::Unknown))?;
+                        let pairing_id = decoded.remove(&(Type::Identifier as u8)).ok_or(
+                            tlv::ErrorContainer::new(StepNumber::Res as u8, tlv::Error::Unknown),
+                        )?;
+                        let ltpk = decoded.remove(&(Type::PublicKey as u8)).ok_or(
+                            tlv::ErrorContainer::new(StepNumber::Res as u8, tlv::Error::Unknown),
+                        )?;
+                        let perms = decoded.remove(&(Type::Permissions as u8)).ok_or(
+                            tlv::ErrorContainer::new(StepNumber::Res as u8, tlv::Error::Unknown),
+                        )?;
+                        let permissions = Permissions::from_byte(perms[0]).map_err(|_| {
+                            tlv::ErrorContainer::new(StepNumber::Res as u8, tlv::Error::Unknown)
+                        })?;
                         Ok(HandlerType::Add {
                             pairing_id,
                             ltpk,
                             permissions,
                         })
-                    },
+                    }
                     x if x == HandlerNumber::Remove as u8 => {
-                        let pairing_id = decoded
-                            .remove(&(Type::Identifier as u8))
-                            .ok_or(tlv::ErrorContainer::new(StepNumber::Res as u8, tlv::Error::Unknown))?;
+                        let pairing_id = decoded.remove(&(Type::Identifier as u8)).ok_or(
+                            tlv::ErrorContainer::new(StepNumber::Res as u8, tlv::Error::Unknown),
+                        )?;
                         Ok(HandlerType::Remove { pairing_id })
-                    },
+                    }
                     x if x == HandlerNumber::List as u8 => Ok(HandlerType::List),
-                    _ => Err(tlv::ErrorContainer::new(StepNumber::Unknown as u8, tlv::Error::Unknown)),
+                    _ => Err(tlv::ErrorContainer::new(
+                        StepNumber::Unknown as u8,
+                        tlv::Error::Unknown,
+                    )),
                 },
-                None => Err(tlv::ErrorContainer::new(StepNumber::Unknown as u8, tlv::Error::Unknown)),
+                None => Err(tlv::ErrorContainer::new(
+                    StepNumber::Unknown as u8,
+                    tlv::Error::Unknown,
+                )),
             }
         }
         .boxed()
@@ -127,7 +136,7 @@ impl TlvHandlerExt for Pairings {
                         Ok(res) => Ok(res),
                         Err(err) => Err(tlv::ErrorContainer::new(StepNumber::Res as u8, err)),
                     }
-                },
+                }
                 HandlerType::List => match handle_list(controller_id, storage).await {
                     Ok(res) => Ok(res),
                     Err(err) => Err(tlv::ErrorContainer::new(StepNumber::Res as u8, err)),
@@ -172,7 +181,7 @@ async fn handle_add(
                 .await
                 .emit(&Event::ControllerPaired { id: pairing.id })
                 .await;
-        },
+        }
         Err(_) => {
             if let Some(max_peers) = config.lock().await.max_peers {
                 if s.count_pairings().await? + 1 > max_peers {
@@ -196,7 +205,7 @@ async fn handle_add(
                 .await
                 .emit(&Event::ControllerPaired { id: pairing.id })
                 .await;
-        },
+        }
     }
 
     info!("pairings M2: sending add pairing response");
@@ -253,7 +262,10 @@ async fn handle_list(
     Ok(list)
 }
 
-async fn check_admin(controller_id: &pointer::ControllerId, storage: &pointer::Storage) -> Result<(), tlv::Error> {
+async fn check_admin(
+    controller_id: &pointer::ControllerId,
+    storage: &pointer::Storage,
+) -> Result<(), tlv::Error> {
     let controller_id: Uuid = controller_id
         .read()
         .unwrap()

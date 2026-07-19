@@ -119,20 +119,30 @@ impl StreamManager {
             return;
         };
 
-        let addr_items = tlv8::find(&items, SETUP_ADDRESS).map(|v| tlv8::parse(v)).unwrap_or_default();
+        let addr_items = tlv8::find(&items, SETUP_ADDRESS)
+            .map(|v| tlv8::parse(v))
+            .unwrap_or_default();
         let controller_ip = tlv8::find(&addr_items, ADDR_IP)
             .map(|v| String::from_utf8_lossy(v).to_string())
             .unwrap_or_default();
         let video_port = tlv8::find_u16(&addr_items, ADDR_VIDEO_PORT).unwrap_or(0);
         let audio_port = tlv8::find_u16(&addr_items, ADDR_AUDIO_PORT).unwrap_or(0);
 
-        let video_srtp = tlv8::find(&items, SETUP_VIDEO_SRTP).map(|v| v.to_vec()).unwrap_or_default();
-        let audio_srtp = tlv8::find(&items, SETUP_AUDIO_SRTP).map(|v| v.to_vec()).unwrap_or_default();
+        let video_srtp = tlv8::find(&items, SETUP_VIDEO_SRTP)
+            .map(|v| v.to_vec())
+            .unwrap_or_default();
+        let audio_srtp = tlv8::find(&items, SETUP_AUDIO_SRTP)
+            .map(|v| v.to_vec())
+            .unwrap_or_default();
 
         let srtp_key = |raw: &[u8]| -> Vec<u8> {
             let items = tlv8::parse(raw);
-            let mut key = tlv8::find(&items, SRTP_MASTER_KEY).map(|v| v.to_vec()).unwrap_or_default();
-            let salt = tlv8::find(&items, SRTP_MASTER_SALT).map(|v| v.to_vec()).unwrap_or_default();
+            let mut key = tlv8::find(&items, SRTP_MASTER_KEY)
+                .map(|v| v.to_vec())
+                .unwrap_or_default();
+            let salt = tlv8::find(&items, SRTP_MASTER_SALT)
+                .map(|v| v.to_vec())
+                .unwrap_or_default();
             key.extend_from_slice(&salt);
             key
         };
@@ -233,14 +243,21 @@ impl StreamManager {
                 let audio_codec_params = tlv8::find(&audio_params, AUDIO_CODEC_PARAMS)
                     .map(|v| tlv8::parse(v))
                     .unwrap_or_default();
-                let audio_rate_hz = match tlv8::find_u8(&audio_codec_params, AUDIO_PARAM_SAMPLE_RATE) {
-                    Some(0) => 8000,
-                    Some(2) => 24000,
-                    _ => 16000,
-                };
+                let audio_rate_hz =
+                    match tlv8::find_u8(&audio_codec_params, AUDIO_PARAM_SAMPLE_RATE) {
+                        Some(0) => 8000,
+                        Some(2) => 24000,
+                        _ => 16000,
+                    };
 
-                self.start_stream(session_id, payload_type, max_mtu, audio_payload_type, audio_rate_hz)
-                    .await;
+                self.start_stream(
+                    session_id,
+                    payload_type,
+                    max_mtu,
+                    audio_payload_type,
+                    audio_rate_hz,
+                )
+                .await;
             }
             Some(COMMAND_END) => {
                 info!("stream end requested");
@@ -337,7 +354,10 @@ impl StreamManager {
                         // The camera under-delivers audio samples relative to
                         // wall time; async resampling fills gaps with silence
                         // so the output tracks real time.
-                        .args(["-af", "aresample=async=1000:min_hard_comp=0.100:first_pts=0"])
+                        .args([
+                            "-af",
+                            "aresample=async=1000:min_hard_comp=0.100:first_pts=0",
+                        ])
                         .args(["-ar", &audio_rate_hz.to_string()])
                         .args(["-ac", "1"])
                         .args(["-b:a", "32k"])
@@ -358,7 +378,9 @@ impl StreamManager {
             }
         }
 
-        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
         cmd.kill_on_drop(true);
 
         info!("starting ffmpeg → {video_dest}");
@@ -479,16 +501,32 @@ fn spawn_audio_proxy(
 pub fn supported_video_config() -> Vec<u8> {
     let mut params = tlv8::Writer::new();
     // Profiles: constrained baseline, main, high.
-    params.u8(0x01, 0x00).delimiter().u8(0x01, 0x01).delimiter().u8(0x01, 0x02);
+    params
+        .u8(0x01, 0x00)
+        .delimiter()
+        .u8(0x01, 0x01)
+        .delimiter()
+        .u8(0x01, 0x02);
     // Levels: 3.1, 3.2, 4.0.
-    params.u8(0x02, 0x00).delimiter().u8(0x02, 0x01).delimiter().u8(0x02, 0x02);
+    params
+        .u8(0x02, 0x00)
+        .delimiter()
+        .u8(0x02, 0x01)
+        .delimiter()
+        .u8(0x02, 0x02);
     // Packetization mode: non-interleaved.
     params.u8(0x03, 0x00);
     let params = params.build();
 
     let attributes: Vec<Vec<u8>> = [(1280u16, 720u16), (640, 360), (480, 270), (320, 240)]
         .iter()
-        .map(|&(w, h)| tlv8::Writer::new().u16(0x01, w).u16(0x02, h).u8(0x03, 30).build())
+        .map(|&(w, h)| {
+            tlv8::Writer::new()
+                .u16(0x01, w)
+                .u16(0x02, h)
+                .u8(0x03, 30)
+                .build()
+        })
         .collect();
 
     let mut codec_config = tlv8::Writer::new();

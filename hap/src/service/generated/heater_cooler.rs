@@ -3,21 +3,18 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
-        HapCharacteristic,
-		active::ActiveCharacteristic,
-		current_heater_cooler_state::CurrentHeaterCoolerStateCharacteristic,
-		target_heater_cooler_state::TargetHeaterCoolerStateCharacteristic,
-		current_temperature::CurrentTemperatureCharacteristic,
-		lock_physical_controls::LockPhysicalControlsCharacteristic,
-		name::NameCharacteristic,
-		rotation_speed::RotationSpeedCharacteristic,
-		swing_mode::SwingModeCharacteristic,
-		cooling_threshold_temperature::CoolingThresholdTemperatureCharacteristic,
-		heating_threshold_temperature::HeatingThresholdTemperatureCharacteristic,
-		temperature_display_units::TemperatureDisplayUnitsCharacteristic,
-	},
+        active::ActiveCharacteristic,
+        cooling_threshold_temperature::CoolingThresholdTemperatureCharacteristic,
+        current_heater_cooler_state::CurrentHeaterCoolerStateCharacteristic,
+        current_temperature::CurrentTemperatureCharacteristic,
+        heating_threshold_temperature::HeatingThresholdTemperatureCharacteristic,
+        lock_physical_controls::LockPhysicalControlsCharacteristic, name::NameCharacteristic,
+        rotation_speed::RotationSpeedCharacteristic, swing_mode::SwingModeCharacteristic,
+        target_heater_cooler_state::TargetHeaterCoolerStateCharacteristic,
+        temperature_display_units::TemperatureDisplayUnitsCharacteristic, HapCharacteristic,
+    },
+    service::HapService,
     HapType,
 };
 
@@ -35,29 +32,29 @@ pub struct HeaterCoolerService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Active characteristic (required).
-	pub active: ActiveCharacteristic,
-	/// Current Heater-Cooler State characteristic (required).
-	pub current_heater_cooler_state: CurrentHeaterCoolerStateCharacteristic,
-	/// Target Heater-Cooler State characteristic (required).
-	pub target_heater_cooler_state: TargetHeaterCoolerStateCharacteristic,
-	/// Current Temperature characteristic (required).
-	pub current_temperature: CurrentTemperatureCharacteristic,
+    /// Active characteristic (required).
+    pub active: ActiveCharacteristic,
+    /// Current Heater-Cooler State characteristic (required).
+    pub current_heater_cooler_state: CurrentHeaterCoolerStateCharacteristic,
+    /// Target Heater-Cooler State characteristic (required).
+    pub target_heater_cooler_state: TargetHeaterCoolerStateCharacteristic,
+    /// Current Temperature characteristic (required).
+    pub current_temperature: CurrentTemperatureCharacteristic,
 
-	/// Lock Physical Controls characteristic (optional).
-	pub lock_physical_controls: Option<LockPhysicalControlsCharacteristic>,
-	/// Name characteristic (optional).
-	pub name: Option<NameCharacteristic>,
-	/// Rotation Speed characteristic (optional).
-	pub rotation_speed: Option<RotationSpeedCharacteristic>,
-	/// Swing Mode characteristic (optional).
-	pub swing_mode: Option<SwingModeCharacteristic>,
-	/// Cooling Threshold Temperature characteristic (optional).
-	pub cooling_threshold_temperature: Option<CoolingThresholdTemperatureCharacteristic>,
-	/// Heating Threshold Temperature characteristic (optional).
-	pub heating_threshold_temperature: Option<HeatingThresholdTemperatureCharacteristic>,
-	/// Temperature Display Units characteristic (optional).
-	pub temperature_display_units: Option<TemperatureDisplayUnitsCharacteristic>,
+    /// Lock Physical Controls characteristic (optional).
+    pub lock_physical_controls: Option<LockPhysicalControlsCharacteristic>,
+    /// Name characteristic (optional).
+    pub name: Option<NameCharacteristic>,
+    /// Rotation Speed characteristic (optional).
+    pub rotation_speed: Option<RotationSpeedCharacteristic>,
+    /// Swing Mode characteristic (optional).
+    pub swing_mode: Option<SwingModeCharacteristic>,
+    /// Cooling Threshold Temperature characteristic (optional).
+    pub cooling_threshold_temperature: Option<CoolingThresholdTemperatureCharacteristic>,
+    /// Heating Threshold Temperature characteristic (optional).
+    pub heating_threshold_temperature: Option<HeatingThresholdTemperatureCharacteristic>,
+    /// Temperature Display Units characteristic (optional).
+    pub temperature_display_units: Option<TemperatureDisplayUnitsCharacteristic>,
 }
 
 impl HeaterCoolerService {
@@ -66,18 +63,39 @@ impl HeaterCoolerService {
         Self {
             id,
             hap_type: HapType::HeaterCooler,
-			active: ActiveCharacteristic::new(id + 1 + 0, accessory_id),
-			current_heater_cooler_state: CurrentHeaterCoolerStateCharacteristic::new(id + 1 + 1, accessory_id),
-			target_heater_cooler_state: TargetHeaterCoolerStateCharacteristic::new(id + 1 + 2, accessory_id),
-			current_temperature: CurrentTemperatureCharacteristic::new(id + 1 + 3, accessory_id),
-			lock_physical_controls: Some(LockPhysicalControlsCharacteristic::new(id + 1 + 0 + 4, accessory_id)),
-			name: Some(NameCharacteristic::new(id + 1 + 1 + 4, accessory_id)),
-			rotation_speed: Some(RotationSpeedCharacteristic::new(id + 1 + 2 + 4, accessory_id)),
-			swing_mode: Some(SwingModeCharacteristic::new(id + 1 + 3 + 4, accessory_id)),
-			cooling_threshold_temperature: Some(CoolingThresholdTemperatureCharacteristic::new(id + 1 + 4 + 4, accessory_id)),
-			heating_threshold_temperature: Some(HeatingThresholdTemperatureCharacteristic::new(id + 1 + 5 + 4, accessory_id)),
-			temperature_display_units: Some(TemperatureDisplayUnitsCharacteristic::new(id + 1 + 6 + 4, accessory_id)),
-			..Default::default()
+            active: ActiveCharacteristic::new(id + 1 + 0, accessory_id),
+            current_heater_cooler_state: CurrentHeaterCoolerStateCharacteristic::new(
+                id + 1 + 1,
+                accessory_id,
+            ),
+            target_heater_cooler_state: TargetHeaterCoolerStateCharacteristic::new(
+                id + 1 + 2,
+                accessory_id,
+            ),
+            current_temperature: CurrentTemperatureCharacteristic::new(id + 1 + 3, accessory_id),
+            lock_physical_controls: Some(LockPhysicalControlsCharacteristic::new(
+                id + 1 + 0 + 4,
+                accessory_id,
+            )),
+            name: Some(NameCharacteristic::new(id + 1 + 1 + 4, accessory_id)),
+            rotation_speed: Some(RotationSpeedCharacteristic::new(
+                id + 1 + 2 + 4,
+                accessory_id,
+            )),
+            swing_mode: Some(SwingModeCharacteristic::new(id + 1 + 3 + 4, accessory_id)),
+            cooling_threshold_temperature: Some(CoolingThresholdTemperatureCharacteristic::new(
+                id + 1 + 4 + 4,
+                accessory_id,
+            )),
+            heating_threshold_temperature: Some(HeatingThresholdTemperatureCharacteristic::new(
+                id + 1 + 5 + 4,
+                accessory_id,
+            )),
+            temperature_display_units: Some(TemperatureDisplayUnitsCharacteristic::new(
+                id + 1 + 6 + 4,
+                accessory_id,
+            )),
+            ..Default::default()
         }
     }
 }
@@ -144,65 +162,65 @@ impl HapService for HeaterCoolerService {
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.active,
-			&self.current_heater_cooler_state,
-			&self.target_heater_cooler_state,
-			&self.current_temperature,
-		];
-		if let Some(c) = &self.lock_physical_controls {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.rotation_speed {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.swing_mode {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.cooling_threshold_temperature {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.heating_threshold_temperature {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.temperature_display_units {
-		    characteristics.push(c);
-		}
-		characteristics
+            &self.active,
+            &self.current_heater_cooler_state,
+            &self.target_heater_cooler_state,
+            &self.current_temperature,
+        ];
+        if let Some(c) = &self.lock_physical_controls {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.rotation_speed {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.swing_mode {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.cooling_threshold_temperature {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.heating_threshold_temperature {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.temperature_display_units {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.active,
-			&mut self.current_heater_cooler_state,
-			&mut self.target_heater_cooler_state,
-			&mut self.current_temperature,
-		];
-		if let Some(c) = &mut self.lock_physical_controls {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.rotation_speed {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.swing_mode {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.cooling_threshold_temperature {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.heating_threshold_temperature {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.temperature_display_units {
-		    characteristics.push(c);
-		}
-		characteristics
+            &mut self.active,
+            &mut self.current_heater_cooler_state,
+            &mut self.target_heater_cooler_state,
+            &mut self.current_temperature,
+        ];
+        if let Some(c) = &mut self.lock_physical_controls {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.rotation_speed {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.swing_mode {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.cooling_threshold_temperature {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.heating_threshold_temperature {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.temperature_display_units {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

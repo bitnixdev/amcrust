@@ -3,18 +3,14 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
-        HapCharacteristic,
-		active::ActiveCharacteristic,
-		current_fan_state::CurrentFanStateCharacteristic,
-		target_fan_state::TargetFanStateCharacteristic,
-		lock_physical_controls::LockPhysicalControlsCharacteristic,
-		name::NameCharacteristic,
-		rotation_direction::RotationDirectionCharacteristic,
-		rotation_speed::RotationSpeedCharacteristic,
-		swing_mode::SwingModeCharacteristic,
-	},
+        active::ActiveCharacteristic, current_fan_state::CurrentFanStateCharacteristic,
+        lock_physical_controls::LockPhysicalControlsCharacteristic, name::NameCharacteristic,
+        rotation_direction::RotationDirectionCharacteristic,
+        rotation_speed::RotationSpeedCharacteristic, swing_mode::SwingModeCharacteristic,
+        target_fan_state::TargetFanStateCharacteristic, HapCharacteristic,
+    },
+    service::HapService,
     HapType,
 };
 
@@ -32,23 +28,23 @@ pub struct FanV2Service {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Active characteristic (required).
-	pub active: ActiveCharacteristic,
+    /// Active characteristic (required).
+    pub active: ActiveCharacteristic,
 
-	/// Current Fan State characteristic (optional).
-	pub current_fan_state: Option<CurrentFanStateCharacteristic>,
-	/// Target Fan State characteristic (optional).
-	pub target_fan_state: Option<TargetFanStateCharacteristic>,
-	/// Lock Physical Controls characteristic (optional).
-	pub lock_physical_controls: Option<LockPhysicalControlsCharacteristic>,
-	/// Name characteristic (optional).
-	pub name: Option<NameCharacteristic>,
-	/// Rotation Direction characteristic (optional).
-	pub rotation_direction: Option<RotationDirectionCharacteristic>,
-	/// Rotation Speed characteristic (optional).
-	pub rotation_speed: Option<RotationSpeedCharacteristic>,
-	/// Swing Mode characteristic (optional).
-	pub swing_mode: Option<SwingModeCharacteristic>,
+    /// Current Fan State characteristic (optional).
+    pub current_fan_state: Option<CurrentFanStateCharacteristic>,
+    /// Target Fan State characteristic (optional).
+    pub target_fan_state: Option<TargetFanStateCharacteristic>,
+    /// Lock Physical Controls characteristic (optional).
+    pub lock_physical_controls: Option<LockPhysicalControlsCharacteristic>,
+    /// Name characteristic (optional).
+    pub name: Option<NameCharacteristic>,
+    /// Rotation Direction characteristic (optional).
+    pub rotation_direction: Option<RotationDirectionCharacteristic>,
+    /// Rotation Speed characteristic (optional).
+    pub rotation_speed: Option<RotationSpeedCharacteristic>,
+    /// Swing Mode characteristic (optional).
+    pub swing_mode: Option<SwingModeCharacteristic>,
 }
 
 impl FanV2Service {
@@ -57,15 +53,30 @@ impl FanV2Service {
         Self {
             id,
             hap_type: HapType::FanV2,
-			active: ActiveCharacteristic::new(id + 1 + 0, accessory_id),
-			current_fan_state: Some(CurrentFanStateCharacteristic::new(id + 1 + 0 + 1, accessory_id)),
-			target_fan_state: Some(TargetFanStateCharacteristic::new(id + 1 + 1 + 1, accessory_id)),
-			lock_physical_controls: Some(LockPhysicalControlsCharacteristic::new(id + 1 + 2 + 1, accessory_id)),
-			name: Some(NameCharacteristic::new(id + 1 + 3 + 1, accessory_id)),
-			rotation_direction: Some(RotationDirectionCharacteristic::new(id + 1 + 4 + 1, accessory_id)),
-			rotation_speed: Some(RotationSpeedCharacteristic::new(id + 1 + 5 + 1, accessory_id)),
-			swing_mode: Some(SwingModeCharacteristic::new(id + 1 + 6 + 1, accessory_id)),
-			..Default::default()
+            active: ActiveCharacteristic::new(id + 1 + 0, accessory_id),
+            current_fan_state: Some(CurrentFanStateCharacteristic::new(
+                id + 1 + 0 + 1,
+                accessory_id,
+            )),
+            target_fan_state: Some(TargetFanStateCharacteristic::new(
+                id + 1 + 1 + 1,
+                accessory_id,
+            )),
+            lock_physical_controls: Some(LockPhysicalControlsCharacteristic::new(
+                id + 1 + 2 + 1,
+                accessory_id,
+            )),
+            name: Some(NameCharacteristic::new(id + 1 + 3 + 1, accessory_id)),
+            rotation_direction: Some(RotationDirectionCharacteristic::new(
+                id + 1 + 4 + 1,
+                accessory_id,
+            )),
+            rotation_speed: Some(RotationSpeedCharacteristic::new(
+                id + 1 + 5 + 1,
+                accessory_id,
+            )),
+            swing_mode: Some(SwingModeCharacteristic::new(id + 1 + 6 + 1, accessory_id)),
+            ..Default::default()
         }
     }
 }
@@ -131,60 +142,56 @@ impl HapService for FanV2Service {
 
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.active,
-		];
-		if let Some(c) = &self.current_fan_state {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.target_fan_state {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.lock_physical_controls {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.rotation_direction {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.rotation_speed {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.swing_mode {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![&self.active];
+        if let Some(c) = &self.current_fan_state {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.target_fan_state {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.lock_physical_controls {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.rotation_direction {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.rotation_speed {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.swing_mode {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.active,
-		];
-		if let Some(c) = &mut self.current_fan_state {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.target_fan_state {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.lock_physical_controls {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.rotation_direction {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.rotation_speed {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.swing_mode {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![&mut self.active];
+        if let Some(c) = &mut self.current_fan_state {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.target_fan_state {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.lock_physical_controls {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.rotation_direction {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.rotation_speed {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.swing_mode {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

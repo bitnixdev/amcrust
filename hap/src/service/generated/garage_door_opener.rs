@@ -3,16 +3,14 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
-        HapCharacteristic,
-		current_door_state::CurrentDoorStateCharacteristic,
-		target_door_state::TargetDoorStateCharacteristic,
-		obstruction_detected::ObstructionDetectedCharacteristic,
-		lock_current_state::LockCurrentStateCharacteristic,
-		lock_target_state::LockTargetStateCharacteristic,
-		name::NameCharacteristic,
-	},
+        current_door_state::CurrentDoorStateCharacteristic,
+        lock_current_state::LockCurrentStateCharacteristic,
+        lock_target_state::LockTargetStateCharacteristic, name::NameCharacteristic,
+        obstruction_detected::ObstructionDetectedCharacteristic,
+        target_door_state::TargetDoorStateCharacteristic, HapCharacteristic,
+    },
+    service::HapService,
     HapType,
 };
 
@@ -30,19 +28,19 @@ pub struct GarageDoorOpenerService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Current Door State characteristic (required).
-	pub current_door_state: CurrentDoorStateCharacteristic,
-	/// Target Door State characteristic (required).
-	pub target_door_state: TargetDoorStateCharacteristic,
-	/// Obstruction Detected characteristic (required).
-	pub obstruction_detected: ObstructionDetectedCharacteristic,
+    /// Current Door State characteristic (required).
+    pub current_door_state: CurrentDoorStateCharacteristic,
+    /// Target Door State characteristic (required).
+    pub target_door_state: TargetDoorStateCharacteristic,
+    /// Obstruction Detected characteristic (required).
+    pub obstruction_detected: ObstructionDetectedCharacteristic,
 
-	/// Lock Current State characteristic (optional).
-	pub lock_current_state: Option<LockCurrentStateCharacteristic>,
-	/// Lock Target State characteristic (optional).
-	pub lock_target_state: Option<LockTargetStateCharacteristic>,
-	/// Name characteristic (optional).
-	pub name: Option<NameCharacteristic>,
+    /// Lock Current State characteristic (optional).
+    pub lock_current_state: Option<LockCurrentStateCharacteristic>,
+    /// Lock Target State characteristic (optional).
+    pub lock_target_state: Option<LockTargetStateCharacteristic>,
+    /// Name characteristic (optional).
+    pub name: Option<NameCharacteristic>,
 }
 
 impl GarageDoorOpenerService {
@@ -51,13 +49,19 @@ impl GarageDoorOpenerService {
         Self {
             id,
             hap_type: HapType::GarageDoorOpener,
-			current_door_state: CurrentDoorStateCharacteristic::new(id + 1 + 0, accessory_id),
-			target_door_state: TargetDoorStateCharacteristic::new(id + 1 + 1, accessory_id),
-			obstruction_detected: ObstructionDetectedCharacteristic::new(id + 1 + 2, accessory_id),
-			lock_current_state: Some(LockCurrentStateCharacteristic::new(id + 1 + 0 + 3, accessory_id)),
-			lock_target_state: Some(LockTargetStateCharacteristic::new(id + 1 + 1 + 3, accessory_id)),
-			name: Some(NameCharacteristic::new(id + 1 + 2 + 3, accessory_id)),
-			..Default::default()
+            current_door_state: CurrentDoorStateCharacteristic::new(id + 1 + 0, accessory_id),
+            target_door_state: TargetDoorStateCharacteristic::new(id + 1 + 1, accessory_id),
+            obstruction_detected: ObstructionDetectedCharacteristic::new(id + 1 + 2, accessory_id),
+            lock_current_state: Some(LockCurrentStateCharacteristic::new(
+                id + 1 + 0 + 3,
+                accessory_id,
+            )),
+            lock_target_state: Some(LockTargetStateCharacteristic::new(
+                id + 1 + 1 + 3,
+                accessory_id,
+            )),
+            name: Some(NameCharacteristic::new(id + 1 + 2 + 3, accessory_id)),
+            ..Default::default()
         }
     }
 }
@@ -124,39 +128,39 @@ impl HapService for GarageDoorOpenerService {
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.current_door_state,
-			&self.target_door_state,
-			&self.obstruction_detected,
-		];
-		if let Some(c) = &self.lock_current_state {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.lock_target_state {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.name {
-		    characteristics.push(c);
-		}
-		characteristics
+            &self.current_door_state,
+            &self.target_door_state,
+            &self.obstruction_detected,
+        ];
+        if let Some(c) = &self.lock_current_state {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.lock_target_state {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.name {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.current_door_state,
-			&mut self.target_door_state,
-			&mut self.obstruction_detected,
-		];
-		if let Some(c) = &mut self.lock_current_state {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.lock_target_state {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.name {
-		    characteristics.push(c);
-		}
-		characteristics
+            &mut self.current_door_state,
+            &mut self.target_door_state,
+            &mut self.obstruction_detected,
+        ];
+        if let Some(c) = &mut self.lock_current_state {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.lock_target_state {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.name {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

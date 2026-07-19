@@ -3,14 +3,12 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
+        list_pairings::ListPairingsCharacteristic, pair_setup::PairSetupCharacteristic,
+        pair_verify::PairVerifyCharacteristic, pairing_features::PairingFeaturesCharacteristic,
         HapCharacteristic,
-		list_pairings::ListPairingsCharacteristic,
-		pair_setup::PairSetupCharacteristic,
-		pair_verify::PairVerifyCharacteristic,
-		pairing_features::PairingFeaturesCharacteristic,
-	},
+    },
+    service::HapService,
     HapType,
 };
 
@@ -28,15 +26,14 @@ pub struct PairingService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// List Pairings characteristic (required).
-	pub list_pairings: ListPairingsCharacteristic,
-	/// Pair Setup characteristic (required).
-	pub pair_setup: PairSetupCharacteristic,
-	/// Pair Verify characteristic (required).
-	pub pair_verify: PairVerifyCharacteristic,
-	/// Pairing Features characteristic (required).
-	pub pairing_features: PairingFeaturesCharacteristic,
-
+    /// List Pairings characteristic (required).
+    pub list_pairings: ListPairingsCharacteristic,
+    /// Pair Setup characteristic (required).
+    pub pair_setup: PairSetupCharacteristic,
+    /// Pair Verify characteristic (required).
+    pub pair_verify: PairVerifyCharacteristic,
+    /// Pairing Features characteristic (required).
+    pub pairing_features: PairingFeaturesCharacteristic,
 }
 
 impl PairingService {
@@ -45,11 +42,11 @@ impl PairingService {
         Self {
             id,
             hap_type: HapType::Pairing,
-			list_pairings: ListPairingsCharacteristic::new(id + 1 + 0, accessory_id),
-			pair_setup: PairSetupCharacteristic::new(id + 1 + 1, accessory_id),
-			pair_verify: PairVerifyCharacteristic::new(id + 1 + 2, accessory_id),
-			pairing_features: PairingFeaturesCharacteristic::new(id + 1 + 3, accessory_id),
-			..Default::default()
+            list_pairings: ListPairingsCharacteristic::new(id + 1 + 0, accessory_id),
+            pair_setup: PairSetupCharacteristic::new(id + 1 + 1, accessory_id),
+            pair_verify: PairVerifyCharacteristic::new(id + 1 + 2, accessory_id),
+            pairing_features: PairingFeaturesCharacteristic::new(id + 1 + 3, accessory_id),
+            ..Default::default()
         }
     }
 }
@@ -116,23 +113,23 @@ impl HapService for PairingService {
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.list_pairings,
-			&self.pair_setup,
-			&self.pair_verify,
-			&self.pairing_features,
-		];
-		characteristics
+            &self.list_pairings,
+            &self.pair_setup,
+            &self.pair_verify,
+            &self.pairing_features,
+        ];
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.list_pairings,
-			&mut self.pair_setup,
-			&mut self.pair_verify,
-			&mut self.pairing_features,
-		];
-		characteristics
+            &mut self.list_pairings,
+            &mut self.pair_setup,
+            &mut self.pair_verify,
+            &mut self.pairing_features,
+        ];
+        characteristics
     }
 }
 

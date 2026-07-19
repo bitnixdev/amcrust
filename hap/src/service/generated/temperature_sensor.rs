@@ -3,16 +3,13 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
-        HapCharacteristic,
-		current_temperature::CurrentTemperatureCharacteristic,
-		name::NameCharacteristic,
-		status_active::StatusActiveCharacteristic,
-		status_fault::StatusFaultCharacteristic,
-		status_low_battery::StatusLowBatteryCharacteristic,
-		status_tampered::StatusTamperedCharacteristic,
-	},
+        current_temperature::CurrentTemperatureCharacteristic, name::NameCharacteristic,
+        status_active::StatusActiveCharacteristic, status_fault::StatusFaultCharacteristic,
+        status_low_battery::StatusLowBatteryCharacteristic,
+        status_tampered::StatusTamperedCharacteristic, HapCharacteristic,
+    },
+    service::HapService,
     HapType,
 };
 
@@ -30,19 +27,19 @@ pub struct TemperatureSensorService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Current Temperature characteristic (required).
-	pub current_temperature: CurrentTemperatureCharacteristic,
+    /// Current Temperature characteristic (required).
+    pub current_temperature: CurrentTemperatureCharacteristic,
 
-	/// Name characteristic (optional).
-	pub name: Option<NameCharacteristic>,
-	/// Status Active characteristic (optional).
-	pub status_active: Option<StatusActiveCharacteristic>,
-	/// Status Fault characteristic (optional).
-	pub status_fault: Option<StatusFaultCharacteristic>,
-	/// Status Low Battery characteristic (optional).
-	pub status_low_battery: Option<StatusLowBatteryCharacteristic>,
-	/// Status Tampered characteristic (optional).
-	pub status_tampered: Option<StatusTamperedCharacteristic>,
+    /// Name characteristic (optional).
+    pub name: Option<NameCharacteristic>,
+    /// Status Active characteristic (optional).
+    pub status_active: Option<StatusActiveCharacteristic>,
+    /// Status Fault characteristic (optional).
+    pub status_fault: Option<StatusFaultCharacteristic>,
+    /// Status Low Battery characteristic (optional).
+    pub status_low_battery: Option<StatusLowBatteryCharacteristic>,
+    /// Status Tampered characteristic (optional).
+    pub status_tampered: Option<StatusTamperedCharacteristic>,
 }
 
 impl TemperatureSensorService {
@@ -51,13 +48,22 @@ impl TemperatureSensorService {
         Self {
             id,
             hap_type: HapType::TemperatureSensor,
-			current_temperature: CurrentTemperatureCharacteristic::new(id + 1 + 0, accessory_id),
-			name: Some(NameCharacteristic::new(id + 1 + 0 + 1, accessory_id)),
-			status_active: Some(StatusActiveCharacteristic::new(id + 1 + 1 + 1, accessory_id)),
-			status_fault: Some(StatusFaultCharacteristic::new(id + 1 + 2 + 1, accessory_id)),
-			status_low_battery: Some(StatusLowBatteryCharacteristic::new(id + 1 + 3 + 1, accessory_id)),
-			status_tampered: Some(StatusTamperedCharacteristic::new(id + 1 + 4 + 1, accessory_id)),
-			..Default::default()
+            current_temperature: CurrentTemperatureCharacteristic::new(id + 1 + 0, accessory_id),
+            name: Some(NameCharacteristic::new(id + 1 + 0 + 1, accessory_id)),
+            status_active: Some(StatusActiveCharacteristic::new(
+                id + 1 + 1 + 1,
+                accessory_id,
+            )),
+            status_fault: Some(StatusFaultCharacteristic::new(id + 1 + 2 + 1, accessory_id)),
+            status_low_battery: Some(StatusLowBatteryCharacteristic::new(
+                id + 1 + 3 + 1,
+                accessory_id,
+            )),
+            status_tampered: Some(StatusTamperedCharacteristic::new(
+                id + 1 + 4 + 1,
+                accessory_id,
+            )),
+            ..Default::default()
         }
     }
 }
@@ -123,48 +129,45 @@ impl HapService for TemperatureSensorService {
 
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.current_temperature,
-		];
-		if let Some(c) = &self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.status_active {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.status_fault {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.status_low_battery {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.status_tampered {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![&self.current_temperature];
+        if let Some(c) = &self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.status_active {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.status_fault {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.status_low_battery {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.status_tampered {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.current_temperature,
-		];
-		if let Some(c) = &mut self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.status_active {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.status_fault {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.status_low_battery {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.status_tampered {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&mut dyn HapCharacteristic> =
+            vec![&mut self.current_temperature];
+        if let Some(c) = &mut self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.status_active {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.status_fault {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.status_low_battery {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.status_tampered {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

@@ -3,13 +3,12 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
+        lock_current_state::LockCurrentStateCharacteristic,
+        lock_target_state::LockTargetStateCharacteristic, name::NameCharacteristic,
         HapCharacteristic,
-		lock_current_state::LockCurrentStateCharacteristic,
-		lock_target_state::LockTargetStateCharacteristic,
-		name::NameCharacteristic,
-	},
+    },
+    service::HapService,
     HapType,
 };
 
@@ -27,13 +26,13 @@ pub struct LockMechanismService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Lock Current State characteristic (required).
-	pub lock_current_state: LockCurrentStateCharacteristic,
-	/// Lock Target State characteristic (required).
-	pub lock_target_state: LockTargetStateCharacteristic,
+    /// Lock Current State characteristic (required).
+    pub lock_current_state: LockCurrentStateCharacteristic,
+    /// Lock Target State characteristic (required).
+    pub lock_target_state: LockTargetStateCharacteristic,
 
-	/// Name characteristic (optional).
-	pub name: Option<NameCharacteristic>,
+    /// Name characteristic (optional).
+    pub name: Option<NameCharacteristic>,
 }
 
 impl LockMechanismService {
@@ -42,10 +41,10 @@ impl LockMechanismService {
         Self {
             id,
             hap_type: HapType::LockMechanism,
-			lock_current_state: LockCurrentStateCharacteristic::new(id + 1 + 0, accessory_id),
-			lock_target_state: LockTargetStateCharacteristic::new(id + 1 + 1, accessory_id),
-			name: Some(NameCharacteristic::new(id + 1 + 0 + 2, accessory_id)),
-			..Default::default()
+            lock_current_state: LockCurrentStateCharacteristic::new(id + 1 + 0, accessory_id),
+            lock_target_state: LockTargetStateCharacteristic::new(id + 1 + 1, accessory_id),
+            name: Some(NameCharacteristic::new(id + 1 + 0 + 2, accessory_id)),
+            ..Default::default()
         }
     }
 }
@@ -111,26 +110,22 @@ impl HapService for LockMechanismService {
 
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.lock_current_state,
-			&self.lock_target_state,
-		];
-		if let Some(c) = &self.name {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&dyn HapCharacteristic> =
+            vec![&self.lock_current_state, &self.lock_target_state];
+        if let Some(c) = &self.name {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.lock_current_state,
-			&mut self.lock_target_state,
-		];
-		if let Some(c) = &mut self.name {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&mut dyn HapCharacteristic> =
+            vec![&mut self.lock_current_state, &mut self.lock_target_state];
+        if let Some(c) = &mut self.name {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

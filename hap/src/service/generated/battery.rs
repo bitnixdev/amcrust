@@ -3,14 +3,12 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
+        battery_level::BatteryLevelCharacteristic, charging_state::ChargingStateCharacteristic,
+        name::NameCharacteristic, status_low_battery::StatusLowBatteryCharacteristic,
         HapCharacteristic,
-		status_low_battery::StatusLowBatteryCharacteristic,
-		battery_level::BatteryLevelCharacteristic,
-		charging_state::ChargingStateCharacteristic,
-		name::NameCharacteristic,
-	},
+    },
+    service::HapService,
     HapType,
 };
 
@@ -28,15 +26,15 @@ pub struct BatteryService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Status Low Battery characteristic (required).
-	pub status_low_battery: StatusLowBatteryCharacteristic,
+    /// Status Low Battery characteristic (required).
+    pub status_low_battery: StatusLowBatteryCharacteristic,
 
-	/// Battery Level characteristic (optional).
-	pub battery_level: Option<BatteryLevelCharacteristic>,
-	/// Charging State characteristic (optional).
-	pub charging_state: Option<ChargingStateCharacteristic>,
-	/// Name characteristic (optional).
-	pub name: Option<NameCharacteristic>,
+    /// Battery Level characteristic (optional).
+    pub battery_level: Option<BatteryLevelCharacteristic>,
+    /// Charging State characteristic (optional).
+    pub charging_state: Option<ChargingStateCharacteristic>,
+    /// Name characteristic (optional).
+    pub name: Option<NameCharacteristic>,
 }
 
 impl BatteryService {
@@ -45,11 +43,17 @@ impl BatteryService {
         Self {
             id,
             hap_type: HapType::Battery,
-			status_low_battery: StatusLowBatteryCharacteristic::new(id + 1 + 0, accessory_id),
-			battery_level: Some(BatteryLevelCharacteristic::new(id + 1 + 0 + 1, accessory_id)),
-			charging_state: Some(ChargingStateCharacteristic::new(id + 1 + 1 + 1, accessory_id)),
-			name: Some(NameCharacteristic::new(id + 1 + 2 + 1, accessory_id)),
-			..Default::default()
+            status_low_battery: StatusLowBatteryCharacteristic::new(id + 1 + 0, accessory_id),
+            battery_level: Some(BatteryLevelCharacteristic::new(
+                id + 1 + 0 + 1,
+                accessory_id,
+            )),
+            charging_state: Some(ChargingStateCharacteristic::new(
+                id + 1 + 1 + 1,
+                accessory_id,
+            )),
+            name: Some(NameCharacteristic::new(id + 1 + 2 + 1, accessory_id)),
+            ..Default::default()
         }
     }
 }
@@ -115,36 +119,33 @@ impl HapService for BatteryService {
 
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.status_low_battery,
-		];
-		if let Some(c) = &self.battery_level {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.charging_state {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.name {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![&self.status_low_battery];
+        if let Some(c) = &self.battery_level {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.charging_state {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.name {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.status_low_battery,
-		];
-		if let Some(c) = &mut self.battery_level {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.charging_state {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.name {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&mut dyn HapCharacteristic> =
+            vec![&mut self.status_low_battery];
+        if let Some(c) = &mut self.battery_level {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.charging_state {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.name {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

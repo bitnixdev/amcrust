@@ -3,13 +3,12 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
-        HapCharacteristic,
-		setup_data_stream_transport::SetupDataStreamTransportCharacteristic,
-		supported_data_stream_transport_configuration::SupportedDataStreamTransportConfigurationCharacteristic,
-		version::VersionCharacteristic,
-	},
+        setup_data_stream_transport::SetupDataStreamTransportCharacteristic,
+        supported_data_stream_transport_configuration::SupportedDataStreamTransportConfigurationCharacteristic,
+        version::VersionCharacteristic, HapCharacteristic,
+    },
+    service::HapService,
     HapType,
 };
 
@@ -27,13 +26,13 @@ pub struct DataStreamTransportManagementService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Setup Data Stream Transport characteristic (required).
-	pub setup_data_stream_transport: SetupDataStreamTransportCharacteristic,
-	/// Supported Data Stream Transport Configuration characteristic (required).
-	pub supported_data_stream_transport_configuration: SupportedDataStreamTransportConfigurationCharacteristic,
-	/// Version characteristic (required).
-	pub version: VersionCharacteristic,
-
+    /// Setup Data Stream Transport characteristic (required).
+    pub setup_data_stream_transport: SetupDataStreamTransportCharacteristic,
+    /// Supported Data Stream Transport Configuration characteristic (required).
+    pub supported_data_stream_transport_configuration:
+        SupportedDataStreamTransportConfigurationCharacteristic,
+    /// Version characteristic (required).
+    pub version: VersionCharacteristic,
 }
 
 impl DataStreamTransportManagementService {
@@ -42,10 +41,17 @@ impl DataStreamTransportManagementService {
         Self {
             id,
             hap_type: HapType::DataStreamTransportManagement,
-			setup_data_stream_transport: SetupDataStreamTransportCharacteristic::new(id + 1 + 0, accessory_id),
-			supported_data_stream_transport_configuration: SupportedDataStreamTransportConfigurationCharacteristic::new(id + 1 + 1, accessory_id),
-			version: VersionCharacteristic::new(id + 1 + 2, accessory_id),
-			..Default::default()
+            setup_data_stream_transport: SetupDataStreamTransportCharacteristic::new(
+                id + 1 + 0,
+                accessory_id,
+            ),
+            supported_data_stream_transport_configuration:
+                SupportedDataStreamTransportConfigurationCharacteristic::new(
+                    id + 1 + 1,
+                    accessory_id,
+                ),
+            version: VersionCharacteristic::new(id + 1 + 2, accessory_id),
+            ..Default::default()
         }
     }
 }
@@ -112,21 +118,21 @@ impl HapService for DataStreamTransportManagementService {
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.setup_data_stream_transport,
-			&self.supported_data_stream_transport_configuration,
-			&self.version,
-		];
-		characteristics
+            &self.setup_data_stream_transport,
+            &self.supported_data_stream_transport_configuration,
+            &self.version,
+        ];
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.setup_data_stream_transport,
-			&mut self.supported_data_stream_transport_configuration,
-			&mut self.version,
-		];
-		characteristics
+            &mut self.setup_data_stream_transport,
+            &mut self.supported_data_stream_transport_configuration,
+            &mut self.version,
+        ];
+        characteristics
     }
 }
 

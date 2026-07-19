@@ -3,12 +3,10 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
-        HapCharacteristic,
-		power_state::PowerStateCharacteristic,
-		name::NameCharacteristic,
-	},
+        name::NameCharacteristic, power_state::PowerStateCharacteristic, HapCharacteristic,
+    },
+    service::HapService,
     HapType,
 };
 
@@ -26,11 +24,11 @@ pub struct SwitchService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Power State characteristic (required).
-	pub power_state: PowerStateCharacteristic,
+    /// Power State characteristic (required).
+    pub power_state: PowerStateCharacteristic,
 
-	/// Name characteristic (optional).
-	pub name: Option<NameCharacteristic>,
+    /// Name characteristic (optional).
+    pub name: Option<NameCharacteristic>,
 }
 
 impl SwitchService {
@@ -39,9 +37,9 @@ impl SwitchService {
         Self {
             id,
             hap_type: HapType::Switch,
-			power_state: PowerStateCharacteristic::new(id + 1 + 0, accessory_id),
-			name: Some(NameCharacteristic::new(id + 1 + 0 + 1, accessory_id)),
-			..Default::default()
+            power_state: PowerStateCharacteristic::new(id + 1 + 0, accessory_id),
+            name: Some(NameCharacteristic::new(id + 1 + 0 + 1, accessory_id)),
+            ..Default::default()
         }
     }
 }
@@ -107,24 +105,20 @@ impl HapService for SwitchService {
 
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.power_state,
-		];
-		if let Some(c) = &self.name {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![&self.power_state];
+        if let Some(c) = &self.name {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.power_state,
-		];
-		if let Some(c) = &mut self.name {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![&mut self.power_state];
+        if let Some(c) = &mut self.name {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

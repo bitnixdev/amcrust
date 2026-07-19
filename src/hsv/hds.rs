@@ -55,12 +55,18 @@ impl HdsServer {
 
     /// Handles a SetupDataStreamTransport write: derives session keys and
     /// returns (listening port, accessory key salt).
-    pub async fn setup(&self, shared_secret: &[u8; 32], controller_salt: &[u8]) -> Result<(u16, [u8; 32]), String> {
+    pub async fn setup(
+        &self,
+        shared_secret: &[u8; 32],
+        controller_salt: &[u8],
+    ) -> Result<(u16, [u8; 32]), String> {
         let accessory_salt: [u8; 32] = rand::random();
         let keys = frame::derive_keys(shared_secret, controller_salt, &accessory_salt);
 
         let mut inner = self.inner.lock().await;
-        inner.prepared.retain(|p| p.created.elapsed() < PREPARED_SESSION_TTL);
+        inner
+            .prepared
+            .retain(|p| p.created.elapsed() < PREPARED_SESSION_TTL);
         inner.prepared.push(PreparedSession {
             keys,
             created: Instant::now(),
@@ -69,7 +75,9 @@ impl HdsServer {
         let port = match &inner.listener {
             Some(listener) => listener.port,
             None => {
-                let listener = TcpListener::bind("0.0.0.0:0").await.map_err(|e| e.to_string())?;
+                let listener = TcpListener::bind("0.0.0.0:0")
+                    .await
+                    .map_err(|e| e.to_string())?;
                 let port = listener.local_addr().map_err(|e| e.to_string())?.port();
                 info!("HDS listener bound on port {port}");
                 inner.listener = Some(Listener { port });
@@ -115,11 +123,17 @@ impl HdsServer {
             if let Some(frame_len) = complete {
                 let frame_bytes = &buf[..frame_len];
                 let mut inner = self.inner.lock().await;
-                inner.prepared.retain(|p| p.created.elapsed() < PREPARED_SESSION_TTL);
+                inner
+                    .prepared
+                    .retain(|p| p.created.elapsed() < PREPARED_SESSION_TTL);
                 let mut matched = None;
                 for (i, prepared) in inner.prepared.iter().enumerate() {
                     let mut counter = 0u64;
-                    if let Ok(payload) = frame::decrypt_frame(&prepared.keys.controller_to_accessory, &mut counter, frame_bytes) {
+                    if let Ok(payload) = frame::decrypt_frame(
+                        &prepared.keys.controller_to_accessory,
+                        &mut counter,
+                        frame_bytes,
+                    ) {
                         matched = Some((i, payload));
                         break;
                     }
@@ -134,10 +148,13 @@ impl HdsServer {
                 }
             }
 
-            let n = timeout(deadline.saturating_duration_since(Instant::now()), stream.read(&mut read_buf))
-                .await
-                .map_err(|_| "timed out waiting for first frame".to_string())
-                .and_then(|r| r.map_err(|e| e.to_string()))?;
+            let n = timeout(
+                deadline.saturating_duration_since(Instant::now()),
+                stream.read(&mut read_buf),
+            )
+            .await
+            .map_err(|_| "timed out waiting for first frame".to_string())
+            .and_then(|r| r.map_err(|e| e.to_string()))?;
             if n == 0 {
                 return Err("connection closed before identification".into());
             }
@@ -165,11 +182,18 @@ impl HdsServer {
         let mut read_half = read_half;
         loop {
             while let Some(frame_len) = frame::complete_frame_len(&buf)? {
-                let payload = frame::decrypt_frame(&conn.read_key, &mut conn.read_counter, &buf[..frame_len])?;
+                let payload = frame::decrypt_frame(
+                    &conn.read_key,
+                    &mut conn.read_counter,
+                    &buf[..frame_len],
+                )?;
                 buf.drain(..frame_len);
                 conn.handle_payload(payload).await?;
             }
-            let n = read_half.read(&mut read_buf).await.map_err(|e| e.to_string())?;
+            let n = read_half
+                .read(&mut read_buf)
+                .await
+                .map_err(|e| e.to_string())?;
             if n == 0 {
                 conn.stop_active_stream();
                 return Ok(());
@@ -198,7 +222,10 @@ impl FrameWriter {
         payload.extend_from_slice(&message_bytes);
 
         let frame = frame::encrypt_frame(&self.key, &mut self.counter, &payload)?;
-        self.write_half.write_all(&frame).await.map_err(|e| e.to_string())
+        self.write_half
+            .write_all(&frame)
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -238,7 +265,10 @@ impl Connection {
             .map_err(|e| e.to_string())?
             .unwrap_or(Value::Dict(vec![]));
 
-        let protocol = header.get("protocol").and_then(|v| v.as_str()).unwrap_or("");
+        let protocol = header
+            .get("protocol")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         debug!("HDS message: header {header:?}");
 
         if !self.hello_done {
@@ -322,24 +352,36 @@ impl Connection {
 
     async fn handle_open(&mut self, id: i64, message: &Value) -> Result<(), String> {
         let stream_type = message.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        let stream_id = message.get("streamId").and_then(|v| v.as_i64()).unwrap_or(0);
+        let stream_id = message
+            .get("streamId")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
 
         if stream_type != "ipcamera.recording" {
             warn!("dataSend open for unsupported type {stream_type:?}");
-            return self.respond(id, 6, Value::dict(vec![("status", Value::Int64(5))])).await;
+            return self
+                .respond(id, 6, Value::dict(vec![("status", Value::Int64(5))]))
+                .await;
         }
         if let Err(reason) = self.server.state.recording_allowed().await {
             warn!("dataSend open rejected (reason {reason})");
             return self
-                .respond(id, 6, Value::dict(vec![("status", Value::Int64(reason as i64))]))
+                .respond(
+                    id,
+                    6,
+                    Value::dict(vec![("status", Value::Int64(reason as i64))]),
+                )
                 .await;
         }
         if self.server.recording_busy.swap(true, Ordering::SeqCst) {
             warn!("dataSend open rejected: stream already running");
-            return self.respond(id, 6, Value::dict(vec![("status", Value::Int64(2))])).await;
+            return self
+                .respond(id, 6, Value::dict(vec![("status", Value::Int64(2))]))
+                .await;
         }
 
-        self.respond(id, 0, Value::dict(vec![("status", Value::Int64(0))])).await?;
+        self.respond(id, 0, Value::dict(vec![("status", Value::Int64(0))]))
+            .await?;
         info!("dataSend recording stream {stream_id} opened");
 
         let cancel = Arc::new(AtomicBool::new(false));
@@ -375,14 +417,30 @@ async fn pump_recording(
     let sequence = AtomicU64::new(1);
 
     // Sequence 1: media initialization.
-    send_data(&writer, stream_id, &init, "mediaInitialization", sequence.fetch_add(1, Ordering::SeqCst), false).await?;
+    send_data(
+        &writer,
+        stream_id,
+        &init,
+        "mediaInitialization",
+        sequence.fetch_add(1, Ordering::SeqCst),
+        false,
+    )
+    .await?;
 
     for fragment in prebuffer {
         if cancel.load(Ordering::SeqCst) {
             return Ok(());
         }
         let seq = sequence.fetch_add(1, Ordering::SeqCst);
-        send_data(&writer, stream_id, &fragment.data, "mediaFragment", seq, false).await?;
+        send_data(
+            &writer,
+            stream_id,
+            &fragment.data,
+            "mediaFragment",
+            seq,
+            false,
+        )
+        .await?;
     }
 
     // Live fragments until motion stops.
@@ -397,7 +455,15 @@ async fn pump_recording(
         };
         let motion_still_active = state.motion_active.load(Ordering::SeqCst);
         let seq = sequence.fetch_add(1, Ordering::SeqCst);
-        send_data(&writer, stream_id, &fragment.data, "mediaFragment", seq, !motion_still_active).await?;
+        send_data(
+            &writer,
+            stream_id,
+            &fragment.data,
+            "mediaFragment",
+            seq,
+            !motion_still_active,
+        )
+        .await?;
         if !motion_still_active {
             info!("recording stream {stream_id}: end of stream sent");
             return Ok(());
@@ -405,7 +471,11 @@ async fn pump_recording(
     }
 }
 
-async fn send_close(writer: &Arc<Mutex<FrameWriter>>, stream_id: i64, reason: i64) -> Result<(), String> {
+async fn send_close(
+    writer: &Arc<Mutex<FrameWriter>>,
+    stream_id: i64,
+    reason: i64,
+) -> Result<(), String> {
     let header = Value::dict(vec![
         ("protocol", Value::String("dataSend".into())),
         ("event", Value::String("close".into())),
@@ -426,7 +496,11 @@ async fn send_data(
     end_of_stream: bool,
 ) -> Result<(), String> {
     let total = data.len();
-    let chunks: Vec<&[u8]> = if data.is_empty() { vec![&[]] } else { data.chunks(MAX_CHUNK).collect() };
+    let chunks: Vec<&[u8]> = if data.is_empty() {
+        vec![&[]]
+    } else {
+        data.chunks(MAX_CHUNK).collect()
+    };
     let count = chunks.len();
 
     for (i, chunk) in chunks.into_iter().enumerate() {
@@ -442,7 +516,15 @@ async fn send_data(
         }
         let packet = Value::dict(vec![
             ("data", Value::Data(chunk.to_vec())),
-            ("metadata", Value::Dict(metadata.into_iter().map(|(k, v)| (k.to_string(), v)).collect())),
+            (
+                "metadata",
+                Value::Dict(
+                    metadata
+                        .into_iter()
+                        .map(|(k, v)| (k.to_string(), v))
+                        .collect(),
+                ),
+            ),
         ]);
 
         let mut message = vec![
@@ -457,7 +539,11 @@ async fn send_data(
             ("protocol", Value::String("dataSend".into())),
             ("event", Value::String("data".into())),
         ]);
-        writer.lock().await.send(&header, &Value::Dict(message)).await?;
+        writer
+            .lock()
+            .await
+            .send(&header, &Value::Dict(message))
+            .await?;
     }
     Ok(())
 }

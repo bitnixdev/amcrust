@@ -3,17 +3,13 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
-        HapCharacteristic,
-		current_media_state::CurrentMediaStateCharacteristic,
-		target_media_state::TargetMediaStateCharacteristic,
-		airplay_enable::AirplayEnableCharacteristic,
-		configured_name::ConfiguredNameCharacteristic,
-		mute::MuteCharacteristic,
-		name::NameCharacteristic,
-		volume::VolumeCharacteristic,
-	},
+        airplay_enable::AirplayEnableCharacteristic, configured_name::ConfiguredNameCharacteristic,
+        current_media_state::CurrentMediaStateCharacteristic, mute::MuteCharacteristic,
+        name::NameCharacteristic, target_media_state::TargetMediaStateCharacteristic,
+        volume::VolumeCharacteristic, HapCharacteristic,
+    },
+    service::HapService,
     HapType,
 };
 
@@ -31,21 +27,21 @@ pub struct SmartSpeakerService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Current Media State characteristic (required).
-	pub current_media_state: CurrentMediaStateCharacteristic,
-	/// Target Media State characteristic (required).
-	pub target_media_state: TargetMediaStateCharacteristic,
+    /// Current Media State characteristic (required).
+    pub current_media_state: CurrentMediaStateCharacteristic,
+    /// Target Media State characteristic (required).
+    pub target_media_state: TargetMediaStateCharacteristic,
 
-	/// AirPlay Enable characteristic (optional).
-	pub airplay_enable: Option<AirplayEnableCharacteristic>,
-	/// Configured Name characteristic (optional).
-	pub configured_name: Option<ConfiguredNameCharacteristic>,
-	/// Mute characteristic (optional).
-	pub mute: Option<MuteCharacteristic>,
-	/// Name characteristic (optional).
-	pub name: Option<NameCharacteristic>,
-	/// Volume characteristic (optional).
-	pub volume: Option<VolumeCharacteristic>,
+    /// AirPlay Enable characteristic (optional).
+    pub airplay_enable: Option<AirplayEnableCharacteristic>,
+    /// Configured Name characteristic (optional).
+    pub configured_name: Option<ConfiguredNameCharacteristic>,
+    /// Mute characteristic (optional).
+    pub mute: Option<MuteCharacteristic>,
+    /// Name characteristic (optional).
+    pub name: Option<NameCharacteristic>,
+    /// Volume characteristic (optional).
+    pub volume: Option<VolumeCharacteristic>,
 }
 
 impl SmartSpeakerService {
@@ -54,14 +50,20 @@ impl SmartSpeakerService {
         Self {
             id,
             hap_type: HapType::SmartSpeaker,
-			current_media_state: CurrentMediaStateCharacteristic::new(id + 1 + 0, accessory_id),
-			target_media_state: TargetMediaStateCharacteristic::new(id + 1 + 1, accessory_id),
-			airplay_enable: Some(AirplayEnableCharacteristic::new(id + 1 + 0 + 2, accessory_id)),
-			configured_name: Some(ConfiguredNameCharacteristic::new(id + 1 + 1 + 2, accessory_id)),
-			mute: Some(MuteCharacteristic::new(id + 1 + 2 + 2, accessory_id)),
-			name: Some(NameCharacteristic::new(id + 1 + 3 + 2, accessory_id)),
-			volume: Some(VolumeCharacteristic::new(id + 1 + 4 + 2, accessory_id)),
-			..Default::default()
+            current_media_state: CurrentMediaStateCharacteristic::new(id + 1 + 0, accessory_id),
+            target_media_state: TargetMediaStateCharacteristic::new(id + 1 + 1, accessory_id),
+            airplay_enable: Some(AirplayEnableCharacteristic::new(
+                id + 1 + 0 + 2,
+                accessory_id,
+            )),
+            configured_name: Some(ConfiguredNameCharacteristic::new(
+                id + 1 + 1 + 2,
+                accessory_id,
+            )),
+            mute: Some(MuteCharacteristic::new(id + 1 + 2 + 2, accessory_id)),
+            name: Some(NameCharacteristic::new(id + 1 + 3 + 2, accessory_id)),
+            volume: Some(VolumeCharacteristic::new(id + 1 + 4 + 2, accessory_id)),
+            ..Default::default()
         }
     }
 }
@@ -127,50 +129,46 @@ impl HapService for SmartSpeakerService {
 
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.current_media_state,
-			&self.target_media_state,
-		];
-		if let Some(c) = &self.airplay_enable {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.configured_name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.mute {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.volume {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&dyn HapCharacteristic> =
+            vec![&self.current_media_state, &self.target_media_state];
+        if let Some(c) = &self.airplay_enable {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.configured_name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.mute {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.volume {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.current_media_state,
-			&mut self.target_media_state,
-		];
-		if let Some(c) = &mut self.airplay_enable {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.configured_name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.mute {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.volume {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&mut dyn HapCharacteristic> =
+            vec![&mut self.current_media_state, &mut self.target_media_state];
+        if let Some(c) = &mut self.airplay_enable {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.configured_name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.mute {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.volume {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

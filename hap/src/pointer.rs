@@ -30,13 +30,16 @@ pub enum SnapshotResult {
 }
 
 /// Future returned by a snapshot handler.
-pub type SnapshotFuture =
-    futures::future::BoxFuture<'static, std::result::Result<SnapshotResult, Box<dyn std::error::Error + Send + Sync>>>;
+pub type SnapshotFuture = futures::future::BoxFuture<
+    'static,
+    std::result::Result<SnapshotResult, Box<dyn std::error::Error + Send + Sync>>,
+>;
 
 /// Handler invoked for HAP `POST /resource` image requests with the requested
 /// width, height, and the optional secure-video `reason` property
 /// (0 = periodic snapshot, 1 = event snapshot).
-pub type SnapshotHandler = Arc<Mutex<Option<Box<dyn FnMut(u32, u32, Option<i64>) -> SnapshotFuture + Send + Sync>>>>;
+pub type SnapshotHandler =
+    Arc<Mutex<Option<Box<dyn FnMut(u32, u32, Option<i64>) -> SnapshotFuture + Send + Sync>>>>;
 
 /// Slot holding the pair-verify shared secret of the session currently
 /// performing a characteristics write. Lets characteristic write handlers

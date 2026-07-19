@@ -6,22 +6,11 @@ use serde_json::json;
 
 use crate::{
     characteristic::{
-        AsyncCharacteristicCallbacks,
-        Characteristic,
-        CharacteristicCallbacks,
-        Format,
-        HapCharacteristic,
-        HapCharacteristicSetup,
-        HapType,
-        OnReadFn,
-        OnReadFuture,
-        OnUpdateFn,
-        OnUpdateFuture,
-        Perm,
-        Unit,
+        AsyncCharacteristicCallbacks, Characteristic, CharacteristicCallbacks, Format,
+        HapCharacteristic, HapCharacteristicSetup, HapType, OnReadFn, OnReadFuture, OnUpdateFn,
+        OnUpdateFuture, Perm, Unit,
     },
-    pointer,
-    Result,
+    pointer, Result,
 };
 
 // TODO - re-check MaximumDataLength
@@ -38,12 +27,10 @@ impl ThreadNodeCapabilitiesCharacteristic {
             accessory_id,
             hap_type: HapType::ThreadNodeCapabilities,
             format: Format::UInt16,
-            perms: vec![
-				Perm::PairedRead,
-            ],
-			max_value: Some(31),
-			min_value: Some(0),
-			step_value: Some(1),
+            perms: vec![Perm::PairedRead],
+            max_value: Some(31),
+            min_value: Some(0),
+            step_value: Some(1),
             ..Default::default()
         });
 
@@ -61,51 +48,81 @@ impl ThreadNodeCapabilitiesCharacteristic {
 
 #[async_trait]
 impl HapCharacteristic for ThreadNodeCapabilitiesCharacteristic {
-    fn get_id(&self) -> u64 { HapCharacteristic::get_id(&self.0) }
+    fn get_id(&self) -> u64 {
+        HapCharacteristic::get_id(&self.0)
+    }
 
-    fn set_id(&mut self, id: u64) { HapCharacteristic::set_id(&mut self.0, id) }
+    fn set_id(&mut self, id: u64) {
+        HapCharacteristic::set_id(&mut self.0, id)
+    }
 
-    fn get_type(&self) -> HapType { HapCharacteristic::get_type(&self.0) }
+    fn get_type(&self) -> HapType {
+        HapCharacteristic::get_type(&self.0)
+    }
 
-    fn set_type(&mut self, hap_type: HapType) { HapCharacteristic::set_type(&mut self.0, hap_type) }
+    fn set_type(&mut self, hap_type: HapType) {
+        HapCharacteristic::set_type(&mut self.0, hap_type)
+    }
 
-    fn get_format(&self) -> Format { HapCharacteristic::get_format(&self.0) }
+    fn get_format(&self) -> Format {
+        HapCharacteristic::get_format(&self.0)
+    }
 
-    fn set_format(&mut self, format: Format) { HapCharacteristic::set_format(&mut self.0, format) }
+    fn set_format(&mut self, format: Format) {
+        HapCharacteristic::set_format(&mut self.0, format)
+    }
 
-    fn get_perms(&self) -> Vec<Perm> { HapCharacteristic::get_perms(&self.0) }
+    fn get_perms(&self) -> Vec<Perm> {
+        HapCharacteristic::get_perms(&self.0)
+    }
 
-    fn set_perms(&mut self, perms: Vec<Perm>) { HapCharacteristic::set_perms(&mut self.0, perms) }
+    fn set_perms(&mut self, perms: Vec<Perm>) {
+        HapCharacteristic::set_perms(&mut self.0, perms)
+    }
 
-    fn get_description(&self) -> Option<String> { HapCharacteristic::get_description(&self.0) }
+    fn get_description(&self) -> Option<String> {
+        HapCharacteristic::get_description(&self.0)
+    }
 
     fn set_description(&mut self, description: Option<String>) {
         HapCharacteristic::set_description(&mut self.0, description)
     }
 
-    fn get_event_notifications(&self) -> Option<bool> { HapCharacteristic::get_event_notifications(&self.0) }
+    fn get_event_notifications(&self) -> Option<bool> {
+        HapCharacteristic::get_event_notifications(&self.0)
+    }
 
     fn set_event_notifications(&mut self, event_notifications: Option<bool>) {
         HapCharacteristic::set_event_notifications(&mut self.0, event_notifications)
     }
 
-    async fn get_value(&mut self) -> Result<serde_json::Value> { HapCharacteristic::get_value(&mut self.0).await }
+    async fn get_value(&mut self) -> Result<serde_json::Value> {
+        HapCharacteristic::get_value(&mut self.0).await
+    }
 
     async fn set_value(&mut self, value: serde_json::Value) -> Result<()> {
         HapCharacteristic::set_value(&mut self.0, value).await
     }
 
-    fn get_unit(&self) -> Option<Unit> { HapCharacteristic::get_unit(&self.0) }
+    fn get_unit(&self) -> Option<Unit> {
+        HapCharacteristic::get_unit(&self.0)
+    }
 
-    fn set_unit(&mut self, unit: Option<Unit>) { HapCharacteristic::set_unit(&mut self.0, unit) }
+    fn set_unit(&mut self, unit: Option<Unit>) {
+        HapCharacteristic::set_unit(&mut self.0, unit)
+    }
 
-    fn get_max_value(&self) -> Option<serde_json::Value> { HapCharacteristic::get_max_value(&self.0).map(|v| json!(v)) }
+    fn get_max_value(&self) -> Option<serde_json::Value> {
+        HapCharacteristic::get_max_value(&self.0).map(|v| json!(v))
+    }
 
     fn set_max_value(&mut self, max_value: Option<serde_json::Value>) -> Result<()> {
         HapCharacteristic::set_max_value(&mut self.0, max_value)
     }
 
-    fn get_min_value(&self) -> Option<serde_json::Value> { HapCharacteristic::get_min_value(&self.0).map(|v| json!(v)) }
+    fn get_min_value(&self) -> Option<serde_json::Value> {
+        HapCharacteristic::get_min_value(&self.0).map(|v| json!(v))
+    }
 
     fn set_min_value(&mut self, min_value: Option<serde_json::Value>) -> Result<()> {
         HapCharacteristic::set_min_value(&mut self.0, min_value)
@@ -119,17 +136,25 @@ impl HapCharacteristic for ThreadNodeCapabilitiesCharacteristic {
         HapCharacteristic::set_step_value(&mut self.0, step_value)
     }
 
-    fn get_max_len(&self) -> Option<u16> { HapCharacteristic::get_max_len(&self.0) }
+    fn get_max_len(&self) -> Option<u16> {
+        HapCharacteristic::get_max_len(&self.0)
+    }
 
-    fn set_max_len(&mut self, max_len: Option<u16>) { HapCharacteristic::set_max_len(&mut self.0, max_len) }
+    fn set_max_len(&mut self, max_len: Option<u16>) {
+        HapCharacteristic::set_max_len(&mut self.0, max_len)
+    }
 
-    fn get_max_data_len(&self) -> Option<u32> { HapCharacteristic::get_max_data_len(&self.0) }
+    fn get_max_data_len(&self) -> Option<u32> {
+        HapCharacteristic::get_max_data_len(&self.0)
+    }
 
     fn set_max_data_len(&mut self, max_data_len: Option<u32>) {
         HapCharacteristic::set_max_data_len(&mut self.0, max_data_len)
     }
 
-    fn get_valid_values(&self) -> Option<Vec<serde_json::Value>> { HapCharacteristic::get_valid_values(&self.0) }
+    fn get_valid_values(&self) -> Option<Vec<serde_json::Value>> {
+        HapCharacteristic::get_valid_values(&self.0)
+    }
 
     fn set_valid_values(&mut self, valid_values: Option<Vec<serde_json::Value>>) -> Result<()> {
         HapCharacteristic::set_valid_values(&mut self.0, valid_values)
@@ -139,17 +164,28 @@ impl HapCharacteristic for ThreadNodeCapabilitiesCharacteristic {
         HapCharacteristic::get_valid_values_range(&self.0)
     }
 
-    fn set_valid_values_range(&mut self, valid_values_range: Option<[serde_json::Value; 2]>) -> Result<()> {
+    fn set_valid_values_range(
+        &mut self,
+        valid_values_range: Option<[serde_json::Value; 2]>,
+    ) -> Result<()> {
         HapCharacteristic::set_valid_values_range(&mut self.0, valid_values_range)
     }
 
-    fn get_ttl(&self) -> Option<u64> { HapCharacteristic::get_ttl(&self.0) }
+    fn get_ttl(&self) -> Option<u64> {
+        HapCharacteristic::get_ttl(&self.0)
+    }
 
-    fn set_ttl(&mut self, ttl: Option<u64>) { HapCharacteristic::set_ttl(&mut self.0, ttl) }
+    fn set_ttl(&mut self, ttl: Option<u64>) {
+        HapCharacteristic::set_ttl(&mut self.0, ttl)
+    }
 
-    fn get_pid(&self) -> Option<u64> { HapCharacteristic::get_pid(&self.0) }
+    fn get_pid(&self) -> Option<u64> {
+        HapCharacteristic::get_pid(&self.0)
+    }
 
-    fn set_pid(&mut self, pid: Option<u64>) { HapCharacteristic::set_pid(&mut self.0, pid) }
+    fn set_pid(&mut self, pid: Option<u64>) {
+        HapCharacteristic::set_pid(&mut self.0, pid)
+    }
 }
 
 impl HapCharacteristicSetup for ThreadNodeCapabilitiesCharacteristic {
@@ -159,9 +195,13 @@ impl HapCharacteristicSetup for ThreadNodeCapabilitiesCharacteristic {
 }
 
 impl CharacteristicCallbacks<u16> for ThreadNodeCapabilitiesCharacteristic {
-    fn on_read(&mut self, f: Option<impl OnReadFn<u16>>) { CharacteristicCallbacks::on_read(&mut self.0, f) }
+    fn on_read(&mut self, f: Option<impl OnReadFn<u16>>) {
+        CharacteristicCallbacks::on_read(&mut self.0, f)
+    }
 
-    fn on_update(&mut self, f: Option<impl OnUpdateFn<u16>>) { CharacteristicCallbacks::on_update(&mut self.0, f) }
+    fn on_update(&mut self, f: Option<impl OnUpdateFn<u16>>) {
+        CharacteristicCallbacks::on_update(&mut self.0, f)
+    }
 }
 
 impl AsyncCharacteristicCallbacks<u16> for ThreadNodeCapabilitiesCharacteristic {

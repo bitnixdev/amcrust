@@ -3,13 +3,10 @@ use serde::ser::{Serialize, SerializeStruct, Serializer};
 use crate::{
     accessory::{AccessoryInformation, HapAccessory},
     service::{
-        accessory_information::AccessoryInformationService,
-        lock_management::LockManagementService,
-        lock_mechanism::LockMechanismService,
-        HapService,
+        accessory_information::AccessoryInformationService, lock_management::LockManagementService,
+        lock_mechanism::LockMechanismService, HapService,
     },
-    HapType,
-    Result,
+    HapType, Result,
 };
 
 /// Lock Accessory.
@@ -35,7 +32,8 @@ impl LockAccessory {
         let mut lock_mechanism = LockMechanismService::new(lock_mechanism_id, id);
         lock_mechanism.set_primary(true);
 
-        let lock_management_id = 3 + lock_mechanism_id + lock_mechanism.get_characteristics().len() as u64;
+        let lock_management_id =
+            3 + lock_mechanism_id + lock_mechanism.get_characteristics().len() as u64;
         let mut lock_management = LockManagementService::new(lock_management_id, id);
         lock_management.set_primary(true);
 
@@ -52,9 +50,13 @@ impl LockAccessory {
 }
 
 impl HapAccessory for LockAccessory {
-    fn get_id(&self) -> u64 { self.id }
+    fn get_id(&self) -> u64 {
+        self.id
+    }
 
-    fn set_id(&mut self, id: u64) { self.id = id; }
+    fn set_id(&mut self, id: u64) {
+        self.id = id;
+    }
 
     fn get_service(&self, hap_type: HapType) -> Option<&dyn HapService> {
         for service in self.get_services() {
@@ -75,7 +77,11 @@ impl HapAccessory for LockAccessory {
     }
 
     fn get_services(&self) -> Vec<&dyn HapService> {
-        vec![&self.accessory_information, &self.lock_mechanism, &self.lock_management]
+        vec![
+            &self.accessory_information,
+            &self.lock_mechanism,
+            &self.lock_management,
+        ]
     }
 
     fn get_mut_services(&mut self) -> Vec<&mut dyn HapService> {

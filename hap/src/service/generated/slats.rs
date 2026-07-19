@@ -3,16 +3,13 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
-        HapCharacteristic,
-		current_slat_state::CurrentSlatStateCharacteristic,
-		slat_type::SlatTypeCharacteristic,
-		name::NameCharacteristic,
-		swing_mode::SwingModeCharacteristic,
-		current_tilt_angle::CurrentTiltAngleCharacteristic,
-		target_tilt_angle::TargetTiltAngleCharacteristic,
-	},
+        current_slat_state::CurrentSlatStateCharacteristic,
+        current_tilt_angle::CurrentTiltAngleCharacteristic, name::NameCharacteristic,
+        slat_type::SlatTypeCharacteristic, swing_mode::SwingModeCharacteristic,
+        target_tilt_angle::TargetTiltAngleCharacteristic, HapCharacteristic,
+    },
+    service::HapService,
     HapType,
 };
 
@@ -30,19 +27,19 @@ pub struct SlatsService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Current Slat State characteristic (required).
-	pub current_slat_state: CurrentSlatStateCharacteristic,
-	/// Slat Type characteristic (required).
-	pub slat_type: SlatTypeCharacteristic,
+    /// Current Slat State characteristic (required).
+    pub current_slat_state: CurrentSlatStateCharacteristic,
+    /// Slat Type characteristic (required).
+    pub slat_type: SlatTypeCharacteristic,
 
-	/// Name characteristic (optional).
-	pub name: Option<NameCharacteristic>,
-	/// Swing Mode characteristic (optional).
-	pub swing_mode: Option<SwingModeCharacteristic>,
-	/// Current Tilt Angle characteristic (optional).
-	pub current_tilt_angle: Option<CurrentTiltAngleCharacteristic>,
-	/// Target Tilt Angle characteristic (optional).
-	pub target_tilt_angle: Option<TargetTiltAngleCharacteristic>,
+    /// Name characteristic (optional).
+    pub name: Option<NameCharacteristic>,
+    /// Swing Mode characteristic (optional).
+    pub swing_mode: Option<SwingModeCharacteristic>,
+    /// Current Tilt Angle characteristic (optional).
+    pub current_tilt_angle: Option<CurrentTiltAngleCharacteristic>,
+    /// Target Tilt Angle characteristic (optional).
+    pub target_tilt_angle: Option<TargetTiltAngleCharacteristic>,
 }
 
 impl SlatsService {
@@ -51,13 +48,19 @@ impl SlatsService {
         Self {
             id,
             hap_type: HapType::Slats,
-			current_slat_state: CurrentSlatStateCharacteristic::new(id + 1 + 0, accessory_id),
-			slat_type: SlatTypeCharacteristic::new(id + 1 + 1, accessory_id),
-			name: Some(NameCharacteristic::new(id + 1 + 0 + 2, accessory_id)),
-			swing_mode: Some(SwingModeCharacteristic::new(id + 1 + 1 + 2, accessory_id)),
-			current_tilt_angle: Some(CurrentTiltAngleCharacteristic::new(id + 1 + 2 + 2, accessory_id)),
-			target_tilt_angle: Some(TargetTiltAngleCharacteristic::new(id + 1 + 3 + 2, accessory_id)),
-			..Default::default()
+            current_slat_state: CurrentSlatStateCharacteristic::new(id + 1 + 0, accessory_id),
+            slat_type: SlatTypeCharacteristic::new(id + 1 + 1, accessory_id),
+            name: Some(NameCharacteristic::new(id + 1 + 0 + 2, accessory_id)),
+            swing_mode: Some(SwingModeCharacteristic::new(id + 1 + 1 + 2, accessory_id)),
+            current_tilt_angle: Some(CurrentTiltAngleCharacteristic::new(
+                id + 1 + 2 + 2,
+                accessory_id,
+            )),
+            target_tilt_angle: Some(TargetTiltAngleCharacteristic::new(
+                id + 1 + 3 + 2,
+                accessory_id,
+            )),
+            ..Default::default()
         }
     }
 }
@@ -123,44 +126,40 @@ impl HapService for SlatsService {
 
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.current_slat_state,
-			&self.slat_type,
-		];
-		if let Some(c) = &self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.swing_mode {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.current_tilt_angle {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.target_tilt_angle {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&dyn HapCharacteristic> =
+            vec![&self.current_slat_state, &self.slat_type];
+        if let Some(c) = &self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.swing_mode {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.current_tilt_angle {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.target_tilt_angle {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.current_slat_state,
-			&mut self.slat_type,
-		];
-		if let Some(c) = &mut self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.swing_mode {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.current_tilt_angle {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.target_tilt_angle {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&mut dyn HapCharacteristic> =
+            vec![&mut self.current_slat_state, &mut self.slat_type];
+        if let Some(c) = &mut self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.swing_mode {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.current_tilt_angle {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.target_tilt_angle {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

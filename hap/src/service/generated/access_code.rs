@@ -3,13 +3,12 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
-        HapCharacteristic,
-		access_code_control_point::AccessCodeControlPointCharacteristic,
-		access_code_supported_configuration::AccessCodeSupportedConfigurationCharacteristic,
-		configuration_state::ConfigurationStateCharacteristic,
-	},
+        access_code_control_point::AccessCodeControlPointCharacteristic,
+        access_code_supported_configuration::AccessCodeSupportedConfigurationCharacteristic,
+        configuration_state::ConfigurationStateCharacteristic, HapCharacteristic,
+    },
+    service::HapService,
     HapType,
 };
 
@@ -27,13 +26,12 @@ pub struct AccessCodeService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Access Code Control Point characteristic (required).
-	pub access_code_control_point: AccessCodeControlPointCharacteristic,
-	/// Access Code Supported Configuration characteristic (required).
-	pub access_code_supported_configuration: AccessCodeSupportedConfigurationCharacteristic,
-	/// Configuration State characteristic (required).
-	pub configuration_state: ConfigurationStateCharacteristic,
-
+    /// Access Code Control Point characteristic (required).
+    pub access_code_control_point: AccessCodeControlPointCharacteristic,
+    /// Access Code Supported Configuration characteristic (required).
+    pub access_code_supported_configuration: AccessCodeSupportedConfigurationCharacteristic,
+    /// Configuration State characteristic (required).
+    pub configuration_state: ConfigurationStateCharacteristic,
 }
 
 impl AccessCodeService {
@@ -42,10 +40,14 @@ impl AccessCodeService {
         Self {
             id,
             hap_type: HapType::AccessCode,
-			access_code_control_point: AccessCodeControlPointCharacteristic::new(id + 1 + 0, accessory_id),
-			access_code_supported_configuration: AccessCodeSupportedConfigurationCharacteristic::new(id + 1 + 1, accessory_id),
-			configuration_state: ConfigurationStateCharacteristic::new(id + 1 + 2, accessory_id),
-			..Default::default()
+            access_code_control_point: AccessCodeControlPointCharacteristic::new(
+                id + 1 + 0,
+                accessory_id,
+            ),
+            access_code_supported_configuration:
+                AccessCodeSupportedConfigurationCharacteristic::new(id + 1 + 1, accessory_id),
+            configuration_state: ConfigurationStateCharacteristic::new(id + 1 + 2, accessory_id),
+            ..Default::default()
         }
     }
 }
@@ -112,21 +114,21 @@ impl HapService for AccessCodeService {
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.access_code_control_point,
-			&self.access_code_supported_configuration,
-			&self.configuration_state,
-		];
-		characteristics
+            &self.access_code_control_point,
+            &self.access_code_supported_configuration,
+            &self.configuration_state,
+        ];
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.access_code_control_point,
-			&mut self.access_code_supported_configuration,
-			&mut self.configuration_state,
-		];
-		characteristics
+            &mut self.access_code_control_point,
+            &mut self.access_code_supported_configuration,
+            &mut self.configuration_state,
+        ];
+        characteristics
     }
 }
 

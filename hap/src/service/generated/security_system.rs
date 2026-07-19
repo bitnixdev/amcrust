@@ -3,16 +3,15 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
+        name::NameCharacteristic,
+        security_system_alarm_type::SecuritySystemAlarmTypeCharacteristic,
+        security_system_current_state::SecuritySystemCurrentStateCharacteristic,
+        security_system_target_state::SecuritySystemTargetStateCharacteristic,
+        status_fault::StatusFaultCharacteristic, status_tampered::StatusTamperedCharacteristic,
         HapCharacteristic,
-		security_system_current_state::SecuritySystemCurrentStateCharacteristic,
-		security_system_target_state::SecuritySystemTargetStateCharacteristic,
-		name::NameCharacteristic,
-		security_system_alarm_type::SecuritySystemAlarmTypeCharacteristic,
-		status_fault::StatusFaultCharacteristic,
-		status_tampered::StatusTamperedCharacteristic,
-	},
+    },
+    service::HapService,
     HapType,
 };
 
@@ -30,19 +29,19 @@ pub struct SecuritySystemService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Security System Current State characteristic (required).
-	pub security_system_current_state: SecuritySystemCurrentStateCharacteristic,
-	/// Security System Target State characteristic (required).
-	pub security_system_target_state: SecuritySystemTargetStateCharacteristic,
+    /// Security System Current State characteristic (required).
+    pub security_system_current_state: SecuritySystemCurrentStateCharacteristic,
+    /// Security System Target State characteristic (required).
+    pub security_system_target_state: SecuritySystemTargetStateCharacteristic,
 
-	/// Name characteristic (optional).
-	pub name: Option<NameCharacteristic>,
-	/// Security System Alarm Type characteristic (optional).
-	pub security_system_alarm_type: Option<SecuritySystemAlarmTypeCharacteristic>,
-	/// Status Fault characteristic (optional).
-	pub status_fault: Option<StatusFaultCharacteristic>,
-	/// Status Tampered characteristic (optional).
-	pub status_tampered: Option<StatusTamperedCharacteristic>,
+    /// Name characteristic (optional).
+    pub name: Option<NameCharacteristic>,
+    /// Security System Alarm Type characteristic (optional).
+    pub security_system_alarm_type: Option<SecuritySystemAlarmTypeCharacteristic>,
+    /// Status Fault characteristic (optional).
+    pub status_fault: Option<StatusFaultCharacteristic>,
+    /// Status Tampered characteristic (optional).
+    pub status_tampered: Option<StatusTamperedCharacteristic>,
 }
 
 impl SecuritySystemService {
@@ -51,13 +50,25 @@ impl SecuritySystemService {
         Self {
             id,
             hap_type: HapType::SecuritySystem,
-			security_system_current_state: SecuritySystemCurrentStateCharacteristic::new(id + 1 + 0, accessory_id),
-			security_system_target_state: SecuritySystemTargetStateCharacteristic::new(id + 1 + 1, accessory_id),
-			name: Some(NameCharacteristic::new(id + 1 + 0 + 2, accessory_id)),
-			security_system_alarm_type: Some(SecuritySystemAlarmTypeCharacteristic::new(id + 1 + 1 + 2, accessory_id)),
-			status_fault: Some(StatusFaultCharacteristic::new(id + 1 + 2 + 2, accessory_id)),
-			status_tampered: Some(StatusTamperedCharacteristic::new(id + 1 + 3 + 2, accessory_id)),
-			..Default::default()
+            security_system_current_state: SecuritySystemCurrentStateCharacteristic::new(
+                id + 1 + 0,
+                accessory_id,
+            ),
+            security_system_target_state: SecuritySystemTargetStateCharacteristic::new(
+                id + 1 + 1,
+                accessory_id,
+            ),
+            name: Some(NameCharacteristic::new(id + 1 + 0 + 2, accessory_id)),
+            security_system_alarm_type: Some(SecuritySystemAlarmTypeCharacteristic::new(
+                id + 1 + 1 + 2,
+                accessory_id,
+            )),
+            status_fault: Some(StatusFaultCharacteristic::new(id + 1 + 2 + 2, accessory_id)),
+            status_tampered: Some(StatusTamperedCharacteristic::new(
+                id + 1 + 3 + 2,
+                accessory_id,
+            )),
+            ..Default::default()
         }
     }
 }
@@ -124,43 +135,43 @@ impl HapService for SecuritySystemService {
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.security_system_current_state,
-			&self.security_system_target_state,
-		];
-		if let Some(c) = &self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.security_system_alarm_type {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.status_fault {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.status_tampered {
-		    characteristics.push(c);
-		}
-		characteristics
+            &self.security_system_current_state,
+            &self.security_system_target_state,
+        ];
+        if let Some(c) = &self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.security_system_alarm_type {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.status_fault {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.status_tampered {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.security_system_current_state,
-			&mut self.security_system_target_state,
-		];
-		if let Some(c) = &mut self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.security_system_alarm_type {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.status_fault {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.status_tampered {
-		    characteristics.push(c);
-		}
-		characteristics
+            &mut self.security_system_current_state,
+            &mut self.security_system_target_state,
+        ];
+        if let Some(c) = &mut self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.security_system_alarm_type {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.status_fault {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.status_tampered {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

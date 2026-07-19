@@ -3,12 +3,11 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
-        HapCharacteristic,
-		supported_target_configuration::SupportedTargetConfigurationCharacteristic,
-		target_list_configuration::TargetListConfigurationCharacteristic,
-	},
+        supported_target_configuration::SupportedTargetConfigurationCharacteristic,
+        target_list_configuration::TargetListConfigurationCharacteristic, HapCharacteristic,
+    },
+    service::HapService,
     HapType,
 };
 
@@ -26,11 +25,10 @@ pub struct TargetControlManagementService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Supported Target Configuration characteristic (required).
-	pub supported_target_configuration: SupportedTargetConfigurationCharacteristic,
-	/// Target List Configuration characteristic (required).
-	pub target_list_configuration: TargetListConfigurationCharacteristic,
-
+    /// Supported Target Configuration characteristic (required).
+    pub supported_target_configuration: SupportedTargetConfigurationCharacteristic,
+    /// Target List Configuration characteristic (required).
+    pub target_list_configuration: TargetListConfigurationCharacteristic,
 }
 
 impl TargetControlManagementService {
@@ -39,9 +37,15 @@ impl TargetControlManagementService {
         Self {
             id,
             hap_type: HapType::TargetControlManagement,
-			supported_target_configuration: SupportedTargetConfigurationCharacteristic::new(id + 1 + 0, accessory_id),
-			target_list_configuration: TargetListConfigurationCharacteristic::new(id + 1 + 1, accessory_id),
-			..Default::default()
+            supported_target_configuration: SupportedTargetConfigurationCharacteristic::new(
+                id + 1 + 0,
+                accessory_id,
+            ),
+            target_list_configuration: TargetListConfigurationCharacteristic::new(
+                id + 1 + 1,
+                accessory_id,
+            ),
+            ..Default::default()
         }
     }
 }
@@ -108,19 +112,19 @@ impl HapService for TargetControlManagementService {
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.supported_target_configuration,
-			&self.target_list_configuration,
-		];
-		characteristics
+            &self.supported_target_configuration,
+            &self.target_list_configuration,
+        ];
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.supported_target_configuration,
-			&mut self.target_list_configuration,
-		];
-		characteristics
+            &mut self.supported_target_configuration,
+            &mut self.target_list_configuration,
+        ];
+        characteristics
     }
 }
 

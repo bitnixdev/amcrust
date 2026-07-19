@@ -139,17 +139,19 @@ impl Value {
                 let mut vec: Vec<u8> = Vec::new();
                 vec.write_u16::<LittleEndian>(val).unwrap();
                 (Type::RetryDelay as u8, vec)
-            },
+            }
             Value::Certificate(certificate) => (Type::Certificate as u8, certificate),
             Value::Signature(signature) => (Type::Signature as u8, signature),
-            Value::Permissions(permissions) => (Type::Permissions as u8, vec![permissions.as_byte()]),
+            Value::Permissions(permissions) => {
+                (Type::Permissions as u8, vec![permissions.as_byte()])
+            }
             Value::FragmentData(fragment_data) => (Type::FragmentData as u8, fragment_data),
             Value::FragmentLast(fragment_last) => (Type::FragmentLast as u8, fragment_last),
             Value::Flags(flags) => {
                 let mut vec: Vec<u8> = Vec::new();
                 vec.write_u32::<LittleEndian>(flags).unwrap();
                 (Type::Flags as u8, vec)
-            },
+            }
             Value::Separator => (Type::Separator as u8, vec![0x00]),
         }
     }
@@ -172,7 +174,9 @@ pub enum Error {
     Unknown = 0x01,
     #[error("Setup code or signature verification failed.")]
     Authentication = 0x02,
-    #[error("Client must look at the retry delay TLV item and wait that many seconds before retrying.")]
+    #[error(
+        "Client must look at the retry delay TLV item and wait that many seconds before retrying."
+    )]
     Backoff = 0x03,
     #[error("Server cannot accept any more pairings.")]
     MaxPeers = 0x04,
@@ -257,7 +261,9 @@ impl From<ed25519_dalek::SignatureError> for Error {
 pub type Container = Vec<Value>;
 
 impl Encodable for Container {
-    fn encode(self) -> Vec<u8> { encode(self.into_iter().map(|v| v.as_tlv()).collect::<Vec<_>>()) }
+    fn encode(self) -> Vec<u8> {
+        encode(self.into_iter().map(|v| v.as_tlv()).collect::<Vec<_>>())
+    }
 }
 
 pub struct ErrorContainer {
@@ -266,9 +272,13 @@ pub struct ErrorContainer {
 }
 
 impl ErrorContainer {
-    pub fn new(step: u8, error: Error) -> ErrorContainer { ErrorContainer { step, error } }
+    pub fn new(step: u8, error: Error) -> ErrorContainer {
+        ErrorContainer { step, error }
+    }
 }
 
 impl Encodable for ErrorContainer {
-    fn encode(self) -> Vec<u8> { vec![Value::State(self.step), Value::Error(self.error)].encode() }
+    fn encode(self) -> Vec<u8> {
+        vec![Value::State(self.step), Value::Error(self.error)].encode()
+    }
 }

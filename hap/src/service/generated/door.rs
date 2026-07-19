@@ -3,16 +3,13 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
+        current_position::CurrentPositionCharacteristic, hold_position::HoldPositionCharacteristic,
+        name::NameCharacteristic, obstruction_detected::ObstructionDetectedCharacteristic,
+        position_state::PositionStateCharacteristic, target_position::TargetPositionCharacteristic,
         HapCharacteristic,
-		current_position::CurrentPositionCharacteristic,
-		position_state::PositionStateCharacteristic,
-		target_position::TargetPositionCharacteristic,
-		name::NameCharacteristic,
-		obstruction_detected::ObstructionDetectedCharacteristic,
-		hold_position::HoldPositionCharacteristic,
-	},
+    },
+    service::HapService,
     HapType,
 };
 
@@ -30,19 +27,19 @@ pub struct DoorService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Current Position characteristic (required).
-	pub current_position: CurrentPositionCharacteristic,
-	/// Position State characteristic (required).
-	pub position_state: PositionStateCharacteristic,
-	/// Target Position characteristic (required).
-	pub target_position: TargetPositionCharacteristic,
+    /// Current Position characteristic (required).
+    pub current_position: CurrentPositionCharacteristic,
+    /// Position State characteristic (required).
+    pub position_state: PositionStateCharacteristic,
+    /// Target Position characteristic (required).
+    pub target_position: TargetPositionCharacteristic,
 
-	/// Name characteristic (optional).
-	pub name: Option<NameCharacteristic>,
-	/// Obstruction Detected characteristic (optional).
-	pub obstruction_detected: Option<ObstructionDetectedCharacteristic>,
-	/// Hold Position characteristic (optional).
-	pub hold_position: Option<HoldPositionCharacteristic>,
+    /// Name characteristic (optional).
+    pub name: Option<NameCharacteristic>,
+    /// Obstruction Detected characteristic (optional).
+    pub obstruction_detected: Option<ObstructionDetectedCharacteristic>,
+    /// Hold Position characteristic (optional).
+    pub hold_position: Option<HoldPositionCharacteristic>,
 }
 
 impl DoorService {
@@ -51,13 +48,19 @@ impl DoorService {
         Self {
             id,
             hap_type: HapType::Door,
-			current_position: CurrentPositionCharacteristic::new(id + 1 + 0, accessory_id),
-			position_state: PositionStateCharacteristic::new(id + 1 + 1, accessory_id),
-			target_position: TargetPositionCharacteristic::new(id + 1 + 2, accessory_id),
-			name: Some(NameCharacteristic::new(id + 1 + 0 + 3, accessory_id)),
-			obstruction_detected: Some(ObstructionDetectedCharacteristic::new(id + 1 + 1 + 3, accessory_id)),
-			hold_position: Some(HoldPositionCharacteristic::new(id + 1 + 2 + 3, accessory_id)),
-			..Default::default()
+            current_position: CurrentPositionCharacteristic::new(id + 1 + 0, accessory_id),
+            position_state: PositionStateCharacteristic::new(id + 1 + 1, accessory_id),
+            target_position: TargetPositionCharacteristic::new(id + 1 + 2, accessory_id),
+            name: Some(NameCharacteristic::new(id + 1 + 0 + 3, accessory_id)),
+            obstruction_detected: Some(ObstructionDetectedCharacteristic::new(
+                id + 1 + 1 + 3,
+                accessory_id,
+            )),
+            hold_position: Some(HoldPositionCharacteristic::new(
+                id + 1 + 2 + 3,
+                accessory_id,
+            )),
+            ..Default::default()
         }
     }
 }
@@ -124,39 +127,39 @@ impl HapService for DoorService {
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.current_position,
-			&self.position_state,
-			&self.target_position,
-		];
-		if let Some(c) = &self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.obstruction_detected {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.hold_position {
-		    characteristics.push(c);
-		}
-		characteristics
+            &self.current_position,
+            &self.position_state,
+            &self.target_position,
+        ];
+        if let Some(c) = &self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.obstruction_detected {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.hold_position {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.current_position,
-			&mut self.position_state,
-			&mut self.target_position,
-		];
-		if let Some(c) = &mut self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.obstruction_detected {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.hold_position {
-		    characteristics.push(c);
-		}
-		characteristics
+            &mut self.current_position,
+            &mut self.position_state,
+            &mut self.target_position,
+        ];
+        if let Some(c) = &mut self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.obstruction_detected {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.hold_position {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

@@ -3,14 +3,11 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
-        HapCharacteristic,
-		active::ActiveCharacteristic,
-		active_identifier::ActiveIdentifierCharacteristic,
-		button_event::ButtonEventCharacteristic,
-		name::NameCharacteristic,
-	},
+        active::ActiveCharacteristic, active_identifier::ActiveIdentifierCharacteristic,
+        button_event::ButtonEventCharacteristic, name::NameCharacteristic, HapCharacteristic,
+    },
+    service::HapService,
     HapType,
 };
 
@@ -28,15 +25,15 @@ pub struct TargetControlService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Active characteristic (required).
-	pub active: ActiveCharacteristic,
-	/// Active Identifier characteristic (required).
-	pub active_identifier: ActiveIdentifierCharacteristic,
-	/// Button Event characteristic (required).
-	pub button_event: ButtonEventCharacteristic,
+    /// Active characteristic (required).
+    pub active: ActiveCharacteristic,
+    /// Active Identifier characteristic (required).
+    pub active_identifier: ActiveIdentifierCharacteristic,
+    /// Button Event characteristic (required).
+    pub button_event: ButtonEventCharacteristic,
 
-	/// Name characteristic (optional).
-	pub name: Option<NameCharacteristic>,
+    /// Name characteristic (optional).
+    pub name: Option<NameCharacteristic>,
 }
 
 impl TargetControlService {
@@ -45,11 +42,11 @@ impl TargetControlService {
         Self {
             id,
             hap_type: HapType::TargetControl,
-			active: ActiveCharacteristic::new(id + 1 + 0, accessory_id),
-			active_identifier: ActiveIdentifierCharacteristic::new(id + 1 + 1, accessory_id),
-			button_event: ButtonEventCharacteristic::new(id + 1 + 2, accessory_id),
-			name: Some(NameCharacteristic::new(id + 1 + 0 + 3, accessory_id)),
-			..Default::default()
+            active: ActiveCharacteristic::new(id + 1 + 0, accessory_id),
+            active_identifier: ActiveIdentifierCharacteristic::new(id + 1 + 1, accessory_id),
+            button_event: ButtonEventCharacteristic::new(id + 1 + 2, accessory_id),
+            name: Some(NameCharacteristic::new(id + 1 + 0 + 3, accessory_id)),
+            ..Default::default()
         }
     }
 }
@@ -115,28 +112,25 @@ impl HapService for TargetControlService {
 
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.active,
-			&self.active_identifier,
-			&self.button_event,
-		];
-		if let Some(c) = &self.name {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&dyn HapCharacteristic> =
+            vec![&self.active, &self.active_identifier, &self.button_event];
+        if let Some(c) = &self.name {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.active,
-			&mut self.active_identifier,
-			&mut self.button_event,
-		];
-		if let Some(c) = &mut self.name {
-		    characteristics.push(c);
-		}
-		characteristics
+            &mut self.active,
+            &mut self.active_identifier,
+            &mut self.button_event,
+        ];
+        if let Some(c) = &mut self.name {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

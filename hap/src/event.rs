@@ -17,7 +17,9 @@ pub struct EventEmitter {
 }
 
 impl EventEmitter {
-    pub fn new() -> EventEmitter { EventEmitter { listeners: vec![] } }
+    pub fn new() -> EventEmitter {
+        EventEmitter { listeners: vec![] }
+    }
 
     pub fn add_listener(&mut self, listener: Box<dyn (Fn(&Event) -> BoxFuture<()>) + Send + Sync>) {
         self.listeners.push(listener);

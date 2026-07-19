@@ -3,12 +3,8 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
+    characteristic::{mute::MuteCharacteristic, volume::VolumeCharacteristic, HapCharacteristic},
     service::HapService,
-    characteristic::{
-        HapCharacteristic,
-		mute::MuteCharacteristic,
-		volume::VolumeCharacteristic,
-	},
     HapType,
 };
 
@@ -26,11 +22,11 @@ pub struct MicrophoneService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Mute characteristic (required).
-	pub mute: MuteCharacteristic,
+    /// Mute characteristic (required).
+    pub mute: MuteCharacteristic,
 
-	/// Volume characteristic (optional).
-	pub volume: Option<VolumeCharacteristic>,
+    /// Volume characteristic (optional).
+    pub volume: Option<VolumeCharacteristic>,
 }
 
 impl MicrophoneService {
@@ -39,9 +35,9 @@ impl MicrophoneService {
         Self {
             id,
             hap_type: HapType::Microphone,
-			mute: MuteCharacteristic::new(id + 1 + 0, accessory_id),
-			volume: Some(VolumeCharacteristic::new(id + 1 + 0 + 1, accessory_id)),
-			..Default::default()
+            mute: MuteCharacteristic::new(id + 1 + 0, accessory_id),
+            volume: Some(VolumeCharacteristic::new(id + 1 + 0 + 1, accessory_id)),
+            ..Default::default()
         }
     }
 }
@@ -107,24 +103,20 @@ impl HapService for MicrophoneService {
 
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.mute,
-		];
-		if let Some(c) = &self.volume {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![&self.mute];
+        if let Some(c) = &self.volume {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.mute,
-		];
-		if let Some(c) = &mut self.volume {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![&mut self.mute];
+        if let Some(c) = &mut self.volume {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

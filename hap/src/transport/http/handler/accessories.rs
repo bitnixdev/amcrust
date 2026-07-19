@@ -11,7 +11,9 @@ use crate::{
 pub struct Accessories;
 
 impl Accessories {
-    pub fn new() -> Accessories { Accessories }
+    pub fn new() -> Accessories {
+        Accessories
+    }
 }
 
 impl JsonHandlerExt for Accessories {

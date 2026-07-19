@@ -23,7 +23,12 @@ pub enum Value {
 
 impl Value {
     pub fn dict(entries: Vec<(&str, Value)>) -> Value {
-        Value::Dict(entries.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+        Value::Dict(
+            entries
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        )
     }
 
     pub fn get<'a>(&'a self, key: &str) -> Option<&'a Value> {
@@ -222,7 +227,10 @@ impl<'a> Decoder<'a> {
 
     fn take(&mut self, n: usize) -> DecodeResult<&'a [u8]> {
         if self.remaining() < n {
-            return Err(DecodeError(format!("need {n} bytes, have {}", self.remaining())));
+            return Err(DecodeError(format!(
+                "need {n} bytes, have {}",
+                self.remaining()
+            )));
         }
         let s = &self.buf[self.pos..self.pos + n];
         self.pos += n;
@@ -286,11 +294,10 @@ impl<'a> Decoder<'a> {
             }
             0xA0..=0xCF => {
                 let index = (tag - 0xA0) as usize;
-                let v = self
-                    .tracked
-                    .get(index)
-                    .cloned()
-                    .ok_or_else(|| DecodeError(format!("back-reference {index} out of range")))?;
+                let v =
+                    self.tracked.get(index).cloned().ok_or_else(|| {
+                        DecodeError(format!("back-reference {index} out of range"))
+                    })?;
                 // Back-referenced values are not re-tracked.
                 return Ok(Some(v));
             }
@@ -298,7 +305,10 @@ impl<'a> Decoder<'a> {
                 let count = (tag - 0xD0) as usize;
                 let mut items = Vec::with_capacity(count);
                 for _ in 0..count {
-                    items.push(self.decode()?.ok_or_else(|| DecodeError("terminator in array".into()))?);
+                    items.push(
+                        self.decode()?
+                            .ok_or_else(|| DecodeError("terminator in array".into()))?,
+                    );
                 }
                 return Ok(Some(Value::Array(items)));
             }
@@ -314,7 +324,9 @@ impl<'a> Decoder<'a> {
                 let mut entries = Vec::with_capacity(count);
                 for _ in 0..count {
                     let key = self.decode_key()?;
-                    let val = self.decode()?.ok_or_else(|| DecodeError("terminator in dict".into()))?;
+                    let val = self
+                        .decode()?
+                        .ok_or_else(|| DecodeError("terminator in dict".into()))?;
                     entries.push((key, val));
                 }
                 return Ok(Some(Value::Dict(entries)));
@@ -325,10 +337,14 @@ impl<'a> Decoder<'a> {
                     match self.decode()? {
                         None => break,
                         Some(Value::String(key)) => {
-                            let val = self.decode()?.ok_or_else(|| DecodeError("terminator in dict".into()))?;
+                            let val = self
+                                .decode()?
+                                .ok_or_else(|| DecodeError("terminator in dict".into()))?;
                             entries.push((key, val));
                         }
-                        Some(other) => return Err(DecodeError(format!("non-string dict key: {other:?}"))),
+                        Some(other) => {
+                            return Err(DecodeError(format!("non-string dict key: {other:?}")));
+                        }
                     }
                 }
                 return Ok(Some(Value::Dict(entries)));
@@ -343,7 +359,9 @@ impl<'a> Decoder<'a> {
     fn decode_key(&mut self) -> DecodeResult<String> {
         match self.decode()? {
             Some(Value::String(s)) => Ok(s),
-            other => Err(DecodeError(format!("expected string dict key, got {other:?}"))),
+            other => Err(DecodeError(format!(
+                "expected string dict key, got {other:?}"
+            ))),
         }
     }
 
@@ -373,7 +391,12 @@ mod tests {
         match v {
             Value::Int64(i) => Value::Int(i),
             Value::Array(items) => Value::Array(items.into_iter().map(normalize).collect()),
-            Value::Dict(entries) => Value::Dict(entries.into_iter().map(|(k, v)| (k, normalize(v))).collect()),
+            Value::Dict(entries) => Value::Dict(
+                entries
+                    .into_iter()
+                    .map(|(k, v)| (k, normalize(v)))
+                    .collect(),
+            ),
             other => other,
         }
     }
@@ -426,7 +449,10 @@ mod tests {
         assert_eq!(encode_to_vec(&Value::Int(38)), vec![0x2E]);
         assert_eq!(encode_to_vec(&Value::Int(-1)), vec![0x07]);
         assert_eq!(encode_to_vec(&Value::Bool(true)), vec![0x01]);
-        assert_eq!(encode_to_vec(&Value::String("hi".into())), vec![0x42, b'h', b'i']);
+        assert_eq!(
+            encode_to_vec(&Value::String("hi".into())),
+            vec![0x42, b'h', b'i']
+        );
     }
 
     #[test]
@@ -435,8 +461,14 @@ mod tests {
         let mut buf = encode_to_vec(&Value::String("dataSend".into()));
         buf.push(0xA0);
         let mut dec = Decoder::new(&buf);
-        assert_eq!(dec.decode().unwrap().unwrap(), Value::String("dataSend".into()));
-        assert_eq!(dec.decode().unwrap().unwrap(), Value::String("dataSend".into()));
+        assert_eq!(
+            dec.decode().unwrap().unwrap(),
+            Value::String("dataSend".into())
+        );
+        assert_eq!(
+            dec.decode().unwrap().unwrap(),
+            Value::String("dataSend".into())
+        );
     }
 
     #[test]

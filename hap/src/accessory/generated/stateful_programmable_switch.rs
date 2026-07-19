@@ -3,10 +3,12 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-	accessory::{AccessoryInformation, HapAccessory},
-	service::{HapService, accessory_information::AccessoryInformationService, stateful_programmable_switch::StatefulProgrammableSwitchService},
-	HapType,
-	Result,
+    accessory::{AccessoryInformation, HapAccessory},
+    service::{
+        accessory_information::AccessoryInformationService,
+        stateful_programmable_switch::StatefulProgrammableSwitchService, HapService,
+    },
+    HapType, Result,
 };
 
 /// Stateful Programmable Switch accessory.
@@ -25,8 +27,10 @@ impl StatefulProgrammableSwitchAccessory {
     /// Creates a new Stateful Programmable Switch accessory.
     pub fn new(id: u64, information: AccessoryInformation) -> Result<Self> {
         let accessory_information = information.to_service(1, id)?;
-        let stateful_programmable_switch_id = accessory_information.get_characteristics().len() as u64;
-        let mut stateful_programmable_switch = StatefulProgrammableSwitchService::new(1 + stateful_programmable_switch_id + 1, id);
+        let stateful_programmable_switch_id =
+            accessory_information.get_characteristics().len() as u64;
+        let mut stateful_programmable_switch =
+            StatefulProgrammableSwitchService::new(1 + stateful_programmable_switch_id + 1, id);
         stateful_programmable_switch.set_primary(true);
 
         Ok(Self {

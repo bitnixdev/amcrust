@@ -3,12 +3,11 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
-        HapCharacteristic,
-		asset_update_readiness::AssetUpdateReadinessCharacteristic,
-		supported_asset_types::SupportedAssetTypesCharacteristic,
-	},
+        asset_update_readiness::AssetUpdateReadinessCharacteristic,
+        supported_asset_types::SupportedAssetTypesCharacteristic, HapCharacteristic,
+    },
+    service::HapService,
     HapType,
 };
 
@@ -26,11 +25,10 @@ pub struct AssetUpdateService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Asset Update Readiness characteristic (required).
-	pub asset_update_readiness: AssetUpdateReadinessCharacteristic,
-	/// Supported Asset Types characteristic (required).
-	pub supported_asset_types: SupportedAssetTypesCharacteristic,
-
+    /// Asset Update Readiness characteristic (required).
+    pub asset_update_readiness: AssetUpdateReadinessCharacteristic,
+    /// Supported Asset Types characteristic (required).
+    pub supported_asset_types: SupportedAssetTypesCharacteristic,
 }
 
 impl AssetUpdateService {
@@ -39,9 +37,12 @@ impl AssetUpdateService {
         Self {
             id,
             hap_type: HapType::AssetUpdate,
-			asset_update_readiness: AssetUpdateReadinessCharacteristic::new(id + 1 + 0, accessory_id),
-			supported_asset_types: SupportedAssetTypesCharacteristic::new(id + 1 + 1, accessory_id),
-			..Default::default()
+            asset_update_readiness: AssetUpdateReadinessCharacteristic::new(
+                id + 1 + 0,
+                accessory_id,
+            ),
+            supported_asset_types: SupportedAssetTypesCharacteristic::new(id + 1 + 1, accessory_id),
+            ..Default::default()
         }
     }
 }
@@ -107,20 +108,18 @@ impl HapService for AssetUpdateService {
 
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.asset_update_readiness,
-			&self.supported_asset_types,
-		];
-		characteristics
+        let mut characteristics: Vec<&dyn HapCharacteristic> =
+            vec![&self.asset_update_readiness, &self.supported_asset_types];
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.asset_update_readiness,
-			&mut self.supported_asset_types,
-		];
-		characteristics
+            &mut self.asset_update_readiness,
+            &mut self.supported_asset_types,
+        ];
+        characteristics
     }
 }
 

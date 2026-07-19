@@ -3,21 +3,19 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
+        active::ActiveCharacteristic,
+        current_humidifier_dehumidifier_state::CurrentHumidifierDehumidifierStateCharacteristic,
+        current_relative_humidity::CurrentRelativeHumidityCharacteristic,
+        current_water_level::CurrentWaterLevelCharacteristic,
+        lock_physical_controls::LockPhysicalControlsCharacteristic, name::NameCharacteristic,
+        relative_humidity_dehumidifier_threshold::RelativeHumidityDehumidifierThresholdCharacteristic,
+        relative_humidity_humidifier_threshold::RelativeHumidityHumidifierThresholdCharacteristic,
+        rotation_speed::RotationSpeedCharacteristic, swing_mode::SwingModeCharacteristic,
+        target_humidifier_dehumidifier_state::TargetHumidifierDehumidifierStateCharacteristic,
         HapCharacteristic,
-		active::ActiveCharacteristic,
-		current_humidifier_dehumidifier_state::CurrentHumidifierDehumidifierStateCharacteristic,
-		target_humidifier_dehumidifier_state::TargetHumidifierDehumidifierStateCharacteristic,
-		current_relative_humidity::CurrentRelativeHumidityCharacteristic,
-		lock_physical_controls::LockPhysicalControlsCharacteristic,
-		name::NameCharacteristic,
-		relative_humidity_dehumidifier_threshold::RelativeHumidityDehumidifierThresholdCharacteristic,
-		relative_humidity_humidifier_threshold::RelativeHumidityHumidifierThresholdCharacteristic,
-		rotation_speed::RotationSpeedCharacteristic,
-		swing_mode::SwingModeCharacteristic,
-		current_water_level::CurrentWaterLevelCharacteristic,
-	},
+    },
+    service::HapService,
     HapType,
 };
 
@@ -35,29 +33,31 @@ pub struct HumidifierDehumidifierService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Active characteristic (required).
-	pub active: ActiveCharacteristic,
-	/// Current Humidifier-Dehumidifier State characteristic (required).
-	pub current_humidifier_dehumidifier_state: CurrentHumidifierDehumidifierStateCharacteristic,
-	/// Target Humidifier-Dehumidifier State characteristic (required).
-	pub target_humidifier_dehumidifier_state: TargetHumidifierDehumidifierStateCharacteristic,
-	/// Current Relative Humidity characteristic (required).
-	pub current_relative_humidity: CurrentRelativeHumidityCharacteristic,
+    /// Active characteristic (required).
+    pub active: ActiveCharacteristic,
+    /// Current Humidifier-Dehumidifier State characteristic (required).
+    pub current_humidifier_dehumidifier_state: CurrentHumidifierDehumidifierStateCharacteristic,
+    /// Target Humidifier-Dehumidifier State characteristic (required).
+    pub target_humidifier_dehumidifier_state: TargetHumidifierDehumidifierStateCharacteristic,
+    /// Current Relative Humidity characteristic (required).
+    pub current_relative_humidity: CurrentRelativeHumidityCharacteristic,
 
-	/// Lock Physical Controls characteristic (optional).
-	pub lock_physical_controls: Option<LockPhysicalControlsCharacteristic>,
-	/// Name characteristic (optional).
-	pub name: Option<NameCharacteristic>,
-	/// Relative Humidity Dehumidifier Threshold characteristic (optional).
-	pub relative_humidity_dehumidifier_threshold: Option<RelativeHumidityDehumidifierThresholdCharacteristic>,
-	/// Relative Humidity Humidifier Threshold characteristic (optional).
-	pub relative_humidity_humidifier_threshold: Option<RelativeHumidityHumidifierThresholdCharacteristic>,
-	/// Rotation Speed characteristic (optional).
-	pub rotation_speed: Option<RotationSpeedCharacteristic>,
-	/// Swing Mode characteristic (optional).
-	pub swing_mode: Option<SwingModeCharacteristic>,
-	/// Current Water Level characteristic (optional).
-	pub current_water_level: Option<CurrentWaterLevelCharacteristic>,
+    /// Lock Physical Controls characteristic (optional).
+    pub lock_physical_controls: Option<LockPhysicalControlsCharacteristic>,
+    /// Name characteristic (optional).
+    pub name: Option<NameCharacteristic>,
+    /// Relative Humidity Dehumidifier Threshold characteristic (optional).
+    pub relative_humidity_dehumidifier_threshold:
+        Option<RelativeHumidityDehumidifierThresholdCharacteristic>,
+    /// Relative Humidity Humidifier Threshold characteristic (optional).
+    pub relative_humidity_humidifier_threshold:
+        Option<RelativeHumidityHumidifierThresholdCharacteristic>,
+    /// Rotation Speed characteristic (optional).
+    pub rotation_speed: Option<RotationSpeedCharacteristic>,
+    /// Swing Mode characteristic (optional).
+    pub swing_mode: Option<SwingModeCharacteristic>,
+    /// Current Water Level characteristic (optional).
+    pub current_water_level: Option<CurrentWaterLevelCharacteristic>,
 }
 
 impl HumidifierDehumidifierService {
@@ -66,18 +66,42 @@ impl HumidifierDehumidifierService {
         Self {
             id,
             hap_type: HapType::HumidifierDehumidifier,
-			active: ActiveCharacteristic::new(id + 1 + 0, accessory_id),
-			current_humidifier_dehumidifier_state: CurrentHumidifierDehumidifierStateCharacteristic::new(id + 1 + 1, accessory_id),
-			target_humidifier_dehumidifier_state: TargetHumidifierDehumidifierStateCharacteristic::new(id + 1 + 2, accessory_id),
-			current_relative_humidity: CurrentRelativeHumidityCharacteristic::new(id + 1 + 3, accessory_id),
-			lock_physical_controls: Some(LockPhysicalControlsCharacteristic::new(id + 1 + 0 + 4, accessory_id)),
-			name: Some(NameCharacteristic::new(id + 1 + 1 + 4, accessory_id)),
-			relative_humidity_dehumidifier_threshold: Some(RelativeHumidityDehumidifierThresholdCharacteristic::new(id + 1 + 2 + 4, accessory_id)),
-			relative_humidity_humidifier_threshold: Some(RelativeHumidityHumidifierThresholdCharacteristic::new(id + 1 + 3 + 4, accessory_id)),
-			rotation_speed: Some(RotationSpeedCharacteristic::new(id + 1 + 4 + 4, accessory_id)),
-			swing_mode: Some(SwingModeCharacteristic::new(id + 1 + 5 + 4, accessory_id)),
-			current_water_level: Some(CurrentWaterLevelCharacteristic::new(id + 1 + 6 + 4, accessory_id)),
-			..Default::default()
+            active: ActiveCharacteristic::new(id + 1 + 0, accessory_id),
+            current_humidifier_dehumidifier_state:
+                CurrentHumidifierDehumidifierStateCharacteristic::new(id + 1 + 1, accessory_id),
+            target_humidifier_dehumidifier_state:
+                TargetHumidifierDehumidifierStateCharacteristic::new(id + 1 + 2, accessory_id),
+            current_relative_humidity: CurrentRelativeHumidityCharacteristic::new(
+                id + 1 + 3,
+                accessory_id,
+            ),
+            lock_physical_controls: Some(LockPhysicalControlsCharacteristic::new(
+                id + 1 + 0 + 4,
+                accessory_id,
+            )),
+            name: Some(NameCharacteristic::new(id + 1 + 1 + 4, accessory_id)),
+            relative_humidity_dehumidifier_threshold: Some(
+                RelativeHumidityDehumidifierThresholdCharacteristic::new(
+                    id + 1 + 2 + 4,
+                    accessory_id,
+                ),
+            ),
+            relative_humidity_humidifier_threshold: Some(
+                RelativeHumidityHumidifierThresholdCharacteristic::new(
+                    id + 1 + 3 + 4,
+                    accessory_id,
+                ),
+            ),
+            rotation_speed: Some(RotationSpeedCharacteristic::new(
+                id + 1 + 4 + 4,
+                accessory_id,
+            )),
+            swing_mode: Some(SwingModeCharacteristic::new(id + 1 + 5 + 4, accessory_id)),
+            current_water_level: Some(CurrentWaterLevelCharacteristic::new(
+                id + 1 + 6 + 4,
+                accessory_id,
+            )),
+            ..Default::default()
         }
     }
 }
@@ -144,65 +168,65 @@ impl HapService for HumidifierDehumidifierService {
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.active,
-			&self.current_humidifier_dehumidifier_state,
-			&self.target_humidifier_dehumidifier_state,
-			&self.current_relative_humidity,
-		];
-		if let Some(c) = &self.lock_physical_controls {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.relative_humidity_dehumidifier_threshold {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.relative_humidity_humidifier_threshold {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.rotation_speed {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.swing_mode {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.current_water_level {
-		    characteristics.push(c);
-		}
-		characteristics
+            &self.active,
+            &self.current_humidifier_dehumidifier_state,
+            &self.target_humidifier_dehumidifier_state,
+            &self.current_relative_humidity,
+        ];
+        if let Some(c) = &self.lock_physical_controls {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.relative_humidity_dehumidifier_threshold {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.relative_humidity_humidifier_threshold {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.rotation_speed {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.swing_mode {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.current_water_level {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.active,
-			&mut self.current_humidifier_dehumidifier_state,
-			&mut self.target_humidifier_dehumidifier_state,
-			&mut self.current_relative_humidity,
-		];
-		if let Some(c) = &mut self.lock_physical_controls {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.relative_humidity_dehumidifier_threshold {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.relative_humidity_humidifier_threshold {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.rotation_speed {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.swing_mode {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.current_water_level {
-		    characteristics.push(c);
-		}
-		characteristics
+            &mut self.active,
+            &mut self.current_humidifier_dehumidifier_state,
+            &mut self.target_humidifier_dehumidifier_state,
+            &mut self.current_relative_humidity,
+        ];
+        if let Some(c) = &mut self.lock_physical_controls {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.relative_humidity_dehumidifier_threshold {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.relative_humidity_humidifier_threshold {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.rotation_speed {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.swing_mode {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.current_water_level {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

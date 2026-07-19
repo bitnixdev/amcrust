@@ -43,8 +43,11 @@ impl FileStorage {
     /// Creates a new [`FileStorage`](FileStorage) with the current directory as storage path.
     pub async fn current_dir() -> Result<Self> {
         let current_dir =
-            spawn_blocking(move || -> Result<PathBuf> { env::current_dir().map_err(Error::from) }).await??;
-        let current_dir = current_dir.to_str().expect("couldn't stringify current_dir");
+            spawn_blocking(move || -> Result<PathBuf> { env::current_dir().map_err(Error::from) })
+                .await??;
+        let current_dir = current_dir
+            .to_str()
+            .expect("couldn't stringify current_dir");
         let data_path = format!("{}/data", current_dir);
 
         Self::new(&data_path).await
@@ -129,7 +132,10 @@ impl FileStorage {
             for entry in fs::read_dir(dir)? {
                 let entry = entry?;
                 let path = entry.path();
-                let file_name = path.into_os_string().into_string().or(Err(Error::Storage))?;
+                let file_name = path
+                    .into_os_string()
+                    .into_string()
+                    .or(Err(Error::Storage))?;
                 file_names.push(file_name);
             }
 
@@ -157,7 +163,9 @@ impl Storage for FileStorage {
         self.write_bytes("config.json", config_bytes).await
     }
 
-    async fn delete_config(&mut self) -> Result<()> { self.remove_file("config.json").await }
+    async fn delete_config(&mut self) -> Result<()> {
+        self.remove_file("config.json").await
+    }
 
     async fn load_aid_cache(&self) -> Result<Vec<u64>> {
         let aid_cache_bytes = self.read_bytes("aid_cache.json").await?;
@@ -173,7 +181,9 @@ impl Storage for FileStorage {
         self.write_bytes("aid_cache.json", aid_cache_bytes).await
     }
 
-    async fn delete_aid_cache(&mut self) -> Result<()> { self.remove_file("aid_cache.json").await }
+    async fn delete_aid_cache(&mut self) -> Result<()> {
+        self.remove_file("aid_cache.json").await
+    }
 
     async fn load_pairing(&self, id: &Uuid) -> Result<Pairing> {
         let key = format!("pairings/{}.json", id.to_string());
@@ -225,10 +235,13 @@ impl Storage for FileStorage {
     }
 
     async fn save_bytes(&mut self, key: &str, value: &[u8]) -> Result<()> {
-        self.write_bytes(&format!("misc/{}", key), value.to_vec()).await
+        self.write_bytes(&format!("misc/{}", key), value.to_vec())
+            .await
     }
 
-    async fn delete_bytes(&mut self, key: &str) -> Result<()> { self.remove_file(&format!("misc/{}", key)).await }
+    async fn delete_bytes(&mut self, key: &str) -> Result<()> {
+        self.remove_file(&format!("misc/{}", key)).await
+    }
 }
 
 #[cfg(test)]
@@ -319,8 +332,8 @@ mod tests {
             id: Uuid::parse_str("bc158b86-cabf-432d-aee4-422ef0e3f1d5").unwrap(),
             permissions: Permissions::Admin,
             public_key: [
-                215, 90, 152, 1, 130, 177, 10, 183, 213, 75, 254, 211, 201, 100, 7, 58, 14, 225, 114, 243, 218, 166,
-                35, 37, 175, 2, 26, 104, 247, 7, 81, 26,
+                215, 90, 152, 1, 130, 177, 10, 183, 213, 75, 254, 211, 201, 100, 7, 58, 14, 225,
+                114, 243, 218, 166, 35, 37, 175, 2, 26, 104, 247, 7, 81, 26,
             ],
         };
 

@@ -55,7 +55,11 @@ pub struct HsvState {
 }
 
 impl HsvState {
-    pub fn load(data_dir: &str, camera: AmcrestClient, motion_active: Arc<AtomicBool>) -> Arc<Self> {
+    pub fn load(
+        data_dir: &str,
+        camera: AmcrestClient,
+        motion_active: Arc<AtomicBool>,
+    ) -> Arc<Self> {
         let path = PathBuf::from(data_dir).join("hsv.json");
         let persisted: PersistedState = std::fs::read(&path)
             .ok()
@@ -133,9 +137,20 @@ impl HsvState {
             config.audio_sample_rate,
         );
 
+        // The camera may reset its RTSP encoder when these settings change.
+        // Stop ffmpeg first, then restart it against the configured stream.
+        self.recorder.stop().await;
         self.apply_camera_settings(&config).await;
         *self.selected.lock().await = Some(config);
         self.persist().await;
+        self.sync_recorder().await;
+    }
+
+    /// Restores persisted camera encoder settings before resuming recording.
+    pub async fn resume_recorder(self: &Arc<Self>) {
+        if let Some(config) = self.selected.lock().await.clone() {
+            self.apply_camera_settings(&config).await;
+        }
         self.sync_recorder().await;
     }
 
@@ -184,7 +199,8 @@ impl HsvState {
 
     /// Starts or stops the recording pipeline according to the current state.
     pub async fn sync_recorder(self: &Arc<Self>) {
-        let active = self.recording_active.load(Ordering::SeqCst) && self.homekit_active.load(Ordering::SeqCst);
+        let active = self.recording_active.load(Ordering::SeqCst)
+            && self.homekit_active.load(Ordering::SeqCst);
         let selected = self.selected.lock().await.clone();
         match (active, selected) {
             (true, Some(config)) => {
@@ -206,7 +222,9 @@ impl HsvState {
         if self.selected.lock().await.is_none() {
             return Err(9); // INVALID_CONFIGURATION
         }
-        if !self.recording_active.load(Ordering::SeqCst) || !self.homekit_active.load(Ordering::SeqCst) {
+        if !self.recording_active.load(Ordering::SeqCst)
+            || !self.homekit_active.load(Ordering::SeqCst)
+        {
             return Err(1); // NOT_ALLOWED
         }
         Ok(())
@@ -234,12 +252,27 @@ pub fn supported_camera_recording_config() -> Vec<u8> {
 
 /// Recording resolutions we can configure the camera's main stream to.
 /// (fps 15: the 4K sensors on these cameras top out at 15 fps.)
-const RECORDING_ATTRIBUTES: &[(u16, u16, u8)] = &[(1280, 720, 15), (1920, 1080, 15), (2688, 1520, 15), (3840, 2160, 15)];
+const RECORDING_ATTRIBUTES: &[(u16, u16, u8)] = &[
+    (1280, 720, 15),
+    (1920, 1080, 15),
+    (2688, 1520, 15),
+    (3840, 2160, 15),
+];
 
 pub fn supported_video_recording_config() -> Vec<u8> {
     let mut params = tlv8::Writer::new();
-    params.u8(0x01, 0x00).delimiter().u8(0x01, 0x01).delimiter().u8(0x01, 0x02); // profiles
-    params.u8(0x02, 0x00).delimiter().u8(0x02, 0x01).delimiter().u8(0x02, 0x02); // levels
+    params
+        .u8(0x01, 0x00)
+        .delimiter()
+        .u8(0x01, 0x01)
+        .delimiter()
+        .u8(0x01, 0x02); // profiles
+    params
+        .u8(0x02, 0x00)
+        .delimiter()
+        .u8(0x02, 0x01)
+        .delimiter()
+        .u8(0x02, 0x02); // levels
     let params = params.build();
 
     let mut codec_config = tlv8::Writer::new();
@@ -249,7 +282,11 @@ pub fn supported_video_recording_config() -> Vec<u8> {
         if i > 0 {
             codec_config.delimiter();
         }
-        let attr = tlv8::Writer::new().u16(0x01, w).u16(0x02, h).u8(0x03, fps).build();
+        let attr = tlv8::Writer::new()
+            .u16(0x01, w)
+            .u16(0x02, h)
+            .u8(0x03, fps)
+            .build();
         codec_config.bytes(0x03, &attr);
     }
     let codec_config = codec_config.build();
@@ -330,7 +367,10 @@ mod tests {
     fn selected_config_roundtrip() {
         // Build a selected config the way a controller would.
         let container_params = tlv8::Writer::new().u32(0x01, 4000).build();
-        let container = tlv8::Writer::new().u8(0x01, 0).bytes(0x02, &container_params).build();
+        let container = tlv8::Writer::new()
+            .u8(0x01, 0)
+            .bytes(0x02, &container_params)
+            .build();
         let general = tlv8::Writer::new()
             .u32(0x01, 8000)
             .bytes(0x02, &1u64.to_le_bytes())
@@ -343,15 +383,27 @@ mod tests {
             .u32(0x03, 2000)
             .u32(0x04, 4000)
             .build();
-        let vattrs = tlv8::Writer::new().u16(0x01, 1920).u16(0x02, 1080).u8(0x03, 15).build();
+        let vattrs = tlv8::Writer::new()
+            .u16(0x01, 1920)
+            .u16(0x02, 1080)
+            .u8(0x03, 15)
+            .build();
         let video = tlv8::Writer::new()
             .u8(0x01, 0)
             .bytes(0x02, &vparams)
             .bytes(0x03, &vattrs)
             .build();
 
-        let aparams = tlv8::Writer::new().u8(0x01, 1).u8(0x02, 0).u8(0x03, 5).u32(0x04, 96).build();
-        let acodec = tlv8::Writer::new().u8(0x01, 0).bytes(0x02, &aparams).build();
+        let aparams = tlv8::Writer::new()
+            .u8(0x01, 1)
+            .u8(0x02, 0)
+            .u8(0x03, 5)
+            .u32(0x04, 96)
+            .build();
+        let acodec = tlv8::Writer::new()
+            .u8(0x01, 0)
+            .bytes(0x02, &aparams)
+            .build();
         let audio = tlv8::Writer::new().bytes(0x01, &acodec).build();
 
         let raw = tlv8::Writer::new()

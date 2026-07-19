@@ -3,14 +3,11 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
-        HapCharacteristic,
-		ping::PingCharacteristic,
-		activity_interval::ActivityIntervalCharacteristic,
-		heart_beat::HeartBeatCharacteristic,
-		sleep_interval::SleepIntervalCharacteristic,
-	},
+        activity_interval::ActivityIntervalCharacteristic, heart_beat::HeartBeatCharacteristic,
+        ping::PingCharacteristic, sleep_interval::SleepIntervalCharacteristic, HapCharacteristic,
+    },
+    service::HapService,
     HapType,
 };
 
@@ -28,15 +25,15 @@ pub struct AccessoryRuntimeInformationService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Ping characteristic (required).
-	pub ping: PingCharacteristic,
+    /// Ping characteristic (required).
+    pub ping: PingCharacteristic,
 
-	/// Activity Interval characteristic (optional).
-	pub activity_interval: Option<ActivityIntervalCharacteristic>,
-	/// Heart Beat characteristic (optional).
-	pub heart_beat: Option<HeartBeatCharacteristic>,
-	/// Sleep Interval characteristic (optional).
-	pub sleep_interval: Option<SleepIntervalCharacteristic>,
+    /// Activity Interval characteristic (optional).
+    pub activity_interval: Option<ActivityIntervalCharacteristic>,
+    /// Heart Beat characteristic (optional).
+    pub heart_beat: Option<HeartBeatCharacteristic>,
+    /// Sleep Interval characteristic (optional).
+    pub sleep_interval: Option<SleepIntervalCharacteristic>,
 }
 
 impl AccessoryRuntimeInformationService {
@@ -45,11 +42,17 @@ impl AccessoryRuntimeInformationService {
         Self {
             id,
             hap_type: HapType::AccessoryRuntimeInformation,
-			ping: PingCharacteristic::new(id + 1 + 0, accessory_id),
-			activity_interval: Some(ActivityIntervalCharacteristic::new(id + 1 + 0 + 1, accessory_id)),
-			heart_beat: Some(HeartBeatCharacteristic::new(id + 1 + 1 + 1, accessory_id)),
-			sleep_interval: Some(SleepIntervalCharacteristic::new(id + 1 + 2 + 1, accessory_id)),
-			..Default::default()
+            ping: PingCharacteristic::new(id + 1 + 0, accessory_id),
+            activity_interval: Some(ActivityIntervalCharacteristic::new(
+                id + 1 + 0 + 1,
+                accessory_id,
+            )),
+            heart_beat: Some(HeartBeatCharacteristic::new(id + 1 + 1 + 1, accessory_id)),
+            sleep_interval: Some(SleepIntervalCharacteristic::new(
+                id + 1 + 2 + 1,
+                accessory_id,
+            )),
+            ..Default::default()
         }
     }
 }
@@ -115,36 +118,32 @@ impl HapService for AccessoryRuntimeInformationService {
 
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.ping,
-		];
-		if let Some(c) = &self.activity_interval {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.heart_beat {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.sleep_interval {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![&self.ping];
+        if let Some(c) = &self.activity_interval {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.heart_beat {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.sleep_interval {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.ping,
-		];
-		if let Some(c) = &mut self.activity_interval {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.heart_beat {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.sleep_interval {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![&mut self.ping];
+        if let Some(c) = &mut self.activity_interval {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.heart_beat {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.sleep_interval {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

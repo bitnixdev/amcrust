@@ -3,13 +3,12 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
-        HapCharacteristic,
-		cloud_relay_control_point::CloudRelayControlPointCharacteristic,
-		cloud_relay_current_state::CloudRelayCurrentStateCharacteristic,
-		cloud_relay_enable_status::CloudRelayEnableStatusCharacteristic,
-	},
+        cloud_relay_control_point::CloudRelayControlPointCharacteristic,
+        cloud_relay_current_state::CloudRelayCurrentStateCharacteristic,
+        cloud_relay_enable_status::CloudRelayEnableStatusCharacteristic, HapCharacteristic,
+    },
+    service::HapService,
     HapType,
 };
 
@@ -27,13 +26,12 @@ pub struct CloudRelayService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Cloud Relay Control Point characteristic (required).
-	pub cloud_relay_control_point: CloudRelayControlPointCharacteristic,
-	/// Cloud Relay Current State characteristic (required).
-	pub cloud_relay_current_state: CloudRelayCurrentStateCharacteristic,
-	/// Cloud Relay Enable Status characteristic (required).
-	pub cloud_relay_enable_status: CloudRelayEnableStatusCharacteristic,
-
+    /// Cloud Relay Control Point characteristic (required).
+    pub cloud_relay_control_point: CloudRelayControlPointCharacteristic,
+    /// Cloud Relay Current State characteristic (required).
+    pub cloud_relay_current_state: CloudRelayCurrentStateCharacteristic,
+    /// Cloud Relay Enable Status characteristic (required).
+    pub cloud_relay_enable_status: CloudRelayEnableStatusCharacteristic,
 }
 
 impl CloudRelayService {
@@ -42,10 +40,19 @@ impl CloudRelayService {
         Self {
             id,
             hap_type: HapType::CloudRelay,
-			cloud_relay_control_point: CloudRelayControlPointCharacteristic::new(id + 1 + 0, accessory_id),
-			cloud_relay_current_state: CloudRelayCurrentStateCharacteristic::new(id + 1 + 1, accessory_id),
-			cloud_relay_enable_status: CloudRelayEnableStatusCharacteristic::new(id + 1 + 2, accessory_id),
-			..Default::default()
+            cloud_relay_control_point: CloudRelayControlPointCharacteristic::new(
+                id + 1 + 0,
+                accessory_id,
+            ),
+            cloud_relay_current_state: CloudRelayCurrentStateCharacteristic::new(
+                id + 1 + 1,
+                accessory_id,
+            ),
+            cloud_relay_enable_status: CloudRelayEnableStatusCharacteristic::new(
+                id + 1 + 2,
+                accessory_id,
+            ),
+            ..Default::default()
         }
     }
 }
@@ -112,21 +119,21 @@ impl HapService for CloudRelayService {
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.cloud_relay_control_point,
-			&self.cloud_relay_current_state,
-			&self.cloud_relay_enable_status,
-		];
-		characteristics
+            &self.cloud_relay_control_point,
+            &self.cloud_relay_current_state,
+            &self.cloud_relay_enable_status,
+        ];
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.cloud_relay_control_point,
-			&mut self.cloud_relay_current_state,
-			&mut self.cloud_relay_enable_status,
-		];
-		characteristics
+            &mut self.cloud_relay_control_point,
+            &mut self.cloud_relay_current_state,
+            &mut self.cloud_relay_enable_status,
+        ];
+        characteristics
     }
 }
 

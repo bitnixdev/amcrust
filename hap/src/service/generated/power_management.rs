@@ -3,11 +3,8 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
+    characteristic::{wake_configuration::WakeConfigurationCharacteristic, HapCharacteristic},
     service::HapService,
-    characteristic::{
-        HapCharacteristic,
-		wake_configuration::WakeConfigurationCharacteristic,
-	},
     HapType,
 };
 
@@ -25,9 +22,8 @@ pub struct PowerManagementService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Wake Configuration characteristic (required).
-	pub wake_configuration: WakeConfigurationCharacteristic,
-
+    /// Wake Configuration characteristic (required).
+    pub wake_configuration: WakeConfigurationCharacteristic,
 }
 
 impl PowerManagementService {
@@ -36,8 +32,8 @@ impl PowerManagementService {
         Self {
             id,
             hap_type: HapType::PowerManagement,
-			wake_configuration: WakeConfigurationCharacteristic::new(id + 1 + 0, accessory_id),
-			..Default::default()
+            wake_configuration: WakeConfigurationCharacteristic::new(id + 1 + 0, accessory_id),
+            ..Default::default()
         }
     }
 }
@@ -103,18 +99,15 @@ impl HapService for PowerManagementService {
 
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.wake_configuration,
-		];
-		characteristics
+        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![&self.wake_configuration];
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.wake_configuration,
-		];
-		characteristics
+        let mut characteristics: Vec<&mut dyn HapCharacteristic> =
+            vec![&mut self.wake_configuration];
+        characteristics
     }
 }
 

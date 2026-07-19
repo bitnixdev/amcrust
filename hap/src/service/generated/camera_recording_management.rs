@@ -3,16 +3,15 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
+        active::ActiveCharacteristic, recording_audio_active::RecordingAudioActiveCharacteristic,
+        selected_camera_recording_configuration::SelectedCameraRecordingConfigurationCharacteristic,
+        supported_audio_recording_configuration::SupportedAudioRecordingConfigurationCharacteristic,
+        supported_camera_recording_configuration::SupportedCameraRecordingConfigurationCharacteristic,
+        supported_video_recording_configuration::SupportedVideoRecordingConfigurationCharacteristic,
         HapCharacteristic,
-		active::ActiveCharacteristic,
-		supported_camera_recording_configuration::SupportedCameraRecordingConfigurationCharacteristic,
-		supported_video_recording_configuration::SupportedVideoRecordingConfigurationCharacteristic,
-		supported_audio_recording_configuration::SupportedAudioRecordingConfigurationCharacteristic,
-		selected_camera_recording_configuration::SelectedCameraRecordingConfigurationCharacteristic,
-		recording_audio_active::RecordingAudioActiveCharacteristic,
-	},
+    },
+    service::HapService,
     HapType,
 };
 
@@ -30,19 +29,20 @@ pub struct CameraRecordingManagementService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Active characteristic (required).
-	pub active: ActiveCharacteristic,
-	/// Supported Camera Recording Configuration characteristic (required).
-	pub supported_camera_recording_configuration: SupportedCameraRecordingConfigurationCharacteristic,
-	/// Supported Video Recording Configuration characteristic (required).
-	pub supported_video_recording_configuration: SupportedVideoRecordingConfigurationCharacteristic,
-	/// Supported Audio Recording Configuration characteristic (required).
-	pub supported_audio_recording_configuration: SupportedAudioRecordingConfigurationCharacteristic,
-	/// Selected Camera Recording Configuration characteristic (required).
-	pub selected_camera_recording_configuration: SelectedCameraRecordingConfigurationCharacteristic,
+    /// Active characteristic (required).
+    pub active: ActiveCharacteristic,
+    /// Supported Camera Recording Configuration characteristic (required).
+    pub supported_camera_recording_configuration:
+        SupportedCameraRecordingConfigurationCharacteristic,
+    /// Supported Video Recording Configuration characteristic (required).
+    pub supported_video_recording_configuration: SupportedVideoRecordingConfigurationCharacteristic,
+    /// Supported Audio Recording Configuration characteristic (required).
+    pub supported_audio_recording_configuration: SupportedAudioRecordingConfigurationCharacteristic,
+    /// Selected Camera Recording Configuration characteristic (required).
+    pub selected_camera_recording_configuration: SelectedCameraRecordingConfigurationCharacteristic,
 
-	/// recording audio active characteristic (optional).
-	pub recording_audio_active: Option<RecordingAudioActiveCharacteristic>,
+    /// recording audio active characteristic (optional).
+    pub recording_audio_active: Option<RecordingAudioActiveCharacteristic>,
 }
 
 impl CameraRecordingManagementService {
@@ -51,13 +51,20 @@ impl CameraRecordingManagementService {
         Self {
             id,
             hap_type: HapType::CameraRecordingManagement,
-			active: ActiveCharacteristic::new(id + 1 + 0, accessory_id),
-			supported_camera_recording_configuration: SupportedCameraRecordingConfigurationCharacteristic::new(id + 1 + 1, accessory_id),
-			supported_video_recording_configuration: SupportedVideoRecordingConfigurationCharacteristic::new(id + 1 + 2, accessory_id),
-			supported_audio_recording_configuration: SupportedAudioRecordingConfigurationCharacteristic::new(id + 1 + 3, accessory_id),
-			selected_camera_recording_configuration: SelectedCameraRecordingConfigurationCharacteristic::new(id + 1 + 4, accessory_id),
-			recording_audio_active: Some(RecordingAudioActiveCharacteristic::new(id + 1 + 0 + 5, accessory_id)),
-			..Default::default()
+            active: ActiveCharacteristic::new(id + 1 + 0, accessory_id),
+            supported_camera_recording_configuration:
+                SupportedCameraRecordingConfigurationCharacteristic::new(id + 1 + 1, accessory_id),
+            supported_video_recording_configuration:
+                SupportedVideoRecordingConfigurationCharacteristic::new(id + 1 + 2, accessory_id),
+            supported_audio_recording_configuration:
+                SupportedAudioRecordingConfigurationCharacteristic::new(id + 1 + 3, accessory_id),
+            selected_camera_recording_configuration:
+                SelectedCameraRecordingConfigurationCharacteristic::new(id + 1 + 4, accessory_id),
+            recording_audio_active: Some(RecordingAudioActiveCharacteristic::new(
+                id + 1 + 0 + 5,
+                accessory_id,
+            )),
+            ..Default::default()
         }
     }
 }
@@ -124,31 +131,31 @@ impl HapService for CameraRecordingManagementService {
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.active,
-			&self.supported_camera_recording_configuration,
-			&self.supported_video_recording_configuration,
-			&self.supported_audio_recording_configuration,
-			&self.selected_camera_recording_configuration,
-		];
-		if let Some(c) = &self.recording_audio_active {
-		    characteristics.push(c);
-		}
-		characteristics
+            &self.active,
+            &self.supported_camera_recording_configuration,
+            &self.supported_video_recording_configuration,
+            &self.supported_audio_recording_configuration,
+            &self.selected_camera_recording_configuration,
+        ];
+        if let Some(c) = &self.recording_audio_active {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.active,
-			&mut self.supported_camera_recording_configuration,
-			&mut self.supported_video_recording_configuration,
-			&mut self.supported_audio_recording_configuration,
-			&mut self.selected_camera_recording_configuration,
-		];
-		if let Some(c) = &mut self.recording_audio_active {
-		    characteristics.push(c);
-		}
-		characteristics
+            &mut self.active,
+            &mut self.supported_camera_recording_configuration,
+            &mut self.supported_video_recording_configuration,
+            &mut self.supported_audio_recording_configuration,
+            &mut self.selected_camera_recording_configuration,
+        ];
+        if let Some(c) = &mut self.recording_audio_active {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

@@ -3,20 +3,18 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
-        HapCharacteristic,
-		current_position::CurrentPositionCharacteristic,
-		position_state::PositionStateCharacteristic,
-		target_position::TargetPositionCharacteristic,
-		current_horizontal_tilt_angle::CurrentHorizontalTiltAngleCharacteristic,
-		target_horizontal_tilt_angle::TargetHorizontalTiltAngleCharacteristic,
-		name::NameCharacteristic,
-		obstruction_detected::ObstructionDetectedCharacteristic,
-		hold_position::HoldPositionCharacteristic,
-		current_vertical_tilt_angle::CurrentVerticalTiltAngleCharacteristic,
-		target_vertical_tilt_angle::TargetVerticalTiltAngleCharacteristic,
-	},
+        current_horizontal_tilt_angle::CurrentHorizontalTiltAngleCharacteristic,
+        current_position::CurrentPositionCharacteristic,
+        current_vertical_tilt_angle::CurrentVerticalTiltAngleCharacteristic,
+        hold_position::HoldPositionCharacteristic, name::NameCharacteristic,
+        obstruction_detected::ObstructionDetectedCharacteristic,
+        position_state::PositionStateCharacteristic,
+        target_horizontal_tilt_angle::TargetHorizontalTiltAngleCharacteristic,
+        target_position::TargetPositionCharacteristic,
+        target_vertical_tilt_angle::TargetVerticalTiltAngleCharacteristic, HapCharacteristic,
+    },
+    service::HapService,
     HapType,
 };
 
@@ -34,27 +32,27 @@ pub struct WindowCoveringService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Current Position characteristic (required).
-	pub current_position: CurrentPositionCharacteristic,
-	/// Position State characteristic (required).
-	pub position_state: PositionStateCharacteristic,
-	/// Target Position characteristic (required).
-	pub target_position: TargetPositionCharacteristic,
+    /// Current Position characteristic (required).
+    pub current_position: CurrentPositionCharacteristic,
+    /// Position State characteristic (required).
+    pub position_state: PositionStateCharacteristic,
+    /// Target Position characteristic (required).
+    pub target_position: TargetPositionCharacteristic,
 
-	/// Current Horizontal Tilt Angle characteristic (optional).
-	pub current_horizontal_tilt_angle: Option<CurrentHorizontalTiltAngleCharacteristic>,
-	/// Target Horizontal Tilt Angle characteristic (optional).
-	pub target_horizontal_tilt_angle: Option<TargetHorizontalTiltAngleCharacteristic>,
-	/// Name characteristic (optional).
-	pub name: Option<NameCharacteristic>,
-	/// Obstruction Detected characteristic (optional).
-	pub obstruction_detected: Option<ObstructionDetectedCharacteristic>,
-	/// Hold Position characteristic (optional).
-	pub hold_position: Option<HoldPositionCharacteristic>,
-	/// Current Vertical Tilt Angle characteristic (optional).
-	pub current_vertical_tilt_angle: Option<CurrentVerticalTiltAngleCharacteristic>,
-	/// Target Vertical Tilt Angle characteristic (optional).
-	pub target_vertical_tilt_angle: Option<TargetVerticalTiltAngleCharacteristic>,
+    /// Current Horizontal Tilt Angle characteristic (optional).
+    pub current_horizontal_tilt_angle: Option<CurrentHorizontalTiltAngleCharacteristic>,
+    /// Target Horizontal Tilt Angle characteristic (optional).
+    pub target_horizontal_tilt_angle: Option<TargetHorizontalTiltAngleCharacteristic>,
+    /// Name characteristic (optional).
+    pub name: Option<NameCharacteristic>,
+    /// Obstruction Detected characteristic (optional).
+    pub obstruction_detected: Option<ObstructionDetectedCharacteristic>,
+    /// Hold Position characteristic (optional).
+    pub hold_position: Option<HoldPositionCharacteristic>,
+    /// Current Vertical Tilt Angle characteristic (optional).
+    pub current_vertical_tilt_angle: Option<CurrentVerticalTiltAngleCharacteristic>,
+    /// Target Vertical Tilt Angle characteristic (optional).
+    pub target_vertical_tilt_angle: Option<TargetVerticalTiltAngleCharacteristic>,
 }
 
 impl WindowCoveringService {
@@ -63,17 +61,35 @@ impl WindowCoveringService {
         Self {
             id,
             hap_type: HapType::WindowCovering,
-			current_position: CurrentPositionCharacteristic::new(id + 1 + 0, accessory_id),
-			position_state: PositionStateCharacteristic::new(id + 1 + 1, accessory_id),
-			target_position: TargetPositionCharacteristic::new(id + 1 + 2, accessory_id),
-			current_horizontal_tilt_angle: Some(CurrentHorizontalTiltAngleCharacteristic::new(id + 1 + 0 + 3, accessory_id)),
-			target_horizontal_tilt_angle: Some(TargetHorizontalTiltAngleCharacteristic::new(id + 1 + 1 + 3, accessory_id)),
-			name: Some(NameCharacteristic::new(id + 1 + 2 + 3, accessory_id)),
-			obstruction_detected: Some(ObstructionDetectedCharacteristic::new(id + 1 + 3 + 3, accessory_id)),
-			hold_position: Some(HoldPositionCharacteristic::new(id + 1 + 4 + 3, accessory_id)),
-			current_vertical_tilt_angle: Some(CurrentVerticalTiltAngleCharacteristic::new(id + 1 + 5 + 3, accessory_id)),
-			target_vertical_tilt_angle: Some(TargetVerticalTiltAngleCharacteristic::new(id + 1 + 6 + 3, accessory_id)),
-			..Default::default()
+            current_position: CurrentPositionCharacteristic::new(id + 1 + 0, accessory_id),
+            position_state: PositionStateCharacteristic::new(id + 1 + 1, accessory_id),
+            target_position: TargetPositionCharacteristic::new(id + 1 + 2, accessory_id),
+            current_horizontal_tilt_angle: Some(CurrentHorizontalTiltAngleCharacteristic::new(
+                id + 1 + 0 + 3,
+                accessory_id,
+            )),
+            target_horizontal_tilt_angle: Some(TargetHorizontalTiltAngleCharacteristic::new(
+                id + 1 + 1 + 3,
+                accessory_id,
+            )),
+            name: Some(NameCharacteristic::new(id + 1 + 2 + 3, accessory_id)),
+            obstruction_detected: Some(ObstructionDetectedCharacteristic::new(
+                id + 1 + 3 + 3,
+                accessory_id,
+            )),
+            hold_position: Some(HoldPositionCharacteristic::new(
+                id + 1 + 4 + 3,
+                accessory_id,
+            )),
+            current_vertical_tilt_angle: Some(CurrentVerticalTiltAngleCharacteristic::new(
+                id + 1 + 5 + 3,
+                accessory_id,
+            )),
+            target_vertical_tilt_angle: Some(TargetVerticalTiltAngleCharacteristic::new(
+                id + 1 + 6 + 3,
+                accessory_id,
+            )),
+            ..Default::default()
         }
     }
 }
@@ -140,63 +156,63 @@ impl HapService for WindowCoveringService {
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.current_position,
-			&self.position_state,
-			&self.target_position,
-		];
-		if let Some(c) = &self.current_horizontal_tilt_angle {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.target_horizontal_tilt_angle {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.obstruction_detected {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.hold_position {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.current_vertical_tilt_angle {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.target_vertical_tilt_angle {
-		    characteristics.push(c);
-		}
-		characteristics
+            &self.current_position,
+            &self.position_state,
+            &self.target_position,
+        ];
+        if let Some(c) = &self.current_horizontal_tilt_angle {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.target_horizontal_tilt_angle {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.obstruction_detected {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.hold_position {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.current_vertical_tilt_angle {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.target_vertical_tilt_angle {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.current_position,
-			&mut self.position_state,
-			&mut self.target_position,
-		];
-		if let Some(c) = &mut self.current_horizontal_tilt_angle {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.target_horizontal_tilt_angle {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.obstruction_detected {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.hold_position {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.current_vertical_tilt_angle {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.target_vertical_tilt_angle {
-		    characteristics.push(c);
-		}
-		characteristics
+            &mut self.current_position,
+            &mut self.position_state,
+            &mut self.target_position,
+        ];
+        if let Some(c) = &mut self.current_horizontal_tilt_angle {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.target_horizontal_tilt_angle {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.obstruction_detected {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.hold_position {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.current_vertical_tilt_angle {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.target_vertical_tilt_angle {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

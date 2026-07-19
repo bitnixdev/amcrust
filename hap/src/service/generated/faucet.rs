@@ -3,13 +3,11 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
-        HapCharacteristic,
-		active::ActiveCharacteristic,
-		name::NameCharacteristic,
-		status_fault::StatusFaultCharacteristic,
-	},
+        active::ActiveCharacteristic, name::NameCharacteristic,
+        status_fault::StatusFaultCharacteristic, HapCharacteristic,
+    },
+    service::HapService,
     HapType,
 };
 
@@ -27,13 +25,13 @@ pub struct FaucetService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Active characteristic (required).
-	pub active: ActiveCharacteristic,
+    /// Active characteristic (required).
+    pub active: ActiveCharacteristic,
 
-	/// Name characteristic (optional).
-	pub name: Option<NameCharacteristic>,
-	/// Status Fault characteristic (optional).
-	pub status_fault: Option<StatusFaultCharacteristic>,
+    /// Name characteristic (optional).
+    pub name: Option<NameCharacteristic>,
+    /// Status Fault characteristic (optional).
+    pub status_fault: Option<StatusFaultCharacteristic>,
 }
 
 impl FaucetService {
@@ -42,10 +40,10 @@ impl FaucetService {
         Self {
             id,
             hap_type: HapType::Faucet,
-			active: ActiveCharacteristic::new(id + 1 + 0, accessory_id),
-			name: Some(NameCharacteristic::new(id + 1 + 0 + 1, accessory_id)),
-			status_fault: Some(StatusFaultCharacteristic::new(id + 1 + 1 + 1, accessory_id)),
-			..Default::default()
+            active: ActiveCharacteristic::new(id + 1 + 0, accessory_id),
+            name: Some(NameCharacteristic::new(id + 1 + 0 + 1, accessory_id)),
+            status_fault: Some(StatusFaultCharacteristic::new(id + 1 + 1 + 1, accessory_id)),
+            ..Default::default()
         }
     }
 }
@@ -111,30 +109,26 @@ impl HapService for FaucetService {
 
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.active,
-		];
-		if let Some(c) = &self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.status_fault {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![&self.active];
+        if let Some(c) = &self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.status_fault {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.active,
-		];
-		if let Some(c) = &mut self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.status_fault {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![&mut self.active];
+        if let Some(c) = &mut self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.status_fault {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

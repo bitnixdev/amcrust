@@ -72,7 +72,9 @@ pub struct Config {
 
 impl Config {
     /// Redetermines the `host` field to the IP of the system's first non-loopback network interface.
-    pub fn redetermine_local_ip(&mut self) { self.host = get_local_ip(); }
+    pub fn redetermine_local_ip(&mut self) {
+        self.host = get_local_ip();
+    }
 
     /// Derives mDNS TXT records from the `Config`.
     pub(crate) fn txt_records(&self) -> [String; 8] {

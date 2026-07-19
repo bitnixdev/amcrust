@@ -3,17 +3,15 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
-        HapCharacteristic,
-		event_snapshots_active::EventSnapshotsActiveCharacteristic,
-		homekit_camera_active::HomekitCameraActiveCharacteristic,
-		camera_operating_mode_indicator::CameraOperatingModeIndicatorCharacteristic,
-		manually_disabled::ManuallyDisabledCharacteristic,
-		night_vision::NightVisionCharacteristic,
-		periodic_snapshots_active::PeriodicSnapshotsActiveCharacteristic,
-		third_party_camera_active::ThirdPartyCameraActiveCharacteristic,
-	},
+        camera_operating_mode_indicator::CameraOperatingModeIndicatorCharacteristic,
+        event_snapshots_active::EventSnapshotsActiveCharacteristic,
+        homekit_camera_active::HomekitCameraActiveCharacteristic,
+        manually_disabled::ManuallyDisabledCharacteristic, night_vision::NightVisionCharacteristic,
+        periodic_snapshots_active::PeriodicSnapshotsActiveCharacteristic,
+        third_party_camera_active::ThirdPartyCameraActiveCharacteristic, HapCharacteristic,
+    },
+    service::HapService,
     HapType,
 };
 
@@ -31,21 +29,21 @@ pub struct CameraOperatingModeService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Event Snapshots Active characteristic (required).
-	pub event_snapshots_active: EventSnapshotsActiveCharacteristic,
-	/// HomeKit Camera Active characteristic (required).
-	pub homekit_camera_active: HomekitCameraActiveCharacteristic,
+    /// Event Snapshots Active characteristic (required).
+    pub event_snapshots_active: EventSnapshotsActiveCharacteristic,
+    /// HomeKit Camera Active characteristic (required).
+    pub homekit_camera_active: HomekitCameraActiveCharacteristic,
 
-	/// Camera Operating Mode Indicator characteristic (optional).
-	pub camera_operating_mode_indicator: Option<CameraOperatingModeIndicatorCharacteristic>,
-	/// Manually disabled characteristic (optional).
-	pub manually_disabled: Option<ManuallyDisabledCharacteristic>,
-	/// Night Vision characteristic (optional).
-	pub night_vision: Option<NightVisionCharacteristic>,
-	/// Periodic Snapshots Active characteristic (optional).
-	pub periodic_snapshots_active: Option<PeriodicSnapshotsActiveCharacteristic>,
-	/// Third Party Camera Active characteristic (optional).
-	pub third_party_camera_active: Option<ThirdPartyCameraActiveCharacteristic>,
+    /// Camera Operating Mode Indicator characteristic (optional).
+    pub camera_operating_mode_indicator: Option<CameraOperatingModeIndicatorCharacteristic>,
+    /// Manually disabled characteristic (optional).
+    pub manually_disabled: Option<ManuallyDisabledCharacteristic>,
+    /// Night Vision characteristic (optional).
+    pub night_vision: Option<NightVisionCharacteristic>,
+    /// Periodic Snapshots Active characteristic (optional).
+    pub periodic_snapshots_active: Option<PeriodicSnapshotsActiveCharacteristic>,
+    /// Third Party Camera Active characteristic (optional).
+    pub third_party_camera_active: Option<ThirdPartyCameraActiveCharacteristic>,
 }
 
 impl CameraOperatingModeService {
@@ -54,14 +52,29 @@ impl CameraOperatingModeService {
         Self {
             id,
             hap_type: HapType::CameraOperatingMode,
-			event_snapshots_active: EventSnapshotsActiveCharacteristic::new(id + 1 + 0, accessory_id),
-			homekit_camera_active: HomekitCameraActiveCharacteristic::new(id + 1 + 1, accessory_id),
-			camera_operating_mode_indicator: Some(CameraOperatingModeIndicatorCharacteristic::new(id + 1 + 0 + 2, accessory_id)),
-			manually_disabled: Some(ManuallyDisabledCharacteristic::new(id + 1 + 1 + 2, accessory_id)),
-			night_vision: Some(NightVisionCharacteristic::new(id + 1 + 2 + 2, accessory_id)),
-			periodic_snapshots_active: Some(PeriodicSnapshotsActiveCharacteristic::new(id + 1 + 3 + 2, accessory_id)),
-			third_party_camera_active: Some(ThirdPartyCameraActiveCharacteristic::new(id + 1 + 4 + 2, accessory_id)),
-			..Default::default()
+            event_snapshots_active: EventSnapshotsActiveCharacteristic::new(
+                id + 1 + 0,
+                accessory_id,
+            ),
+            homekit_camera_active: HomekitCameraActiveCharacteristic::new(id + 1 + 1, accessory_id),
+            camera_operating_mode_indicator: Some(CameraOperatingModeIndicatorCharacteristic::new(
+                id + 1 + 0 + 2,
+                accessory_id,
+            )),
+            manually_disabled: Some(ManuallyDisabledCharacteristic::new(
+                id + 1 + 1 + 2,
+                accessory_id,
+            )),
+            night_vision: Some(NightVisionCharacteristic::new(id + 1 + 2 + 2, accessory_id)),
+            periodic_snapshots_active: Some(PeriodicSnapshotsActiveCharacteristic::new(
+                id + 1 + 3 + 2,
+                accessory_id,
+            )),
+            third_party_camera_active: Some(ThirdPartyCameraActiveCharacteristic::new(
+                id + 1 + 4 + 2,
+                accessory_id,
+            )),
+            ..Default::default()
         }
     }
 }
@@ -127,50 +140,48 @@ impl HapService for CameraOperatingModeService {
 
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.event_snapshots_active,
-			&self.homekit_camera_active,
-		];
-		if let Some(c) = &self.camera_operating_mode_indicator {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.manually_disabled {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.night_vision {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.periodic_snapshots_active {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.third_party_camera_active {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&dyn HapCharacteristic> =
+            vec![&self.event_snapshots_active, &self.homekit_camera_active];
+        if let Some(c) = &self.camera_operating_mode_indicator {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.manually_disabled {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.night_vision {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.periodic_snapshots_active {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.third_party_camera_active {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.event_snapshots_active,
-			&mut self.homekit_camera_active,
-		];
-		if let Some(c) = &mut self.camera_operating_mode_indicator {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.manually_disabled {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.night_vision {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.periodic_snapshots_active {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.third_party_camera_active {
-		    characteristics.push(c);
-		}
-		characteristics
+            &mut self.event_snapshots_active,
+            &mut self.homekit_camera_active,
+        ];
+        if let Some(c) = &mut self.camera_operating_mode_indicator {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.manually_disabled {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.night_vision {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.periodic_snapshots_active {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.third_party_camera_active {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

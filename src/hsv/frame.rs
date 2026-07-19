@@ -19,7 +19,11 @@ pub struct SessionKeys {
     pub controller_to_accessory: [u8; 32],
 }
 
-pub fn derive_keys(shared_secret: &[u8; 32], controller_salt: &[u8], accessory_salt: &[u8]) -> SessionKeys {
+pub fn derive_keys(
+    shared_secret: &[u8; 32],
+    controller_salt: &[u8],
+    accessory_salt: &[u8],
+) -> SessionKeys {
     let mut salt = Vec::with_capacity(controller_salt.len() + accessory_salt.len());
     salt.extend_from_slice(controller_salt);
     salt.extend_from_slice(accessory_salt);
@@ -43,7 +47,11 @@ fn nonce_for(counter: u64) -> Nonce {
 }
 
 /// Encrypts one frame (accessory → controller), advancing the counter.
-pub fn encrypt_frame(key: &[u8; 32], counter: &mut u64, plaintext: &[u8]) -> Result<Vec<u8>, String> {
+pub fn encrypt_frame(
+    key: &[u8; 32],
+    counter: &mut u64,
+    plaintext: &[u8],
+) -> Result<Vec<u8>, String> {
     if plaintext.len() > MAX_PAYLOAD {
         return Err(format!("HDS payload too large: {}", plaintext.len()));
     }
@@ -53,10 +61,13 @@ pub fn encrypt_frame(key: &[u8; 32], counter: &mut u64, plaintext: &[u8]) -> Res
 
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
     let ciphertext = cipher
-        .encrypt(&nonce_for(*counter), Payload {
-            msg: plaintext,
-            aad: &header,
-        })
+        .encrypt(
+            &nonce_for(*counter),
+            Payload {
+                msg: plaintext,
+                aad: &header,
+            },
+        )
         .map_err(|e| format!("HDS encrypt failed: {e}"))?;
     *counter += 1;
 
@@ -75,10 +86,13 @@ pub fn decrypt_frame(key: &[u8; 32], counter: &mut u64, frame: &[u8]) -> Result<
     let header = &frame[..FRAME_HEADER_LEN];
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
     let plaintext = cipher
-        .decrypt(&nonce_for(*counter), Payload {
-            msg: &frame[FRAME_HEADER_LEN..],
-            aad: header,
-        })
+        .decrypt(
+            &nonce_for(*counter),
+            Payload {
+                msg: &frame[FRAME_HEADER_LEN..],
+                aad: header,
+            },
+        )
         .map_err(|_| "HDS decrypt failed".to_string())?;
     *counter += 1;
     Ok(plaintext)
@@ -98,7 +112,11 @@ pub fn complete_frame_len(buf: &[u8]) -> Result<Option<usize>, String> {
         return Err(format!("HDS frame too large: {len}"));
     }
     let total = FRAME_HEADER_LEN + len + TAG_LEN;
-    Ok(if buf.len() >= total { Some(total) } else { None })
+    Ok(if buf.len() >= total {
+        Some(total)
+    } else {
+        None
+    })
 }
 
 #[cfg(test)]

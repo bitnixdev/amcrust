@@ -3,14 +3,13 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
-        HapCharacteristic,
-		siri_endpoint_session_status::SiriEndpointSessionStatusCharacteristic,
-		version::VersionCharacteristic,
-		active_identifier::ActiveIdentifierCharacteristic,
-		manually_disabled::ManuallyDisabledCharacteristic,
-	},
+        active_identifier::ActiveIdentifierCharacteristic,
+        manually_disabled::ManuallyDisabledCharacteristic,
+        siri_endpoint_session_status::SiriEndpointSessionStatusCharacteristic,
+        version::VersionCharacteristic, HapCharacteristic,
+    },
+    service::HapService,
     HapType,
 };
 
@@ -28,15 +27,15 @@ pub struct SiriEndpointService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Siri Endpoint Session Status characteristic (required).
-	pub siri_endpoint_session_status: SiriEndpointSessionStatusCharacteristic,
-	/// Version characteristic (required).
-	pub version: VersionCharacteristic,
+    /// Siri Endpoint Session Status characteristic (required).
+    pub siri_endpoint_session_status: SiriEndpointSessionStatusCharacteristic,
+    /// Version characteristic (required).
+    pub version: VersionCharacteristic,
 
-	/// Active Identifier characteristic (optional).
-	pub active_identifier: Option<ActiveIdentifierCharacteristic>,
-	/// Manually disabled characteristic (optional).
-	pub manually_disabled: Option<ManuallyDisabledCharacteristic>,
+    /// Active Identifier characteristic (optional).
+    pub active_identifier: Option<ActiveIdentifierCharacteristic>,
+    /// Manually disabled characteristic (optional).
+    pub manually_disabled: Option<ManuallyDisabledCharacteristic>,
 }
 
 impl SiriEndpointService {
@@ -45,11 +44,20 @@ impl SiriEndpointService {
         Self {
             id,
             hap_type: HapType::SiriEndpoint,
-			siri_endpoint_session_status: SiriEndpointSessionStatusCharacteristic::new(id + 1 + 0, accessory_id),
-			version: VersionCharacteristic::new(id + 1 + 1, accessory_id),
-			active_identifier: Some(ActiveIdentifierCharacteristic::new(id + 1 + 0 + 2, accessory_id)),
-			manually_disabled: Some(ManuallyDisabledCharacteristic::new(id + 1 + 1 + 2, accessory_id)),
-			..Default::default()
+            siri_endpoint_session_status: SiriEndpointSessionStatusCharacteristic::new(
+                id + 1 + 0,
+                accessory_id,
+            ),
+            version: VersionCharacteristic::new(id + 1 + 1, accessory_id),
+            active_identifier: Some(ActiveIdentifierCharacteristic::new(
+                id + 1 + 0 + 2,
+                accessory_id,
+            )),
+            manually_disabled: Some(ManuallyDisabledCharacteristic::new(
+                id + 1 + 1 + 2,
+                accessory_id,
+            )),
+            ..Default::default()
         }
     }
 }
@@ -115,32 +123,28 @@ impl HapService for SiriEndpointService {
 
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.siri_endpoint_session_status,
-			&self.version,
-		];
-		if let Some(c) = &self.active_identifier {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.manually_disabled {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&dyn HapCharacteristic> =
+            vec![&self.siri_endpoint_session_status, &self.version];
+        if let Some(c) = &self.active_identifier {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.manually_disabled {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.siri_endpoint_session_status,
-			&mut self.version,
-		];
-		if let Some(c) = &mut self.active_identifier {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.manually_disabled {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&mut dyn HapCharacteristic> =
+            vec![&mut self.siri_endpoint_session_status, &mut self.version];
+        if let Some(c) = &mut self.active_identifier {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.manually_disabled {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

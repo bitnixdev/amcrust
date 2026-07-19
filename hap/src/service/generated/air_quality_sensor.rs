@@ -3,22 +3,19 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
+        current_air_quality::CurrentAirQualityCharacteristic, name::NameCharacteristic,
+        nitrogen_dioxide_density::NitrogenDioxideDensityCharacteristic,
+        ozone_density::OzoneDensityCharacteristic, pm10_density::Pm10DensityCharacteristic,
+        pm2_5_density::Pm2_5DensityCharacteristic, status_active::StatusActiveCharacteristic,
+        status_fault::StatusFaultCharacteristic,
+        status_low_battery::StatusLowBatteryCharacteristic,
+        status_tampered::StatusTamperedCharacteristic,
+        sulphur_dioxide_density::SulphurDioxideDensityCharacteristic,
+        volatile_organic_compound_density::VolatileOrganicCompoundDensityCharacteristic,
         HapCharacteristic,
-		current_air_quality::CurrentAirQualityCharacteristic,
-		nitrogen_dioxide_density::NitrogenDioxideDensityCharacteristic,
-		ozone_density::OzoneDensityCharacteristic,
-		pm10_density::Pm10DensityCharacteristic,
-		pm2_5_density::Pm2_5DensityCharacteristic,
-		sulphur_dioxide_density::SulphurDioxideDensityCharacteristic,
-		volatile_organic_compound_density::VolatileOrganicCompoundDensityCharacteristic,
-		name::NameCharacteristic,
-		status_active::StatusActiveCharacteristic,
-		status_fault::StatusFaultCharacteristic,
-		status_low_battery::StatusLowBatteryCharacteristic,
-		status_tampered::StatusTamperedCharacteristic,
-	},
+    },
+    service::HapService,
     HapType,
 };
 
@@ -36,31 +33,31 @@ pub struct AirQualitySensorService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Current Air Quality characteristic (required).
-	pub current_air_quality: CurrentAirQualityCharacteristic,
+    /// Current Air Quality characteristic (required).
+    pub current_air_quality: CurrentAirQualityCharacteristic,
 
-	/// Nitrogen dioxide Density characteristic (optional).
-	pub nitrogen_dioxide_density: Option<NitrogenDioxideDensityCharacteristic>,
-	/// Ozone Density characteristic (optional).
-	pub ozone_density: Option<OzoneDensityCharacteristic>,
-	/// PM10 Density characteristic (optional).
-	pub pm10_density: Option<Pm10DensityCharacteristic>,
-	/// PM2.5 Density characteristic (optional).
-	pub pm2_5_density: Option<Pm2_5DensityCharacteristic>,
-	/// Sulphur dioxide Density characteristic (optional).
-	pub sulphur_dioxide_density: Option<SulphurDioxideDensityCharacteristic>,
-	/// Volatile Organic Compound Density characteristic (optional).
-	pub volatile_organic_compound_density: Option<VolatileOrganicCompoundDensityCharacteristic>,
-	/// Name characteristic (optional).
-	pub name: Option<NameCharacteristic>,
-	/// Status Active characteristic (optional).
-	pub status_active: Option<StatusActiveCharacteristic>,
-	/// Status Fault characteristic (optional).
-	pub status_fault: Option<StatusFaultCharacteristic>,
-	/// Status Low Battery characteristic (optional).
-	pub status_low_battery: Option<StatusLowBatteryCharacteristic>,
-	/// Status Tampered characteristic (optional).
-	pub status_tampered: Option<StatusTamperedCharacteristic>,
+    /// Nitrogen dioxide Density characteristic (optional).
+    pub nitrogen_dioxide_density: Option<NitrogenDioxideDensityCharacteristic>,
+    /// Ozone Density characteristic (optional).
+    pub ozone_density: Option<OzoneDensityCharacteristic>,
+    /// PM10 Density characteristic (optional).
+    pub pm10_density: Option<Pm10DensityCharacteristic>,
+    /// PM2.5 Density characteristic (optional).
+    pub pm2_5_density: Option<Pm2_5DensityCharacteristic>,
+    /// Sulphur dioxide Density characteristic (optional).
+    pub sulphur_dioxide_density: Option<SulphurDioxideDensityCharacteristic>,
+    /// Volatile Organic Compound Density characteristic (optional).
+    pub volatile_organic_compound_density: Option<VolatileOrganicCompoundDensityCharacteristic>,
+    /// Name characteristic (optional).
+    pub name: Option<NameCharacteristic>,
+    /// Status Active characteristic (optional).
+    pub status_active: Option<StatusActiveCharacteristic>,
+    /// Status Fault characteristic (optional).
+    pub status_fault: Option<StatusFaultCharacteristic>,
+    /// Status Low Battery characteristic (optional).
+    pub status_low_battery: Option<StatusLowBatteryCharacteristic>,
+    /// Status Tampered characteristic (optional).
+    pub status_tampered: Option<StatusTamperedCharacteristic>,
 }
 
 impl AirQualitySensorService {
@@ -69,19 +66,42 @@ impl AirQualitySensorService {
         Self {
             id,
             hap_type: HapType::AirQualitySensor,
-			current_air_quality: CurrentAirQualityCharacteristic::new(id + 1 + 0, accessory_id),
-			nitrogen_dioxide_density: Some(NitrogenDioxideDensityCharacteristic::new(id + 1 + 0 + 1, accessory_id)),
-			ozone_density: Some(OzoneDensityCharacteristic::new(id + 1 + 1 + 1, accessory_id)),
-			pm10_density: Some(Pm10DensityCharacteristic::new(id + 1 + 2 + 1, accessory_id)),
-			pm2_5_density: Some(Pm2_5DensityCharacteristic::new(id + 1 + 3 + 1, accessory_id)),
-			sulphur_dioxide_density: Some(SulphurDioxideDensityCharacteristic::new(id + 1 + 4 + 1, accessory_id)),
-			volatile_organic_compound_density: Some(VolatileOrganicCompoundDensityCharacteristic::new(id + 1 + 5 + 1, accessory_id)),
-			name: Some(NameCharacteristic::new(id + 1 + 6 + 1, accessory_id)),
-			status_active: Some(StatusActiveCharacteristic::new(id + 1 + 7 + 1, accessory_id)),
-			status_fault: Some(StatusFaultCharacteristic::new(id + 1 + 8 + 1, accessory_id)),
-			status_low_battery: Some(StatusLowBatteryCharacteristic::new(id + 1 + 9 + 1, accessory_id)),
-			status_tampered: Some(StatusTamperedCharacteristic::new(id + 1 + 10 + 1, accessory_id)),
-			..Default::default()
+            current_air_quality: CurrentAirQualityCharacteristic::new(id + 1 + 0, accessory_id),
+            nitrogen_dioxide_density: Some(NitrogenDioxideDensityCharacteristic::new(
+                id + 1 + 0 + 1,
+                accessory_id,
+            )),
+            ozone_density: Some(OzoneDensityCharacteristic::new(
+                id + 1 + 1 + 1,
+                accessory_id,
+            )),
+            pm10_density: Some(Pm10DensityCharacteristic::new(id + 1 + 2 + 1, accessory_id)),
+            pm2_5_density: Some(Pm2_5DensityCharacteristic::new(
+                id + 1 + 3 + 1,
+                accessory_id,
+            )),
+            sulphur_dioxide_density: Some(SulphurDioxideDensityCharacteristic::new(
+                id + 1 + 4 + 1,
+                accessory_id,
+            )),
+            volatile_organic_compound_density: Some(
+                VolatileOrganicCompoundDensityCharacteristic::new(id + 1 + 5 + 1, accessory_id),
+            ),
+            name: Some(NameCharacteristic::new(id + 1 + 6 + 1, accessory_id)),
+            status_active: Some(StatusActiveCharacteristic::new(
+                id + 1 + 7 + 1,
+                accessory_id,
+            )),
+            status_fault: Some(StatusFaultCharacteristic::new(id + 1 + 8 + 1, accessory_id)),
+            status_low_battery: Some(StatusLowBatteryCharacteristic::new(
+                id + 1 + 9 + 1,
+                accessory_id,
+            )),
+            status_tampered: Some(StatusTamperedCharacteristic::new(
+                id + 1 + 10 + 1,
+                accessory_id,
+            )),
+            ..Default::default()
         }
     }
 }
@@ -147,84 +167,81 @@ impl HapService for AirQualitySensorService {
 
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.current_air_quality,
-		];
-		if let Some(c) = &self.nitrogen_dioxide_density {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.ozone_density {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.pm10_density {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.pm2_5_density {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.sulphur_dioxide_density {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.volatile_organic_compound_density {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.status_active {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.status_fault {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.status_low_battery {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.status_tampered {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![&self.current_air_quality];
+        if let Some(c) = &self.nitrogen_dioxide_density {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.ozone_density {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.pm10_density {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.pm2_5_density {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.sulphur_dioxide_density {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.volatile_organic_compound_density {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.status_active {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.status_fault {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.status_low_battery {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.status_tampered {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.current_air_quality,
-		];
-		if let Some(c) = &mut self.nitrogen_dioxide_density {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.ozone_density {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.pm10_density {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.pm2_5_density {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.sulphur_dioxide_density {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.volatile_organic_compound_density {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.status_active {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.status_fault {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.status_low_battery {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.status_tampered {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&mut dyn HapCharacteristic> =
+            vec![&mut self.current_air_quality];
+        if let Some(c) = &mut self.nitrogen_dioxide_density {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.ozone_density {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.pm10_density {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.pm2_5_density {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.sulphur_dioxide_density {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.volatile_organic_compound_density {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.status_active {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.status_fault {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.status_low_battery {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.status_tampered {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

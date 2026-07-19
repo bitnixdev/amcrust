@@ -3,8 +3,7 @@ use erased_serde::serialize_trait_object;
 use futures::future::BoxFuture;
 use serde::{
     ser::{SerializeStruct, Serializer},
-    Deserialize,
-    Serialize,
+    Deserialize, Serialize,
 };
 use serde_json::json;
 use std::fmt;
@@ -180,37 +179,59 @@ where
     }
 
     /// Returns the ID of the characteristic.
-    pub fn get_id(&self) -> u64 { self.id }
+    pub fn get_id(&self) -> u64 {
+        self.id
+    }
 
     /// Sets the ID of the characteristic.
-    pub fn set_id(&mut self, id: u64) { self.id = id; }
+    pub fn set_id(&mut self, id: u64) {
+        self.id = id;
+    }
 
     /// Returns the [`HapType`](HapType) of the characteristic.
-    pub fn get_type(&self) -> HapType { self.hap_type }
+    pub fn get_type(&self) -> HapType {
+        self.hap_type
+    }
 
     /// Sets the [`HapType`](HapType) of the characteristic.
-    pub fn set_type(&mut self, hap_type: HapType) { self.hap_type = hap_type; }
+    pub fn set_type(&mut self, hap_type: HapType) {
+        self.hap_type = hap_type;
+    }
 
     /// Returns the [`Format`](Format) of the characteristic.
-    pub fn get_format(&self) -> Format { self.format }
+    pub fn get_format(&self) -> Format {
+        self.format
+    }
 
     /// Sets the [`Format`](Format) of the characteristic.
-    pub fn set_format(&mut self, format: Format) { self.format = format; }
+    pub fn set_format(&mut self, format: Format) {
+        self.format = format;
+    }
 
     /// Returns the [`Perm`](Perm)s of the characteristic.
-    pub fn get_perms(&self) -> Vec<Perm> { self.perms.clone() }
+    pub fn get_perms(&self) -> Vec<Perm> {
+        self.perms.clone()
+    }
 
     /// Sets the [`Perm`](Perm)s of the characteristic.
-    pub fn set_perms(&mut self, perms: Vec<Perm>) { self.perms = perms; }
+    pub fn set_perms(&mut self, perms: Vec<Perm>) {
+        self.perms = perms;
+    }
 
     /// Returns the description of the characteristic.
-    pub fn get_description(&self) -> Option<String> { self.description.clone() }
+    pub fn get_description(&self) -> Option<String> {
+        self.description.clone()
+    }
 
     /// Sets the description of the characteristic.
-    pub fn set_description(&mut self, description: Option<String>) { self.description = description; }
+    pub fn set_description(&mut self, description: Option<String>) {
+        self.description = description;
+    }
 
     /// Returns the `event_notifications` value of the characteristic.
-    pub fn get_event_notifications(&self) -> Option<bool> { self.event_notifications }
+    pub fn get_event_notifications(&self) -> Option<bool> {
+        self.event_notifications
+    }
 
     /// Sets the `event_notifications` value of the characteristic.
     pub fn set_event_notifications(&mut self, event_notifications: Option<bool>) {
@@ -227,7 +248,10 @@ where
             val = on_read_async().await.map_err(|e| Error::ValueOnRead(e))?;
         }
         if let Some(v) = val {
-            self.set_value(v).await?;
+            // A read callback refreshes the cached value; it is not a
+            // controller write. Calling `set_value` here would invoke update
+            // callbacks and turn reads into write-side effects.
+            self.value = v;
         }
 
         Ok(self.value.clone())
@@ -277,64 +301,104 @@ where
     }
 
     /// Returns the [`Unit`](Unit) of the characteristic.
-    pub fn get_unit(&self) -> Option<Unit> { self.unit }
+    pub fn get_unit(&self) -> Option<Unit> {
+        self.unit
+    }
 
     /// Sets the [`Unit`](Unit) of the characteristic.
-    pub fn set_unit(&mut self, unit: Option<Unit>) { self.unit = unit; }
+    pub fn set_unit(&mut self, unit: Option<Unit>) {
+        self.unit = unit;
+    }
 
     /// Returns the maximum value of the characteristic.
-    pub fn get_max_value(&self) -> Option<T> { self.max_value.clone() }
+    pub fn get_max_value(&self) -> Option<T> {
+        self.max_value.clone()
+    }
 
     /// Sets the maximum value of the characteristic.
-    pub fn set_max_value(&mut self, val: Option<T>) { self.max_value = val; }
+    pub fn set_max_value(&mut self, val: Option<T>) {
+        self.max_value = val;
+    }
 
     /// Returns the minimum value of the characteristic.
-    pub fn get_min_value(&self) -> Option<T> { self.min_value.clone() }
+    pub fn get_min_value(&self) -> Option<T> {
+        self.min_value.clone()
+    }
 
     /// Sets the minimum value of the characteristic.
-    pub fn set_min_value(&mut self, val: Option<T>) { self.min_value = val; }
+    pub fn set_min_value(&mut self, val: Option<T>) {
+        self.min_value = val;
+    }
 
     /// Returns the step value of the characteristic.
-    pub fn get_step_value(&self) -> Option<T> { self.step_value.clone() }
+    pub fn get_step_value(&self) -> Option<T> {
+        self.step_value.clone()
+    }
 
     /// Sets the step value of the characteristic.
-    pub fn set_step_value(&mut self, val: Option<T>) { self.step_value = val; }
+    pub fn set_step_value(&mut self, val: Option<T>) {
+        self.step_value = val;
+    }
 
     /// Returns the maximum length of the characteristic.
-    pub fn get_max_len(&self) -> Option<u16> { self.max_len }
+    pub fn get_max_len(&self) -> Option<u16> {
+        self.max_len
+    }
 
     /// Sets the maximum length of the characteristic.
-    pub fn set_max_len(&mut self, val: Option<u16>) { self.max_len = val; }
+    pub fn set_max_len(&mut self, val: Option<u16>) {
+        self.max_len = val;
+    }
 
     /// Returns the maximum data length of the characteristic.
-    pub fn get_max_data_len(&self) -> Option<u32> { self.max_data_len }
+    pub fn get_max_data_len(&self) -> Option<u32> {
+        self.max_data_len
+    }
 
     /// Sets the maximum data length of the characteristic.
-    pub fn set_max_data_len(&mut self, val: Option<u32>) { self.max_data_len = val; }
+    pub fn set_max_data_len(&mut self, val: Option<u32>) {
+        self.max_data_len = val;
+    }
 
     /// Returns the valid values of the characteristic.
-    pub fn get_valid_values(&self) -> Option<Vec<T>> { self.valid_values.clone() }
+    pub fn get_valid_values(&self) -> Option<Vec<T>> {
+        self.valid_values.clone()
+    }
 
     /// Sets the valid values of the characteristic.
-    pub fn set_valid_values(&mut self, val: Option<Vec<T>>) { self.valid_values = val; }
+    pub fn set_valid_values(&mut self, val: Option<Vec<T>>) {
+        self.valid_values = val;
+    }
 
     /// Returns the valid values range of the characteristic.
-    pub fn get_valid_values_range(&self) -> Option<[T; 2]> { self.valid_values_range.clone() }
+    pub fn get_valid_values_range(&self) -> Option<[T; 2]> {
+        self.valid_values_range.clone()
+    }
 
     /// Sets the valid values range of the characteristic.
-    pub fn set_valid_values_range(&mut self, val: Option<[T; 2]>) { self.valid_values_range = val; }
+    pub fn set_valid_values_range(&mut self, val: Option<[T; 2]>) {
+        self.valid_values_range = val;
+    }
 
     /// Returns the TTL of the characteristic.
-    pub fn get_ttl(&self) -> Option<u64> { self.ttl }
+    pub fn get_ttl(&self) -> Option<u64> {
+        self.ttl
+    }
 
     /// Sets the TTL of the characteristic.
-    pub fn set_ttl(&mut self, val: Option<u64>) { self.ttl = val; }
+    pub fn set_ttl(&mut self, val: Option<u64>) {
+        self.ttl = val;
+    }
 
     /// Returns the PID of the characteristic.
-    pub fn get_pid(&self) -> Option<u64> { self.pid }
+    pub fn get_pid(&self) -> Option<u64> {
+        self.pid
+    }
 
     /// Sets the PID of the characteristic.
-    pub fn set_pid(&mut self, val: Option<u64>) { self.pid = val; }
+    pub fn set_pid(&mut self, val: Option<u64>) {
+        self.pid = val;
+    }
 
     /// Sets a callback function on a characteristic that is called every time a controller attempts to read its value.
     /// Returning a `Some(T)` from this function changes the value of the characteristic before the controller reads
@@ -389,12 +453,13 @@ impl<T: fmt::Debug + Default + Clone + Serialize + Send + Sync> Serialize for Ch
             // HAP requires `tlv8` & `data` formatted values to be transported as base64 strings.
             match self.format {
                 Format::Tlv8 | Format::Data => {
-                    let json_val = serde_json::to_value(&self.value).unwrap_or(serde_json::Value::Null);
+                    let json_val =
+                        serde_json::to_value(&self.value).unwrap_or(serde_json::Value::Null);
                     match serde_json::from_value::<Vec<u8>>(json_val.clone()) {
                         Ok(bytes) => state.serialize_field("value", &base64_encode(&bytes))?,
                         Err(_) => state.serialize_field("value", &json_val)?,
                     }
-                },
+                }
                 _ => state.serialize_field("value", &self.value)?,
             }
         }
@@ -498,12 +563,16 @@ pub enum Format {
 }
 
 impl Default for Format {
-    fn default() -> Format { Format::String }
+    fn default() -> Format {
+        Format::String
+    }
 }
 
 /// [`HapCharacteristic`](HapCharacteristic) is implemented by every HAP characteristic.
 #[async_trait]
-pub trait HapCharacteristic: HapCharacteristicSetup + erased_serde::Serialize + Send + Sync {
+pub trait HapCharacteristic:
+    HapCharacteristicSetup + erased_serde::Serialize + Send + Sync
+{
     /// Returns the ID of the characteristic.
     fn get_id(&self) -> u64;
     /// Sets the ID of the characteristic.
@@ -563,7 +632,10 @@ pub trait HapCharacteristic: HapCharacteristicSetup + erased_serde::Serialize + 
     /// Returns the valid values range of the characteristic.
     fn get_valid_values_range(&self) -> Option<[serde_json::Value; 2]>;
     /// Sets the valid values range of the characteristic.
-    fn set_valid_values_range(&mut self, valid_values_range: Option<[serde_json::Value; 2]>) -> Result<()>;
+    fn set_valid_values_range(
+        &mut self,
+        valid_values_range: Option<[serde_json::Value; 2]>,
+    ) -> Result<()>;
     /// Returns the TTL of the characteristic.
     fn get_ttl(&self) -> Option<u64>;
     /// Sets the TTL of the characteristic.
@@ -587,11 +659,17 @@ pub trait HapCharacteristicSetup {
 /// controller attempts to read its value. Returning a `Some(T)` from this function changes the value of the
 /// characteristic before the controller reads it so the controller reads the new value.
 pub trait OnReadFn<T: Default + Clone + Serialize + Send + Sync>:
-    Fn() -> std::result::Result<Option<T>, Box<dyn std::error::Error + Send + Sync>> + 'static + Send + Sync
+    Fn() -> std::result::Result<Option<T>, Box<dyn std::error::Error + Send + Sync>>
+    + 'static
+    + Send
+    + Sync
 {
 }
 impl<F, T: Default + Clone + Serialize + Send + Sync> OnReadFn<T> for F where
-    F: Fn() -> std::result::Result<Option<T>, Box<dyn std::error::Error + Send + Sync>> + 'static + Send + Sync
+    F: Fn() -> std::result::Result<Option<T>, Box<dyn std::error::Error + Send + Sync>>
+        + 'static
+        + Send
+        + Sync
 {
 }
 
@@ -600,11 +678,17 @@ impl<F, T: Default + Clone + Serialize + Send + Sync> OnReadFn<T> for F where
 /// characteristic and the second argument is a reference to the value the controller attempts to change the
 /// characteristic's to.
 pub trait OnUpdateFn<T: Default + Clone + Serialize + Send + Sync>:
-    FnMut(&T, &T) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> + 'static + Send + Sync
+    FnMut(&T, &T) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>
+    + 'static
+    + Send
+    + Sync
 {
 }
 impl<F, T: Default + Clone + Serialize + Send + Sync> OnUpdateFn<T> for F where
-    F: FnMut(&T, &T) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> + 'static + Send + Sync
+    F: FnMut(&T, &T) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>
+        + 'static
+        + Send
+        + Sync
 {
 }
 
@@ -613,14 +697,20 @@ impl<F, T: Default + Clone + Serialize + Send + Sync> OnUpdateFn<T> for F where
 /// a `Some(T)` from this function changes the value of the characteristic before the controller reads it so the
 /// controller reads the new value.
 pub trait OnReadFuture<T: Default + Clone + Serialize + Send + Sync>:
-    FnMut() -> BoxFuture<'static, std::result::Result<Option<T>, Box<dyn std::error::Error + Send + Sync>>>
+    FnMut() -> BoxFuture<
+        'static,
+        std::result::Result<Option<T>, Box<dyn std::error::Error + Send + Sync>>,
+    >
     + 'static
     + Send
     + Sync
 {
 }
 impl<F, T: Default + Clone + Serialize + Send + Sync> OnReadFuture<T> for F where
-    F: FnMut() -> BoxFuture<'static, std::result::Result<Option<T>, Box<dyn std::error::Error + Send + Sync>>>
+    F: FnMut() -> BoxFuture<
+            'static,
+            std::result::Result<Option<T>, Box<dyn std::error::Error + Send + Sync>>,
+        >
         + 'static
         + Send
         + Sync
@@ -632,14 +722,24 @@ impl<F, T: Default + Clone + Serialize + Send + Sync> OnReadFuture<T> for F wher
 /// value. The first argument is a reference to the current value of the characteristic and the second argument is a
 /// reference to the value the controller attempts to change the characteristic's to.
 pub trait OnUpdateFuture<T: Default + Clone + Serialize + Send + Sync>:
-    FnMut(T, T) -> BoxFuture<'static, std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>>
+    FnMut(
+        T,
+        T,
+    )
+        -> BoxFuture<'static, std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>>
     + 'static
     + Send
     + Sync
 {
 }
 impl<F, T: Default + Clone + Serialize + Send + Sync> OnUpdateFuture<T> for F where
-    F: FnMut(T, T) -> BoxFuture<'static, std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>>
+    F: FnMut(
+            T,
+            T,
+        ) -> BoxFuture<
+            'static,
+            std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>,
+        >
         + 'static
         + Send
         + Sync
@@ -672,31 +772,54 @@ pub trait AsyncCharacteristicCallbacks<T: fmt::Debug + Default + Clone + Seriali
 }
 
 #[async_trait]
-impl<T: fmt::Debug + Default + Clone + Serialize + Send + Sync> HapCharacteristic for Characteristic<T>
+impl<T: fmt::Debug + Default + Clone + Serialize + Send + Sync> HapCharacteristic
+    for Characteristic<T>
 where
     for<'de> T: Deserialize<'de>,
 {
-    fn get_id(&self) -> u64 { Characteristic::get_id(self) }
+    fn get_id(&self) -> u64 {
+        Characteristic::get_id(self)
+    }
 
-    fn set_id(&mut self, id: u64) { Characteristic::set_id(self, id) }
+    fn set_id(&mut self, id: u64) {
+        Characteristic::set_id(self, id)
+    }
 
-    fn get_type(&self) -> HapType { Characteristic::get_type(self) }
+    fn get_type(&self) -> HapType {
+        Characteristic::get_type(self)
+    }
 
-    fn set_type(&mut self, hap_type: HapType) { Characteristic::set_type(self, hap_type) }
+    fn set_type(&mut self, hap_type: HapType) {
+        Characteristic::set_type(self, hap_type)
+    }
 
-    fn get_format(&self) -> Format { Characteristic::get_format(self) }
+    fn get_format(&self) -> Format {
+        Characteristic::get_format(self)
+    }
 
-    fn set_format(&mut self, format: Format) { Characteristic::set_format(self, format) }
+    fn set_format(&mut self, format: Format) {
+        Characteristic::set_format(self, format)
+    }
 
-    fn get_perms(&self) -> Vec<Perm> { Characteristic::get_perms(self) }
+    fn get_perms(&self) -> Vec<Perm> {
+        Characteristic::get_perms(self)
+    }
 
-    fn set_perms(&mut self, perms: Vec<Perm>) { Characteristic::set_perms(self, perms) }
+    fn set_perms(&mut self, perms: Vec<Perm>) {
+        Characteristic::set_perms(self, perms)
+    }
 
-    fn get_description(&self) -> Option<String> { Characteristic::get_description(self) }
+    fn get_description(&self) -> Option<String> {
+        Characteristic::get_description(self)
+    }
 
-    fn set_description(&mut self, description: Option<String>) { Characteristic::set_description(self, description) }
+    fn set_description(&mut self, description: Option<String>) {
+        Characteristic::set_description(self, description)
+    }
 
-    fn get_event_notifications(&self) -> Option<bool> { Characteristic::get_event_notifications(self) }
+    fn get_event_notifications(&self) -> Option<bool> {
+        Characteristic::get_event_notifications(self)
+    }
 
     fn set_event_notifications(&mut self, event_notifications: Option<bool>) {
         Characteristic::set_event_notifications(self, event_notifications)
@@ -717,13 +840,14 @@ where
 
     async fn set_value(&mut self, value: serde_json::Value) -> Result<()> {
         // HAP transports `tlv8` & `data` formatted values as base64 strings.
-        let value = if (self.format == Format::Tlv8 || self.format == Format::Data) && value.is_string() {
-            let decoded = base64_decode(value.as_str().unwrap())
-                .map_err(|_| Error::InvalidValue(Characteristic::get_format(self)))?;
-            json!(decoded)
-        } else {
-            value
-        };
+        let value =
+            if (self.format == Format::Tlv8 || self.format == Format::Data) && value.is_string() {
+                let decoded = base64_decode(value.as_str().unwrap())
+                    .map_err(|_| Error::InvalidValue(Characteristic::get_format(self)))?;
+                json!(decoded)
+            } else {
+                value
+            };
         let v;
         // for whatever reason, the controller is setting boolean values either as a boolean or as an integer
         if self.format == Format::Bool && value.is_number() {
@@ -736,74 +860,112 @@ where
                 return Err(Error::InvalidValue(Characteristic::get_format(self)));
             }
         } else {
-            v = serde_json::from_value(value).map_err(|_| Error::InvalidValue(Characteristic::get_format(self)))?;
+            v = serde_json::from_value(value)
+                .map_err(|_| Error::InvalidValue(Characteristic::get_format(self)))?;
         }
         Characteristic::set_value(self, v).await
     }
 
-    fn get_unit(&self) -> Option<Unit> { Characteristic::get_unit(self) }
+    fn get_unit(&self) -> Option<Unit> {
+        Characteristic::get_unit(self)
+    }
 
-    fn set_unit(&mut self, unit: Option<Unit>) { Characteristic::set_unit(self, unit) }
+    fn set_unit(&mut self, unit: Option<Unit>) {
+        Characteristic::set_unit(self, unit)
+    }
 
-    fn get_max_value(&self) -> Option<serde_json::Value> { Characteristic::get_max_value(self).map(|v| json!(v)) }
+    fn get_max_value(&self) -> Option<serde_json::Value> {
+        Characteristic::get_max_value(self).map(|v| json!(v))
+    }
 
     fn set_max_value(&mut self, max_value: Option<serde_json::Value>) -> Result<()> {
-        Characteristic::set_max_value(self, match max_value {
-            Some(v) =>
-                Some(serde_json::from_value(v).map_err(|_| Error::InvalidValue(Characteristic::get_format(self)))?),
-            None => None,
-        });
+        Characteristic::set_max_value(
+            self,
+            match max_value {
+                Some(v) => Some(
+                    serde_json::from_value(v)
+                        .map_err(|_| Error::InvalidValue(Characteristic::get_format(self)))?,
+                ),
+                None => None,
+            },
+        );
 
         Ok(())
     }
 
-    fn get_min_value(&self) -> Option<serde_json::Value> { Characteristic::get_min_value(self).map(|v| json!(v)) }
+    fn get_min_value(&self) -> Option<serde_json::Value> {
+        Characteristic::get_min_value(self).map(|v| json!(v))
+    }
 
     fn set_min_value(&mut self, min_value: Option<serde_json::Value>) -> Result<()> {
-        Characteristic::set_min_value(self, match min_value {
-            Some(v) =>
-                Some(serde_json::from_value(v).map_err(|_| Error::InvalidValue(Characteristic::get_format(self)))?),
-            None => None,
-        });
+        Characteristic::set_min_value(
+            self,
+            match min_value {
+                Some(v) => Some(
+                    serde_json::from_value(v)
+                        .map_err(|_| Error::InvalidValue(Characteristic::get_format(self)))?,
+                ),
+                None => None,
+            },
+        );
 
         Ok(())
     }
 
-    fn get_step_value(&self) -> Option<serde_json::Value> { Characteristic::get_step_value(self).map(|v| json!(v)) }
+    fn get_step_value(&self) -> Option<serde_json::Value> {
+        Characteristic::get_step_value(self).map(|v| json!(v))
+    }
 
     fn set_step_value(&mut self, step_value: Option<serde_json::Value>) -> Result<()> {
-        Characteristic::set_step_value(self, match step_value {
-            Some(v) =>
-                Some(serde_json::from_value(v).map_err(|_| Error::InvalidValue(Characteristic::get_format(self)))?),
-            None => None,
-        });
+        Characteristic::set_step_value(
+            self,
+            match step_value {
+                Some(v) => Some(
+                    serde_json::from_value(v)
+                        .map_err(|_| Error::InvalidValue(Characteristic::get_format(self)))?,
+                ),
+                None => None,
+            },
+        );
 
         Ok(())
     }
 
-    fn get_max_len(&self) -> Option<u16> { Characteristic::get_max_len(self) }
+    fn get_max_len(&self) -> Option<u16> {
+        Characteristic::get_max_len(self)
+    }
 
-    fn set_max_len(&mut self, max_len: Option<u16>) { Characteristic::set_max_len(self, max_len) }
+    fn set_max_len(&mut self, max_len: Option<u16>) {
+        Characteristic::set_max_len(self, max_len)
+    }
 
-    fn get_max_data_len(&self) -> Option<u32> { Characteristic::get_max_data_len(self) }
+    fn get_max_data_len(&self) -> Option<u32> {
+        Characteristic::get_max_data_len(self)
+    }
 
-    fn set_max_data_len(&mut self, max_data_len: Option<u32>) { Characteristic::set_max_data_len(self, max_data_len) }
+    fn set_max_data_len(&mut self, max_data_len: Option<u32>) {
+        Characteristic::set_max_data_len(self, max_data_len)
+    }
 
     fn get_valid_values(&self) -> Option<Vec<serde_json::Value>> {
         Characteristic::get_valid_values(self).map(|v| v.into_iter().map(|v| json!(v)).collect())
     }
 
     fn set_valid_values(&mut self, valid_values: Option<Vec<serde_json::Value>>) -> Result<()> {
-        Characteristic::set_valid_values(self, match valid_values {
-            Some(v) => Some(
-                v.into_iter()
-                    .map(|v| {
-                        serde_json::from_value(v).map_err(|_| Error::InvalidValue(Characteristic::get_format(self)))
-                    })
-                    .collect::<Result<Vec<T>>>()?,
-            ),
-            None => None,
-        });
+        Characteristic::set_valid_values(
+            self,
+            match valid_values {
+                Some(v) => Some(
+                    v.into_iter()
+                        .map(|v| {
+                            serde_json::from_value(v)
+                                .map_err(|_| Error::InvalidValue(Characteristic::get_format(self)))
+                        })
+                        .collect::<Result<Vec<T>>>()?,
+                ),
+                None => None,
+            },
+        );
 
         Ok(())
     }
@@ -812,28 +974,45 @@ where
         Characteristic::get_valid_values_range(self).map(|v| [json!(v[0]), json!(v[1])])
     }
 
-    fn set_valid_values_range(&mut self, valid_values_range: Option<[serde_json::Value; 2]>) -> Result<()> {
-        Characteristic::set_valid_values_range(self, match valid_values_range {
-            Some([start, end]) => Some(Result::<[T; 2]>::Ok([
-                serde_json::from_value(start).map_err(|_| Error::InvalidValue(Characteristic::get_format(self)))?,
-                serde_json::from_value(end).map_err(|_| Error::InvalidValue(Characteristic::get_format(self)))?,
-            ])?),
-            None => None,
-        });
+    fn set_valid_values_range(
+        &mut self,
+        valid_values_range: Option<[serde_json::Value; 2]>,
+    ) -> Result<()> {
+        Characteristic::set_valid_values_range(
+            self,
+            match valid_values_range {
+                Some([start, end]) => Some(Result::<[T; 2]>::Ok([
+                    serde_json::from_value(start)
+                        .map_err(|_| Error::InvalidValue(Characteristic::get_format(self)))?,
+                    serde_json::from_value(end)
+                        .map_err(|_| Error::InvalidValue(Characteristic::get_format(self)))?,
+                ])?),
+                None => None,
+            },
+        );
 
         Ok(())
     }
 
-    fn get_ttl(&self) -> Option<u64> { Characteristic::get_ttl(self) }
+    fn get_ttl(&self) -> Option<u64> {
+        Characteristic::get_ttl(self)
+    }
 
-    fn set_ttl(&mut self, ttl: Option<u64>) { Characteristic::set_ttl(self, ttl) }
+    fn set_ttl(&mut self, ttl: Option<u64>) {
+        Characteristic::set_ttl(self, ttl)
+    }
 
-    fn get_pid(&self) -> Option<u64> { Characteristic::get_pid(self) }
+    fn get_pid(&self) -> Option<u64> {
+        Characteristic::get_pid(self)
+    }
 
-    fn set_pid(&mut self, pid: Option<u64>) { Characteristic::set_pid(self, pid) }
+    fn set_pid(&mut self, pid: Option<u64>) {
+        Characteristic::set_pid(self, pid)
+    }
 }
 
-impl<T: fmt::Debug + Default + Clone + Serialize + Send + Sync> HapCharacteristicSetup for Characteristic<T>
+impl<T: fmt::Debug + Default + Clone + Serialize + Send + Sync> HapCharacteristicSetup
+    for Characteristic<T>
 where
     for<'de> T: Deserialize<'de>,
 {
@@ -842,27 +1021,42 @@ where
     }
 }
 
-impl<T: fmt::Debug + Default + Clone + Serialize + Send + Sync> CharacteristicCallbacks<T> for Characteristic<T>
+impl<T: fmt::Debug + Default + Clone + Serialize + Send + Sync> CharacteristicCallbacks<T>
+    for Characteristic<T>
 where
     for<'de> T: Deserialize<'de>,
 {
-    fn on_read(&mut self, f: Option<impl OnReadFn<T>>) { Characteristic::on_read(self, f) }
+    fn on_read(&mut self, f: Option<impl OnReadFn<T>>) {
+        Characteristic::on_read(self, f)
+    }
 
-    fn on_update(&mut self, f: Option<impl OnUpdateFn<T>>) { Characteristic::on_update(self, f) }
+    fn on_update(&mut self, f: Option<impl OnUpdateFn<T>>) {
+        Characteristic::on_update(self, f)
+    }
 }
 
-impl<T: fmt::Debug + Default + Clone + Serialize + Send + Sync> AsyncCharacteristicCallbacks<T> for Characteristic<T>
+impl<T: fmt::Debug + Default + Clone + Serialize + Send + Sync> AsyncCharacteristicCallbacks<T>
+    for Characteristic<T>
 where
     for<'de> T: Deserialize<'de>,
 {
-    fn on_read_async(&mut self, f: Option<impl OnReadFuture<T>>) { Characteristic::on_read_async(self, f) }
+    fn on_read_async(&mut self, f: Option<impl OnReadFuture<T>>) {
+        Characteristic::on_read_async(self, f)
+    }
 
-    fn on_update_async(&mut self, f: Option<impl OnUpdateFuture<T>>) { Characteristic::on_update_async(self, f) }
+    fn on_update_async(&mut self, f: Option<impl OnUpdateFuture<T>>) {
+        Characteristic::on_update_async(self, f)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::FutureExt;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
     #[test]
     fn test_json_serialization() {
@@ -898,5 +1092,43 @@ mod tests {
         };
         let json = serde_json::to_string(&characteristic).unwrap();
         assert_eq!(json, "{\"iid\":1,\"type\":\"C1\",\"format\":\"uint16\",\"perms\":[\"pr\",\"ev\"],\"description\":\"Acme Tilt Angle\",\"ev\":true,\"value\":123,\"unit\":\"arcdegrees\",\"maxValue\":360,\"minValue\":0,\"minStep\":1,\"valid-values-range\":[0,360]}".to_string());
+    }
+
+    #[tokio::test]
+    async fn sync_read_callback_does_not_invoke_async_update_callback() {
+        let updates = Arc::new(AtomicUsize::new(0));
+        let updates_ = updates.clone();
+        let mut characteristic = Characteristic::<u8>::default();
+        characteristic.on_read(Some(|| Ok(Some(42))));
+        characteristic.on_update_async(Some(move |_, _| {
+            let updates = updates_.clone();
+            async move {
+                updates.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+            .boxed()
+        }));
+
+        assert_eq!(characteristic.get_value().await.unwrap(), 42);
+        assert_eq!(updates.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn async_read_callback_does_not_invoke_update_callback() {
+        let updates = Arc::new(AtomicUsize::new(0));
+        let updates_ = updates.clone();
+        let mut characteristic = Characteristic::<u8>::default();
+        characteristic.on_read_async(Some(|| async { Ok(Some(42)) }.boxed()));
+        characteristic.on_update_async(Some(move |_, _| {
+            let updates = updates_.clone();
+            async move {
+                updates.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+            .boxed()
+        }));
+
+        assert_eq!(characteristic.get_value().await.unwrap(), 42);
+        assert_eq!(updates.load(Ordering::SeqCst), 0);
     }
 }

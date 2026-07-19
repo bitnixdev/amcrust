@@ -3,11 +3,8 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
+    characteristic::{version::VersionCharacteristic, HapCharacteristic},
     service::HapService,
-    characteristic::{
-        HapCharacteristic,
-		version::VersionCharacteristic,
-	},
     HapType,
 };
 
@@ -25,9 +22,8 @@ pub struct ProtocolInformationService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Version characteristic (required).
-	pub version: VersionCharacteristic,
-
+    /// Version characteristic (required).
+    pub version: VersionCharacteristic,
 }
 
 impl ProtocolInformationService {
@@ -36,8 +32,8 @@ impl ProtocolInformationService {
         Self {
             id,
             hap_type: HapType::ProtocolInformation,
-			version: VersionCharacteristic::new(id + 1 + 0, accessory_id),
-			..Default::default()
+            version: VersionCharacteristic::new(id + 1 + 0, accessory_id),
+            ..Default::default()
         }
     }
 }
@@ -103,18 +99,14 @@ impl HapService for ProtocolInformationService {
 
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.version,
-		];
-		characteristics
+        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![&self.version];
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.version,
-		];
-		characteristics
+        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![&mut self.version];
+        characteristics
     }
 }
 

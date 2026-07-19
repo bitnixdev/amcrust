@@ -8,15 +8,12 @@ use crate::{
         configured_name::ConfiguredNameCharacteristic,
         firmware_revision::FirmwareRevisionCharacteristic,
         hardware_finish::HardwareFinishCharacteristic,
-        hardware_revision::HardwareRevisionCharacteristic,
-        product_data::ProductDataCharacteristic,
-        software_revision::SoftwareRevisionCharacteristic,
-        HapCharacteristic,
+        hardware_revision::HardwareRevisionCharacteristic, product_data::ProductDataCharacteristic,
+        software_revision::SoftwareRevisionCharacteristic, HapCharacteristic,
     },
     pointer,
     service::{accessory_information::AccessoryInformationService, HapService},
-    HapType,
-    Result,
+    HapType, Result,
 };
 
 mod category;
@@ -47,14 +44,20 @@ serialize_trait_object!(HapAccessory);
 /// HAP server for setup purposes. It's not meant to be used by a consumer of the library.
 pub trait HapAccessorySetup {
     /// Sets a pointer to an `EventEmitter` on all characteristics of the accessory.
-    fn set_event_emitter_on_characteristics(&mut self, event_emitter: Option<pointer::EventEmitter>);
+    fn set_event_emitter_on_characteristics(
+        &mut self,
+        event_emitter: Option<pointer::EventEmitter>,
+    );
 }
 
 impl<H> HapAccessorySetup for H
 where
     H: HapAccessory,
 {
-    fn set_event_emitter_on_characteristics(&mut self, event_emitter: Option<pointer::EventEmitter>) {
+    fn set_event_emitter_on_characteristics(
+        &mut self,
+        event_emitter: Option<pointer::EventEmitter>,
+    ) {
         for service in self.get_mut_services() {
             for characteristic in service.get_mut_characteristics() {
                 characteristic.set_event_emitter(event_emitter.clone());
@@ -139,10 +142,16 @@ impl AccessoryInformation {
         let mut i = AccessoryInformationService::new(id, accessory_id);
 
         executor::block_on(i.identify.set_value(serde_json::Value::Bool(false)))?;
-        executor::block_on(i.manufacturer.set_value(serde_json::Value::String(self.manufacturer)))?;
+        executor::block_on(
+            i.manufacturer
+                .set_value(serde_json::Value::String(self.manufacturer)),
+        )?;
         executor::block_on(i.model.set_value(serde_json::Value::String(self.model)))?;
         executor::block_on(i.name.set_value(serde_json::Value::String(self.name)))?;
-        executor::block_on(i.serial_number.set_value(serde_json::Value::String(self.serial_number)))?;
+        executor::block_on(
+            i.serial_number
+                .set_value(serde_json::Value::String(self.serial_number)),
+        )?;
 
         if let Some(v) = self.accessory_flags {
             let mut c = AccessoryFlagsCharacteristic::new(id + 6, accessory_id);

@@ -3,16 +3,13 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
-        HapCharacteristic,
-		programmable_switch_event::ProgrammableSwitchEventCharacteristic,
-		brightness::BrightnessCharacteristic,
-		mute::MuteCharacteristic,
-		name::NameCharacteristic,
-		operating_state_response::OperatingStateResponseCharacteristic,
-		volume::VolumeCharacteristic,
-	},
+        brightness::BrightnessCharacteristic, mute::MuteCharacteristic, name::NameCharacteristic,
+        operating_state_response::OperatingStateResponseCharacteristic,
+        programmable_switch_event::ProgrammableSwitchEventCharacteristic,
+        volume::VolumeCharacteristic, HapCharacteristic,
+    },
+    service::HapService,
     HapType,
 };
 
@@ -30,19 +27,19 @@ pub struct DoorbellService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Programmable Switch Event characteristic (required).
-	pub programmable_switch_event: ProgrammableSwitchEventCharacteristic,
+    /// Programmable Switch Event characteristic (required).
+    pub programmable_switch_event: ProgrammableSwitchEventCharacteristic,
 
-	/// Brightness characteristic (optional).
-	pub brightness: Option<BrightnessCharacteristic>,
-	/// Mute characteristic (optional).
-	pub mute: Option<MuteCharacteristic>,
-	/// Name characteristic (optional).
-	pub name: Option<NameCharacteristic>,
-	/// Operating State Response characteristic (optional).
-	pub operating_state_response: Option<OperatingStateResponseCharacteristic>,
-	/// Volume characteristic (optional).
-	pub volume: Option<VolumeCharacteristic>,
+    /// Brightness characteristic (optional).
+    pub brightness: Option<BrightnessCharacteristic>,
+    /// Mute characteristic (optional).
+    pub mute: Option<MuteCharacteristic>,
+    /// Name characteristic (optional).
+    pub name: Option<NameCharacteristic>,
+    /// Operating State Response characteristic (optional).
+    pub operating_state_response: Option<OperatingStateResponseCharacteristic>,
+    /// Volume characteristic (optional).
+    pub volume: Option<VolumeCharacteristic>,
 }
 
 impl DoorbellService {
@@ -51,13 +48,19 @@ impl DoorbellService {
         Self {
             id,
             hap_type: HapType::Doorbell,
-			programmable_switch_event: ProgrammableSwitchEventCharacteristic::new(id + 1 + 0, accessory_id),
-			brightness: Some(BrightnessCharacteristic::new(id + 1 + 0 + 1, accessory_id)),
-			mute: Some(MuteCharacteristic::new(id + 1 + 1 + 1, accessory_id)),
-			name: Some(NameCharacteristic::new(id + 1 + 2 + 1, accessory_id)),
-			operating_state_response: Some(OperatingStateResponseCharacteristic::new(id + 1 + 3 + 1, accessory_id)),
-			volume: Some(VolumeCharacteristic::new(id + 1 + 4 + 1, accessory_id)),
-			..Default::default()
+            programmable_switch_event: ProgrammableSwitchEventCharacteristic::new(
+                id + 1 + 0,
+                accessory_id,
+            ),
+            brightness: Some(BrightnessCharacteristic::new(id + 1 + 0 + 1, accessory_id)),
+            mute: Some(MuteCharacteristic::new(id + 1 + 1 + 1, accessory_id)),
+            name: Some(NameCharacteristic::new(id + 1 + 2 + 1, accessory_id)),
+            operating_state_response: Some(OperatingStateResponseCharacteristic::new(
+                id + 1 + 3 + 1,
+                accessory_id,
+            )),
+            volume: Some(VolumeCharacteristic::new(id + 1 + 4 + 1, accessory_id)),
+            ..Default::default()
         }
     }
 }
@@ -123,48 +126,46 @@ impl HapService for DoorbellService {
 
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.programmable_switch_event,
-		];
-		if let Some(c) = &self.brightness {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.mute {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.operating_state_response {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.volume {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&dyn HapCharacteristic> =
+            vec![&self.programmable_switch_event];
+        if let Some(c) = &self.brightness {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.mute {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.operating_state_response {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.volume {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.programmable_switch_event,
-		];
-		if let Some(c) = &mut self.brightness {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.mute {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.name {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.operating_state_response {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.volume {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&mut dyn HapCharacteristic> =
+            vec![&mut self.programmable_switch_event];
+        if let Some(c) = &mut self.brightness {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.mute {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.name {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.operating_state_response {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.volume {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

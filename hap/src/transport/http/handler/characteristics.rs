@@ -7,23 +7,18 @@ use url::form_urlencoded;
 use crate::{
     pointer,
     transport::http::{
-        handler::JsonHandlerExt,
-        json_response,
-        status_response,
-        CharacteristicResponseBody,
-        ReadResponseObject,
-        Status,
-        WriteObject,
-        WriteResponseObject,
+        handler::JsonHandlerExt, json_response, status_response, CharacteristicResponseBody,
+        ReadResponseObject, Status, WriteObject, WriteResponseObject,
     },
-    Error,
-    Result,
+    Error, Result,
 };
 
 pub struct GetCharacteristics;
 
 impl GetCharacteristics {
-    pub fn new() -> Self { GetCharacteristics }
+    pub fn new() -> Self {
+        GetCharacteristics
+    }
 }
 
 impl JsonHandlerExt for GetCharacteristics {
@@ -50,7 +45,9 @@ impl JsonHandlerExt for GetCharacteristics {
                     queries.insert(key.into(), val.into());
                 }
                 let (f_meta, f_perms, f_type, f_ev) = check_flags(&queries);
-                let q_id = queries.get("id").ok_or(Error::HttpStatus(StatusCode::BAD_REQUEST))?;
+                let q_id = queries
+                    .get("id")
+                    .ok_or(Error::HttpStatus(StatusCode::BAD_REQUEST))?;
                 let ids = q_id.split(',').collect::<Vec<&str>>();
                 for id in ids {
                     let id_pair = id.split('.').collect::<Vec<&str>>();
@@ -72,7 +69,7 @@ impl JsonHandlerExt for GetCharacteristics {
                                 res_object.value = None;
                             }
                             res_object
-                        },
+                        }
                         Err(e) => {
                             error!("error reading characteristic: {:?}", e);
                             some_err = true;
@@ -82,7 +79,7 @@ impl JsonHandlerExt for GetCharacteristics {
                                 status: Some(Status::ServiceCommunicationFailure as i32),
                                 ..Default::default()
                             }
-                        },
+                        }
                     };
 
                     resp_body.characteristics.push(res_object);
@@ -119,7 +116,9 @@ fn check_flags(flags: &HashMap<String, String>) -> (bool, bool, bool, bool) {
 pub struct UpdateCharacteristics;
 
 impl UpdateCharacteristics {
-    pub fn new() -> Self { UpdateCharacteristics {} }
+    pub fn new() -> Self {
+        UpdateCharacteristics {}
+    }
 }
 
 impl JsonHandlerExt for UpdateCharacteristics {
@@ -137,7 +136,8 @@ impl JsonHandlerExt for UpdateCharacteristics {
         async move {
             let aggregated_body = hyper::body::aggregate(body).await?;
 
-            let write_body: CharacteristicResponseBody<WriteObject> = serde_json::from_slice(aggregated_body.chunk())?;
+            let write_body: CharacteristicResponseBody<WriteObject> =
+                serde_json::from_slice(aggregated_body.chunk())?;
             let mut resp_body = CharacteristicResponseBody::<WriteResponseObject> {
                 characteristics: Vec::new(),
             };
@@ -164,7 +164,7 @@ impl JsonHandlerExt for UpdateCharacteristics {
                             all_err = false;
                         }
                         res_object
-                    },
+                    }
                     Err(e) => {
                         error!("error updating characteristic: {:?}", e);
                         some_err = true;
@@ -174,7 +174,7 @@ impl JsonHandlerExt for UpdateCharacteristics {
                             status: Status::ServiceCommunicationFailure as i32,
                             value: None,
                         }
-                    },
+                    }
                 };
 
                 resp_body.characteristics.push(res_object);

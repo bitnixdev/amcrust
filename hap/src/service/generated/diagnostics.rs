@@ -3,13 +3,13 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
+        selected_diagnostics_modes::SelectedDiagnosticsModesCharacteristic,
+        supported_diagnostics_modes::SupportedDiagnosticsModesCharacteristic,
+        supported_diagnostics_snapshot::SupportedDiagnosticsSnapshotCharacteristic,
         HapCharacteristic,
-		supported_diagnostics_snapshot::SupportedDiagnosticsSnapshotCharacteristic,
-		selected_diagnostics_modes::SelectedDiagnosticsModesCharacteristic,
-		supported_diagnostics_modes::SupportedDiagnosticsModesCharacteristic,
-	},
+    },
+    service::HapService,
     HapType,
 };
 
@@ -27,13 +27,13 @@ pub struct DiagnosticsService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Supported Diagnostics Snapshot characteristic (required).
-	pub supported_diagnostics_snapshot: SupportedDiagnosticsSnapshotCharacteristic,
+    /// Supported Diagnostics Snapshot characteristic (required).
+    pub supported_diagnostics_snapshot: SupportedDiagnosticsSnapshotCharacteristic,
 
-	/// Selected Diagnostics Modes characteristic (optional).
-	pub selected_diagnostics_modes: Option<SelectedDiagnosticsModesCharacteristic>,
-	/// Supported Diagnostics Modes characteristic (optional).
-	pub supported_diagnostics_modes: Option<SupportedDiagnosticsModesCharacteristic>,
+    /// Selected Diagnostics Modes characteristic (optional).
+    pub selected_diagnostics_modes: Option<SelectedDiagnosticsModesCharacteristic>,
+    /// Supported Diagnostics Modes characteristic (optional).
+    pub supported_diagnostics_modes: Option<SupportedDiagnosticsModesCharacteristic>,
 }
 
 impl DiagnosticsService {
@@ -42,10 +42,19 @@ impl DiagnosticsService {
         Self {
             id,
             hap_type: HapType::Diagnostics,
-			supported_diagnostics_snapshot: SupportedDiagnosticsSnapshotCharacteristic::new(id + 1 + 0, accessory_id),
-			selected_diagnostics_modes: Some(SelectedDiagnosticsModesCharacteristic::new(id + 1 + 0 + 1, accessory_id)),
-			supported_diagnostics_modes: Some(SupportedDiagnosticsModesCharacteristic::new(id + 1 + 1 + 1, accessory_id)),
-			..Default::default()
+            supported_diagnostics_snapshot: SupportedDiagnosticsSnapshotCharacteristic::new(
+                id + 1 + 0,
+                accessory_id,
+            ),
+            selected_diagnostics_modes: Some(SelectedDiagnosticsModesCharacteristic::new(
+                id + 1 + 0 + 1,
+                accessory_id,
+            )),
+            supported_diagnostics_modes: Some(SupportedDiagnosticsModesCharacteristic::new(
+                id + 1 + 1 + 1,
+                accessory_id,
+            )),
+            ..Default::default()
         }
     }
 }
@@ -111,30 +120,28 @@ impl HapService for DiagnosticsService {
 
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.supported_diagnostics_snapshot,
-		];
-		if let Some(c) = &self.selected_diagnostics_modes {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &self.supported_diagnostics_modes {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&dyn HapCharacteristic> =
+            vec![&self.supported_diagnostics_snapshot];
+        if let Some(c) = &self.selected_diagnostics_modes {
+            characteristics.push(c);
+        }
+        if let Some(c) = &self.supported_diagnostics_modes {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
-        let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.supported_diagnostics_snapshot,
-		];
-		if let Some(c) = &mut self.selected_diagnostics_modes {
-		    characteristics.push(c);
-		}
-		if let Some(c) = &mut self.supported_diagnostics_modes {
-		    characteristics.push(c);
-		}
-		characteristics
+        let mut characteristics: Vec<&mut dyn HapCharacteristic> =
+            vec![&mut self.supported_diagnostics_snapshot];
+        if let Some(c) = &mut self.selected_diagnostics_modes {
+            characteristics.push(c);
+        }
+        if let Some(c) = &mut self.supported_diagnostics_modes {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

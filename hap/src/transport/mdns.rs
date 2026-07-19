@@ -26,9 +26,11 @@ impl MdnsResponder {
         let allowed_ips = vec![c.host];
         drop(c);
 
-        let (responder, task) =
-            Responder::with_default_handle_and_ip_list_and_hostname(allowed_ips.clone(), hostname.clone())
-                .expect("creating mDNS responder");
+        let (responder, task) = Responder::with_default_handle_and_ip_list_and_hostname(
+            allowed_ips.clone(),
+            hostname.clone(),
+        )
+        .expect("creating mDNS responder");
 
         MdnsResponder {
             config,
@@ -54,15 +56,22 @@ impl MdnsResponder {
 
         drop(c);
 
-        self.service = Some(self.responder.register("_hap._tcp".into(), name, port, &[
-            &tr[0], &tr[1], &tr[2], &tr[3], &tr[4], &tr[5], &tr[6], &tr[7],
-        ]));
+        self.service = Some(self.responder.register(
+            "_hap._tcp".into(),
+            name,
+            port,
+            &[
+                &tr[0], &tr[1], &tr[2], &tr[3], &tr[4], &tr[5], &tr[6], &tr[7],
+            ],
+        ));
 
         debug!("setting mDNS records: {:?}", &tr);
     }
 
     /// Returns the mDNS task to throw on a scheduler.
-    pub fn run_handle(&mut self) -> Box<dyn futures::Future<Output = ()> + Unpin + std::marker::Send> {
+    pub fn run_handle(
+        &mut self,
+    ) -> Box<dyn futures::Future<Output = ()> + Unpin + std::marker::Send> {
         match self.task.take() {
             Some(task) => task,
             // if the task handle is gone, recreate the whole responder
@@ -75,7 +84,7 @@ impl MdnsResponder {
                 self.responder = responder;
 
                 task
-            },
+            }
         }
     }
 }
@@ -84,7 +93,13 @@ impl MdnsResponder {
 fn accessory_hostname(name: &str) -> String {
     let slug: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect();
     format!("hap-{}", slug.trim_matches('-'))
 }

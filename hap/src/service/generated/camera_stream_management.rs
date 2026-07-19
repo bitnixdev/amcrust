@@ -3,17 +3,17 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-    service::HapService,
     characteristic::{
+        active::ActiveCharacteristic,
+        selected_stream_configuration::SelectedStreamConfigurationCharacteristic,
+        setup_endpoint::SetupEndpointCharacteristic,
+        streaming_status::StreamingStatusCharacteristic,
+        supported_audio_stream_configuration::SupportedAudioStreamConfigurationCharacteristic,
+        supported_rtp_configuration::SupportedRtpConfigurationCharacteristic,
+        supported_video_stream_configuration::SupportedVideoStreamConfigurationCharacteristic,
         HapCharacteristic,
-		selected_stream_configuration::SelectedStreamConfigurationCharacteristic,
-		setup_endpoint::SetupEndpointCharacteristic,
-		streaming_status::StreamingStatusCharacteristic,
-		supported_audio_stream_configuration::SupportedAudioStreamConfigurationCharacteristic,
-		supported_rtp_configuration::SupportedRtpConfigurationCharacteristic,
-		supported_video_stream_configuration::SupportedVideoStreamConfigurationCharacteristic,
-		active::ActiveCharacteristic,
-	},
+    },
+    service::HapService,
     HapType,
 };
 
@@ -31,21 +31,21 @@ pub struct CameraStreamManagementService {
     /// An array of numbers containing the instance IDs of the services that this service links to.
     linked_services: Vec<u64>,
 
-	/// Selected Stream Configuration characteristic (required).
-	pub selected_stream_configuration: SelectedStreamConfigurationCharacteristic,
-	/// Setup Endpoint characteristic (required).
-	pub setup_endpoint: SetupEndpointCharacteristic,
-	/// Streaming Status characteristic (required).
-	pub streaming_status: StreamingStatusCharacteristic,
-	/// Supported Audio Stream Configuration characteristic (required).
-	pub supported_audio_stream_configuration: SupportedAudioStreamConfigurationCharacteristic,
-	/// Supported RTP Configuration characteristic (required).
-	pub supported_rtp_configuration: SupportedRtpConfigurationCharacteristic,
-	/// Supported Video Stream Configuration characteristic (required).
-	pub supported_video_stream_configuration: SupportedVideoStreamConfigurationCharacteristic,
+    /// Selected Stream Configuration characteristic (required).
+    pub selected_stream_configuration: SelectedStreamConfigurationCharacteristic,
+    /// Setup Endpoint characteristic (required).
+    pub setup_endpoint: SetupEndpointCharacteristic,
+    /// Streaming Status characteristic (required).
+    pub streaming_status: StreamingStatusCharacteristic,
+    /// Supported Audio Stream Configuration characteristic (required).
+    pub supported_audio_stream_configuration: SupportedAudioStreamConfigurationCharacteristic,
+    /// Supported RTP Configuration characteristic (required).
+    pub supported_rtp_configuration: SupportedRtpConfigurationCharacteristic,
+    /// Supported Video Stream Configuration characteristic (required).
+    pub supported_video_stream_configuration: SupportedVideoStreamConfigurationCharacteristic,
 
-	/// Active characteristic (optional).
-	pub active: Option<ActiveCharacteristic>,
+    /// Active characteristic (optional).
+    pub active: Option<ActiveCharacteristic>,
 }
 
 impl CameraStreamManagementService {
@@ -54,14 +54,22 @@ impl CameraStreamManagementService {
         Self {
             id,
             hap_type: HapType::CameraStreamManagement,
-			selected_stream_configuration: SelectedStreamConfigurationCharacteristic::new(id + 1 + 0, accessory_id),
-			setup_endpoint: SetupEndpointCharacteristic::new(id + 1 + 1, accessory_id),
-			streaming_status: StreamingStatusCharacteristic::new(id + 1 + 2, accessory_id),
-			supported_audio_stream_configuration: SupportedAudioStreamConfigurationCharacteristic::new(id + 1 + 3, accessory_id),
-			supported_rtp_configuration: SupportedRtpConfigurationCharacteristic::new(id + 1 + 4, accessory_id),
-			supported_video_stream_configuration: SupportedVideoStreamConfigurationCharacteristic::new(id + 1 + 5, accessory_id),
-			active: Some(ActiveCharacteristic::new(id + 1 + 0 + 6, accessory_id)),
-			..Default::default()
+            selected_stream_configuration: SelectedStreamConfigurationCharacteristic::new(
+                id + 1 + 0,
+                accessory_id,
+            ),
+            setup_endpoint: SetupEndpointCharacteristic::new(id + 1 + 1, accessory_id),
+            streaming_status: StreamingStatusCharacteristic::new(id + 1 + 2, accessory_id),
+            supported_audio_stream_configuration:
+                SupportedAudioStreamConfigurationCharacteristic::new(id + 1 + 3, accessory_id),
+            supported_rtp_configuration: SupportedRtpConfigurationCharacteristic::new(
+                id + 1 + 4,
+                accessory_id,
+            ),
+            supported_video_stream_configuration:
+                SupportedVideoStreamConfigurationCharacteristic::new(id + 1 + 5, accessory_id),
+            active: Some(ActiveCharacteristic::new(id + 1 + 0 + 6, accessory_id)),
+            ..Default::default()
         }
     }
 }
@@ -128,33 +136,33 @@ impl HapService for CameraStreamManagementService {
     fn get_characteristics(&self) -> Vec<&dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&dyn HapCharacteristic> = vec![
-			&self.selected_stream_configuration,
-			&self.setup_endpoint,
-			&self.streaming_status,
-			&self.supported_audio_stream_configuration,
-			&self.supported_rtp_configuration,
-			&self.supported_video_stream_configuration,
-		];
-		if let Some(c) = &self.active {
-		    characteristics.push(c);
-		}
-		characteristics
+            &self.selected_stream_configuration,
+            &self.setup_endpoint,
+            &self.streaming_status,
+            &self.supported_audio_stream_configuration,
+            &self.supported_rtp_configuration,
+            &self.supported_video_stream_configuration,
+        ];
+        if let Some(c) = &self.active {
+            characteristics.push(c);
+        }
+        characteristics
     }
 
     fn get_mut_characteristics(&mut self) -> Vec<&mut dyn HapCharacteristic> {
         #[allow(unused_mut)]
         let mut characteristics: Vec<&mut dyn HapCharacteristic> = vec![
-			&mut self.selected_stream_configuration,
-			&mut self.setup_endpoint,
-			&mut self.streaming_status,
-			&mut self.supported_audio_stream_configuration,
-			&mut self.supported_rtp_configuration,
-			&mut self.supported_video_stream_configuration,
-		];
-		if let Some(c) = &mut self.active {
-		    characteristics.push(c);
-		}
-		characteristics
+            &mut self.selected_stream_configuration,
+            &mut self.setup_endpoint,
+            &mut self.streaming_status,
+            &mut self.supported_audio_stream_configuration,
+            &mut self.supported_rtp_configuration,
+            &mut self.supported_video_stream_configuration,
+        ];
+        if let Some(c) = &mut self.active {
+            characteristics.push(c);
+        }
+        characteristics
     }
 }
 

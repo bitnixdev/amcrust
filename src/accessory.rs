@@ -13,14 +13,17 @@ use hap::{
     HapType, Result,
     accessory::{AccessoryInformation, HapAccessory},
     characteristic::{
-        AsyncCharacteristicCallbacks, CharacteristicCallbacks, HapCharacteristic, active::ActiveCharacteristic,
+        AsyncCharacteristicCallbacks, CharacteristicCallbacks, HapCharacteristic,
+        active::ActiveCharacteristic,
     },
     pointer,
     service::{
         HapService, accessory_information::AccessoryInformationService,
-        camera_operating_mode::CameraOperatingModeService, camera_recording_management::CameraRecordingManagementService,
+        camera_operating_mode::CameraOperatingModeService,
+        camera_recording_management::CameraRecordingManagementService,
         camera_stream_management::CameraStreamManagementService,
-        data_stream_transport_management::DataStreamTransportManagementService, motion_sensor::MotionSensorService,
+        data_stream_transport_management::DataStreamTransportManagementService,
+        motion_sensor::MotionSensorService,
     },
 };
 
@@ -91,7 +94,9 @@ impl HapService for HsvMotionSensorService {
         self.inner.set_linked_services(linked)
     }
     fn get_characteristic(&self, hap_type: HapType) -> Option<&dyn HapCharacteristic> {
-        self.get_characteristics().into_iter().find(|c| c.get_type() == hap_type)
+        self.get_characteristics()
+            .into_iter()
+            .find(|c| c.get_type() == hap_type)
     }
     fn get_mut_characteristic(&mut self, hap_type: HapType) -> Option<&mut dyn HapCharacteristic> {
         self.get_mut_characteristics()
@@ -196,7 +201,10 @@ impl CameraAccessory {
     }
 }
 
-async fn build_stream_management(id: u64, streams: &StreamManager) -> Result<CameraStreamManagementService> {
+async fn build_stream_management(
+    id: u64,
+    streams: &StreamManager,
+) -> Result<CameraStreamManagementService> {
     let mut svc = CameraStreamManagementService::new(IID_STREAM_MGMT, id);
     svc.set_primary(true);
 
@@ -217,14 +225,15 @@ async fn build_stream_management(id: u64, streams: &StreamManager) -> Result<Cam
         .await?;
 
     let streams_ = streams.clone();
-    svc.setup_endpoint.on_update_async(Some(move |_old: Vec<u8>, new: Vec<u8>| {
-        let streams = streams_.clone();
-        async move {
-            streams.handle_setup_write(new).await;
-            Ok(())
-        }
-        .boxed()
-    }));
+    svc.setup_endpoint
+        .on_update_async(Some(move |_old: Vec<u8>, new: Vec<u8>| {
+            let streams = streams_.clone();
+            async move {
+                streams.handle_setup_write(new).await;
+                Ok(())
+            }
+            .boxed()
+        }));
     let streams_ = streams.clone();
     svc.setup_endpoint.on_read_async(Some(move || {
         let streams = streams_.clone();
@@ -258,26 +267,28 @@ async fn build_operating_mode(id: u64, hsv: &Arc<HsvState>) -> Result<CameraOper
         .set_value(json!(hsv.event_snapshots.load(Ordering::SeqCst)))
         .await?;
     let hsv_ = hsv.clone();
-    svc.event_snapshots_active.on_update(Some(move |_: &bool, new: &bool| {
-        hsv_.event_snapshots.store(*new, Ordering::SeqCst);
-        let hsv = hsv_.clone();
-        tokio::spawn(async move { hsv.persist().await });
-        Ok(())
-    }));
+    svc.event_snapshots_active
+        .on_update(Some(move |_: &bool, new: &bool| {
+            hsv_.event_snapshots.store(*new, Ordering::SeqCst);
+            let hsv = hsv_.clone();
+            tokio::spawn(async move { hsv.persist().await });
+            Ok(())
+        }));
 
     svc.homekit_camera_active
         .set_value(json!(hsv.homekit_active.load(Ordering::SeqCst)))
         .await?;
     let hsv_ = hsv.clone();
-    svc.homekit_camera_active.on_update(Some(move |_: &bool, new: &bool| {
-        hsv_.homekit_active.store(*new, Ordering::SeqCst);
-        let hsv = hsv_.clone();
-        tokio::spawn(async move {
-            hsv.persist().await;
-            hsv.sync_recorder().await;
-        });
-        Ok(())
-    }));
+    svc.homekit_camera_active
+        .on_update(Some(move |_: &bool, new: &bool| {
+            hsv_.homekit_active.store(*new, Ordering::SeqCst);
+            let hsv = hsv_.clone();
+            tokio::spawn(async move {
+                hsv.persist().await;
+                hsv.sync_recorder().await;
+            });
+            Ok(())
+        }));
 
     if let Some(periodic) = svc.periodic_snapshots_active.as_mut() {
         periodic
@@ -303,7 +314,10 @@ async fn build_operating_mode(id: u64, hsv: &Arc<HsvState>) -> Result<CameraOper
     Ok(svc)
 }
 
-async fn build_recording_management(id: u64, hsv: &Arc<HsvState>) -> Result<CameraRecordingManagementService> {
+async fn build_recording_management(
+    id: u64,
+    hsv: &Arc<HsvState>,
+) -> Result<CameraRecordingManagementService> {
     let mut svc = CameraRecordingManagementService::new(IID_RECORDING_MGMT, id);
     svc.set_linked_services(vec![IID_MOTION_PERSON, IID_MOTION_VEHICLE, IID_DATA_STREAM]);
 
@@ -365,16 +379,17 @@ async fn build_recording_management(id: u64, hsv: &Arc<HsvState>) -> Result<Came
             .boxed()
         }));
     let hsv_ = hsv.clone();
-    svc.selected_camera_recording_configuration.on_read_async(Some(move || {
-        let hsv = hsv_.clone();
-        async move {
-            match hsv.selected_read().await {
-                Some(raw) => Ok(Some(raw)),
-                None => Err("no selected recording configuration".into()),
+    svc.selected_camera_recording_configuration
+        .on_read_async(Some(move || {
+            let hsv = hsv_.clone();
+            async move {
+                match hsv.selected_read().await {
+                    Some(raw) => Ok(Some(raw)),
+                    None => Err("no selected recording configuration".into()),
+                }
             }
-        }
-        .boxed()
-    }));
+            .boxed()
+        }));
 
     Ok(svc)
 }
@@ -414,14 +429,17 @@ async fn build_data_stream(
                 let command = tlv8::find(&items, 0x01);
                 let transport = tlv8::find(&items, 0x02);
                 let salt = tlv8::find(&items, 0x03);
-                let (Some(command), Some(transport), Some(salt)) = (command, transport, salt) else {
+                let (Some(command), Some(transport), Some(salt)) = (command, transport, salt)
+                else {
                     return Ok(());
                 };
                 if command.len() != 1 || transport.len() != 1 || salt.len() != 32 {
                     return Ok(());
                 }
                 if command[0] != 0 || transport[0] != 0 {
-                    warn!("unsupported data stream setup: command {command:?} transport {transport:?}");
+                    warn!(
+                        "unsupported data stream setup: command {command:?} transport {transport:?}"
+                    );
                     let response = tlv8::Writer::new().u8(0x01, 1).build(); // generic error
                     *pending.lock().unwrap() = Some(response);
                     return Ok(());
@@ -443,7 +461,8 @@ async fn build_data_stream(
                             .bytes(0x02, &params)
                             .bytes(0x03, &accessory_salt)
                             .build();
-                        let without_salt = tlv8::Writer::new().u8(0x01, 0).bytes(0x02, &params).build();
+                        let without_salt =
+                            tlv8::Writer::new().u8(0x01, 0).bytes(0x02, &params).build();
                         *pending.lock().unwrap() = Some(full);
                         *last.lock().unwrap() = Some(without_salt);
                     }
@@ -477,11 +496,15 @@ impl HapAccessory for CameraAccessory {
     }
 
     fn get_service(&self, hap_type: HapType) -> Option<&dyn HapService> {
-        self.get_services().into_iter().find(|s| s.get_type() == hap_type)
+        self.get_services()
+            .into_iter()
+            .find(|s| s.get_type() == hap_type)
     }
 
     fn get_mut_service(&mut self, hap_type: HapType) -> Option<&mut dyn HapService> {
-        self.get_mut_services().into_iter().find(|s| s.get_type() == hap_type)
+        self.get_mut_services()
+            .into_iter()
+            .find(|s| s.get_type() == hap_type)
     }
 
     fn get_services(&self) -> Vec<&dyn HapService> {

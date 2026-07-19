@@ -4,9 +4,10 @@ use serde::ser::{Serialize, SerializeStruct, Serializer};
 use crate::{
     accessory::{AccessoryInformation, HapAccessory},
     characteristic::HapCharacteristic,
-    service::{accessory_information::AccessoryInformationService, valve::ValveService, HapService},
-    HapType,
-    Result,
+    service::{
+        accessory_information::AccessoryInformationService, valve::ValveService, HapService,
+    },
+    HapType, Result,
 };
 
 /// Shower Head Accessory.
@@ -40,9 +41,13 @@ impl ShowerHeadAccessory {
 }
 
 impl HapAccessory for ShowerHeadAccessory {
-    fn get_id(&self) -> u64 { self.id }
+    fn get_id(&self) -> u64 {
+        self.id
+    }
 
-    fn set_id(&mut self, id: u64) { self.id = id; }
+    fn set_id(&mut self, id: u64) {
+        self.id = id;
+    }
 
     fn get_service(&self, hap_type: HapType) -> Option<&dyn HapService> {
         for service in self.get_services() {
@@ -62,7 +67,9 @@ impl HapAccessory for ShowerHeadAccessory {
         None
     }
 
-    fn get_services(&self) -> Vec<&dyn HapService> { vec![&self.accessory_information, &self.valve] }
+    fn get_services(&self) -> Vec<&dyn HapService> {
+        vec![&self.accessory_information, &self.valve]
+    }
 
     fn get_mut_services(&mut self) -> Vec<&mut dyn HapService> {
         vec![&mut self.accessory_information, &mut self.valve]

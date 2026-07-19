@@ -76,7 +76,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args = Args::parse();
 
-    let camera = AmcrestClient::new(args.host.clone(), args.username.clone(), args.password.clone());
+    let camera = AmcrestClient::new(
+        args.host.clone(),
+        args.username.clone(),
+        args.password.clone(),
+    );
 
     // Best-effort: fetch the camera model for the accessory information.
     let model = match camera.get_device_type().await {
@@ -108,7 +112,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Stored port is taken (e.g. by another instance); move to a
                 // free one — controllers re-resolve the port via mDNS.
                 let port = find_free_port(config.host)?;
-                warn!("stored port {} is unavailable, moving to {port}", config.port);
+                warn!(
+                    "stored port {} is unavailable, moving to {port}",
+                    config.port
+                );
                 config.port = port;
             }
             storage.save_config(&config).await?;
@@ -174,7 +181,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = config;
     if std::fs::read_to_string(&hash_path).ok().as_deref() != Some(shape_hash.as_str()) {
         config.configuration_number += 1;
-        info!("accessory shape changed; configuration number → {}", config.configuration_number);
+        info!(
+            "accessory shape changed; configuration number → {}",
+            config.configuration_number
+        );
         storage.save_config(&config).await?;
         std::fs::write(&hash_path, &shape_hash).ok();
     }
@@ -193,8 +203,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
     let accessory_ptr = server.add_accessory(camera_accessory).await?;
 
-    // Resume the recording pipeline if recording was enabled before restart.
-    hsv_state.sync_recorder().await;
+    // Restore the persisted encoder settings before resuming the recording
+    // pipeline, so ffmpeg never attaches to a stale camera configuration.
+    hsv_state.resume_recorder().await;
 
     // Snapshots for the Home app tiles, served from a background-refreshed
     // cache so requests answer instantly. Secure-video gating: reject when the
@@ -221,12 +232,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         None => -70401,
                         _ => -70412,
                     };
-                    info!("snapshot rejected ({width}x{height}, reason {reason:?}) → status {status}");
+                    info!(
+                        "snapshot rejected ({width}x{height}, reason {reason:?}) → status {status}"
+                    );
                     return Ok(hap::pointer::SnapshotResult::HapStatus(status));
                 }
                 let result = snapshots.get_scaled(width, height).await;
                 match &result {
-                    Ok(bytes) => info!("snapshot served ({width}x{height}, reason {reason:?}, {} bytes)", bytes.len()),
+                    Ok(bytes) => info!(
+                        "snapshot served ({width}x{height}, reason {reason:?}, {} bytes)",
+                        bytes.len()
+                    ),
                     Err(e) => warn!("snapshot failed ({width}x{height}): {e}"),
                 }
                 result.map(hap::pointer::SnapshotResult::Jpeg)
@@ -242,7 +258,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mapper = MotionMapper::new(accessory_ptr, motion_active);
     tokio::spawn(async move { mapper.run(rx).await });
 
-    info!("HomeKit accessory '{}' on port {} — pairing PIN: {}", args.name, hap_port, args.pin);
+    info!(
+        "HomeKit accessory '{}' on port {} — pairing PIN: {}",
+        args.name, hap_port, args.pin
+    );
 
     let handle = server.run_handle();
     tokio::select! {

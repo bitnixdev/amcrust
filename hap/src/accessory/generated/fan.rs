@@ -3,10 +3,9 @@
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::{
-	accessory::{AccessoryInformation, HapAccessory},
-	service::{HapService, accessory_information::AccessoryInformationService, fan::FanService},
-	HapType,
-	Result,
+    accessory::{AccessoryInformation, HapAccessory},
+    service::{accessory_information::AccessoryInformationService, fan::FanService, HapService},
+    HapType, Result,
 };
 
 /// Fan accessory.
@@ -65,17 +64,11 @@ impl HapAccessory for FanAccessory {
     }
 
     fn get_services(&self) -> Vec<&dyn HapService> {
-        vec![
-            &self.accessory_information,
-            &self.fan,
-        ]
+        vec![&self.accessory_information, &self.fan]
     }
 
     fn get_mut_services(&mut self) -> Vec<&mut dyn HapService> {
-        vec![
-            &mut self.accessory_information,
-            &mut self.fan,
-        ]
+        vec![&mut self.accessory_information, &mut self.fan]
     }
 }
 
