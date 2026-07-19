@@ -8,7 +8,7 @@
 
   cfg = config.services.amcrust;
 
-  cameraModule = {name, ...}: {
+  cameraModule = {name, config, ...}: {
     options = {
       name = mkOption {
         type = types.str;
@@ -41,6 +41,19 @@
         description = ''
           HomeKit Accessory Protocol TCP port. When unset, amcrust chooses and
           persists a free port.
+        '';
+      };
+
+      hdsPort = mkOption {
+        type = types.port;
+        default = if config.hapPort == null then 0 else config.hapPort + 100;
+        defaultText = lib.literalExpression ''
+          if hapPort == null then 0 else hapPort + 100
+        '';
+        description = ''
+          HomeKit Data Stream TCP port used for Secure Video recording. The
+          default is 100 above a configured HAP port. This port must be
+          reachable through the host firewall. Zero chooses a dynamic port.
         '';
       };
 
@@ -103,6 +116,7 @@
         RTSP_SUBTYPE = toString camera.rtspSubtype;
         AUDIO = lib.boolToString camera.audio;
         METRICS_PORT = toString camera.metricsPort;
+        HDS_PORT = toString camera.hdsPort;
         SAVE_SNAPSHOTS = lib.boolToString camera.saveSnapshots;
       }
       // lib.optionalAttrs (camera.hapPort != null) {
@@ -162,6 +176,15 @@ in {
       description = "Group under which the camera services run.";
     };
 
+    openFirewall = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Open every configured fixed HAP and HomeKit Data Stream TCP port.
+        Enable this unless equivalent interface-specific firewall rules exist.
+      '';
+    };
+
     cameras = mkOption {
       type = types.attrsOf (types.submodule cameraModule);
       default = {};
@@ -202,6 +225,16 @@ in {
     systemd.tmpfiles.rules = [
       "d '${cfg.dataDir}' 0750 ${cfg.user} ${cfg.group} - -"
     ];
+
+    networking.firewall.allowedTCPPorts = lib.optionals cfg.openFirewall (
+      lib.unique (
+        lib.concatMap (
+          camera:
+            lib.optional (camera.hapPort != null) camera.hapPort
+            ++ lib.optional (camera.hdsPort != 0) camera.hdsPort
+        ) (lib.attrValues cfg.cameras)
+      )
+    );
 
     systemd.services =
       lib.mapAttrs' (

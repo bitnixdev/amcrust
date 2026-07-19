@@ -38,6 +38,7 @@ struct Inner {
 #[derive(Clone)]
 pub struct HdsServer {
     camera_name: Arc<str>,
+    port: u16,
     inner: Arc<Mutex<Inner>>,
     state: Arc<HsvState>,
     /// True while a dataSend recording stream is running (one at a time).
@@ -46,9 +47,15 @@ pub struct HdsServer {
 }
 
 impl HdsServer {
-    pub fn new(camera_name: String, state: Arc<HsvState>, metrics: Arc<Metrics>) -> Self {
+    pub fn new(
+        camera_name: String,
+        port: u16,
+        state: Arc<HsvState>,
+        metrics: Arc<Metrics>,
+    ) -> Self {
         Self {
             camera_name: camera_name.into(),
+            port,
             inner: Arc::new(Mutex::new(Inner {
                 listener: None,
                 prepared: Vec::new(),
@@ -81,7 +88,7 @@ impl HdsServer {
         let port = match &inner.listener {
             Some(listener) => listener.port,
             None => {
-                let listener = TcpListener::bind("0.0.0.0:0")
+                let listener = TcpListener::bind(("0.0.0.0", self.port))
                     .await
                     .map_err(|e| e.to_string())?;
                 let port = listener.local_addr().map_err(|e| e.to_string())?.port();

@@ -374,6 +374,7 @@ mod tests {
     async fn health_and_metrics_routes_return_scrapeable_responses() {
         let metrics = Metrics::new();
         let hsv = HsvState::load(
+            "test-camera".into(),
             "/path/that/does/not/exist",
             AmcrestClient::new("camera.invalid".into(), "user".into(), "password".into()),
             Arc::new(AtomicBool::new(false)),

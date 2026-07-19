@@ -65,6 +65,7 @@ Credentials can also live in a `.env` file. Options (all settable via env vars):
 | `--username`       | `AMCREST_USERNAME` | —                  | camera API user                                                 |
 | `--password`       | `AMCREST_PASSWORD` | —                  | camera API password                                             |
 | `--port`           | `HAP_PORT`         | `51826`            | HAP server port (unique per instance)                           |
+| `--hds-port`       | `HDS_PORT`         | OS-assigned        | Secure Video data-stream TCP port; must pass the firewall       |
 | `--pin`            | `HAP_PIN`          | randomly generated | override the persisted setup PIN (`1234-5678`)                  |
 | `--data-dir`       | `DATA_DIR`         | `./data`           | pairing state (`<data-dir>/<name>/`)                            |
 | `--rtsp-subtype`   | `RTSP_SUBTYPE`     | `2`                | RTSP stream: 0 = main (4K), 1/2 = sub                           |
@@ -110,10 +111,12 @@ through `nixosModules.default`. Import both into a NixOS configuration:
 
           services.amcrust = {
             enable = true;
+            openFirewall = true;
             cameras.frontyard = {
               host = "192.168.1.50";
               passwordFile = "/run/secrets/amcrest-frontyard";
               hapPort = 51826;
+              hdsPort = 51926;
               metricsPort = 9090;
             };
           };
@@ -128,6 +131,11 @@ through `nixosModules.default`. Import both into a NixOS configuration:
 systemd's credential mechanism and is not copied into the Nix store. Each
 camera creates an independent `amcrust-<name>.service`; pairing state is kept
 under `/var/lib/amcrust` by default.
+
+Secure Video uses a separate HDS TCP listener. With a fixed `hapPort`, its
+default is `hapPort + 100`; both ports must pass the firewall. Set
+`services.amcrust.openFirewall = true`, or allow the HAP and HDS ports in
+interface-specific firewall rules.
 
 ## Architecture
 

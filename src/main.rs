@@ -55,6 +55,12 @@ struct Args {
     #[arg(long, env = "HAP_PORT")]
     port: Option<u16>,
 
+    /// HomeKit Data Stream TCP port used for Secure Video recording. Zero
+    /// lets the operating system choose a port, which also requires a matching
+    /// firewall range.
+    #[arg(long, env = "HDS_PORT", default_value = "0")]
+    hds_port: u16,
+
     /// Override the generated HomeKit setup PIN (8 digits)
     #[arg(long, env = "HAP_PIN")]
     pin: Option<String>,
@@ -189,12 +195,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // HomeKit Secure Video state, recorder, and data stream server.
     let motion_active = Arc::new(AtomicBool::new(false));
     let hsv_state = HsvState::load(
+        args.name.clone(),
         &format!("{}/{}", args.data_dir, args.name),
         camera.clone(),
         motion_active.clone(),
         metrics.clone(),
     );
-    let hds = HdsServer::new(args.name.clone(), hsv_state.clone(), metrics.clone());
+    let hds = HdsServer::new(
+        args.name.clone(),
+        args.hds_port,
+        hsv_state.clone(),
+        metrics.clone(),
+    );
 
     let requested_metrics_addr = std::net::SocketAddr::from(([0, 0, 0, 0], args.metrics_port));
     let (_metrics_server, metrics_addr) =

@@ -43,6 +43,7 @@ struct PersistedState {
 }
 
 pub struct HsvState {
+    camera_name: String,
     pub recording_active: AtomicBool,
     pub audio_active: AtomicBool,
     pub event_snapshots: AtomicBool,
@@ -53,10 +54,12 @@ pub struct HsvState {
     pub motion_active: Arc<AtomicBool>,
     camera: AmcrestClient,
     path: PathBuf,
+    configuration_lock: Mutex<()>,
 }
 
 impl HsvState {
     pub fn load(
+        camera_name: String,
         data_dir: &str,
         camera: AmcrestClient,
         motion_active: Arc<AtomicBool>,
@@ -84,6 +87,7 @@ impl HsvState {
         });
 
         Arc::new(Self {
+            camera_name,
             recording_active: AtomicBool::new(persisted.recording_active),
             audio_active: AtomicBool::new(persisted.audio_active),
             event_snapshots: AtomicBool::new(persisted.event_snapshots),
@@ -94,6 +98,7 @@ impl HsvState {
             motion_active,
             camera,
             path,
+            configuration_lock: Mutex::new(()),
         })
     }
 
@@ -127,6 +132,15 @@ impl HsvState {
             warn!("could not parse selected recording configuration");
             return;
         };
+        let _configuration_guard = self.configuration_lock.lock().await;
+        let current = self.selected.lock().await.clone();
+        if current
+            .as_ref()
+            .is_some_and(|selected| selected.raw == config.raw)
+        {
+            debug!("ignoring duplicate selected recording configuration");
+            return;
+        }
         debug!(
             "selected recording config: {}x{}@{} {}kbps, iframe {}ms, fragment {}ms, prebuffer {}ms, audio rate code {}",
             config.width,
@@ -142,7 +156,12 @@ impl HsvState {
         // The camera may reset its RTSP encoder when these settings change.
         // Stop ffmpeg first, then restart it against the configured stream.
         self.recorder.stop().await;
-        self.apply_camera_settings(&config).await;
+        if current
+            .as_ref()
+            .is_none_or(|selected| !same_encoder_settings(selected, &config))
+        {
+            self.apply_camera_settings(&config).await;
+        }
         *self.selected.lock().await = Some(config);
         self.persist().await;
         self.sync_recorder().await;
@@ -150,6 +169,7 @@ impl HsvState {
 
     /// Restores persisted camera encoder settings before resuming recording.
     pub async fn resume_recorder(self: &Arc<Self>) {
+        let _configuration_guard = self.configuration_lock.lock().await;
         if let Some(config) = self.selected.lock().await.clone() {
             self.apply_camera_settings(&config).await;
         }
@@ -206,18 +226,24 @@ impl HsvState {
         match self.camera.set_config(&params).await {
             Ok(()) => {
                 info!(
-                    "camera main stream set to {}x{}@{} GOP {} for recording",
-                    config.width, config.height, config.fps, gop
+                    "[{}] camera main stream set to {}x{}@{} GOP {} for recording",
+                    self.camera_name, config.width, config.height, config.fps, gop
                 );
                 // Several Amcrest firmware families reset MotionDetect event
                 // actions when the main encoder is written. Detection must be
                 // the final camera profile applied, including on later HomeKit
                 // recording-configuration changes.
                 if let Err(e) = self.camera.ensure_smart_motion().await {
-                    warn!("failed to restore AI/motion profile after encoder config: {e}");
+                    warn!(
+                        "[{}] failed to restore AI/motion profile after encoder config: {e}",
+                        self.camera_name
+                    );
                 }
             }
-            Err(e) => warn!("failed to set camera encoder config: {e}"),
+            Err(e) => warn!(
+                "[{}] failed to set camera encoder config: {e}",
+                self.camera_name
+            ),
         }
     }
 
@@ -253,6 +279,15 @@ impl HsvState {
         }
         Ok(())
     }
+}
+
+fn same_encoder_settings(left: &SelectedConfig, right: &SelectedConfig) -> bool {
+    left.width == right.width
+        && left.height == right.height
+        && left.fps == right.fps
+        && left.video_bitrate_kbps == right.video_bitrate_kbps
+        && left.iframe_interval_ms == right.iframe_interval_ms
+        && left.audio_sample_rate == right.audio_sample_rate
 }
 
 // --- Supported configuration TLVs ---
