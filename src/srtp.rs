@@ -4,7 +4,7 @@ use webrtc_srtp::context::Context;
 use webrtc_srtp::protection_profile::ProtectionProfile;
 
 /// Independent inbound and outbound cryptographic contexts for one HomeKit
-/// audio session. RFC 3711 requires distinct state for the two directions.
+/// media session. RFC 3711 requires distinct state for the two directions.
 pub struct SrtpSession {
     outbound: Context,
     inbound: Context,

@@ -11,9 +11,10 @@ Supported/tested cameras: Amcrest `IP8M-2696E-AI` and `IP8M-2796E-AI`.
 
 - **Live video in the Home app**: HAP RTP stream management with SRTP. Video is
   taken from the camera's H.264 RTSP substream and stream-copied (no
-  transcoding) to the controller via ffmpeg.
+  transcoding) through an RTP/RTCP-multiplexing SRTP proxy.
 - **Snapshots**: Home app tile images served from the camera's `snapshot.cgi`
-  via the HAP `POST /resource` endpoint.
+  via the HAP `POST /resource` endpoint. The exact last JPEG returned for each
+  camera is also written to `<camera-name>.jpg` for transport debugging.
 - **AI detection events**: the camera's `eventManager.cgi` stream
   (`SmartMotionHuman`, `SmartMotionVehicle`, `CrossLineDetection`,
   `CrossRegionDetection`) feeds two HomeKit motion sensors — one for people,
@@ -37,7 +38,9 @@ Supported/tested cameras: Amcrest `IP8M-2696E-AI` and `IP8M-2796E-AI`.
   necessary, normalizes the live substream, microphone/main audio track, and
   burned-in overlays. This includes identical automatic timestamp font sizing
   for the main stream, substreams, and snapshots; a top-right timestamp; and
-  disabled channel-name/mobile-status burn-ins.
+  disabled channel-name/mobile-status burn-ins. SmartMotion is enabled for
+  people and vehicles over the full frame; obsolete face/IVS rules are
+  disabled, and every writable motion setting is read back after application.
 
 ## Running
 
@@ -60,7 +63,7 @@ Credentials can also live in a `.env` file. Options (all settable via env vars):
 | `--pin` | `HAP_PIN` | `11122333` | pairing PIN (8 digits) |
 | `--data-dir` | `DATA_DIR` | `./data` | pairing state (`<data-dir>/<name>/`) |
 | `--rtsp-subtype` | `RTSP_SUBTYPE` | `2` | RTSP stream: 0 = main (4K), 1/2 = sub |
-| `--audio` | `AUDIO` | `false` | send Opus audio |
+| `--audio` | `AUDIO` | `true` | send Opus audio |
 
 On startup the log prints the pairing PIN; add the accessory in the Home app
 via "Add Accessory → More options…". The instance must be reachable from your

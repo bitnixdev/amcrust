@@ -16,6 +16,7 @@ use crate::hsv::recording::HsvState;
 const PREPARED_SESSION_TTL: Duration = Duration::from_secs(10);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CHUNK: usize = 0x40000;
+const RECORDING_TAIL: Duration = Duration::from_secs(8);
 
 struct PreparedSession {
     keys: SessionKeys,
@@ -402,7 +403,8 @@ impl Connection {
 }
 
 /// Sends the recording (init + prebuffer + live fragments) as dataSend data
-/// events until motion stops or the stream is cancelled.
+/// events until motion stops, a short post-event tail is delivered, or the
+/// controller closes the stream.
 async fn pump_recording(
     writer: Arc<Mutex<FrameWriter>>,
     state: Arc<HsvState>,
@@ -413,8 +415,16 @@ async fn pump_recording(
     let Some(init) = init else {
         return send_close(&writer, stream_id, 6).await; // TIMEOUT: nothing buffered yet
     };
+    let prebuffer_fragments = prebuffer.len();
+    let prebuffer_bytes: usize = prebuffer.iter().map(|fragment| fragment.data.len()).sum();
+    info!(
+        "recording stream {stream_id}: sending {}-byte init and {prebuffer_fragments} prebuffer fragments ({prebuffer_bytes} bytes)",
+        init.len()
+    );
 
     let sequence = AtomicU64::new(1);
+    let mut fragment_count = 0usize;
+    let mut media_bytes = 0usize;
 
     // Sequence 1: media initialization.
     send_data(
@@ -429,6 +439,7 @@ async fn pump_recording(
 
     for fragment in prebuffer {
         if cancel.load(Ordering::SeqCst) {
+            info!("recording stream {stream_id}: cancelled during prebuffer");
             return Ok(());
         }
         let seq = sequence.fetch_add(1, Ordering::SeqCst);
@@ -441,11 +452,16 @@ async fn pump_recording(
             false,
         )
         .await?;
+        fragment_count += 1;
+        media_bytes += fragment.data.len();
     }
 
-    // Live fragments until motion stops.
+    let mut inactive_since: Option<Instant> = None;
     loop {
         if cancel.load(Ordering::SeqCst) {
+            info!(
+                "recording stream {stream_id}: controller closed after {fragment_count} fragments ({media_bytes} bytes)"
+            );
             return Ok(());
         }
         let fragment = match timeout(Duration::from_secs(30), live.recv()).await {
@@ -454,6 +470,13 @@ async fn pump_recording(
             Err(_) => return send_close(&writer, stream_id, 6).await,
         };
         let motion_still_active = state.motion_active.load(Ordering::SeqCst);
+        let end_of_stream = if motion_still_active {
+            inactive_since = None;
+            false
+        } else {
+            let stopped_at = inactive_since.get_or_insert_with(Instant::now);
+            stopped_at.elapsed() >= RECORDING_TAIL
+        };
         let seq = sequence.fetch_add(1, Ordering::SeqCst);
         send_data(
             &writer,
@@ -461,11 +484,16 @@ async fn pump_recording(
             &fragment.data,
             "mediaFragment",
             seq,
-            !motion_still_active,
+            end_of_stream,
         )
         .await?;
-        if !motion_still_active {
-            info!("recording stream {stream_id}: end of stream sent");
+        fragment_count += 1;
+        media_bytes += fragment.data.len();
+        if end_of_stream {
+            info!(
+                "recording stream {stream_id}: end of stream sent after {fragment_count} fragments ({media_bytes} bytes, {}s post-motion tail)",
+                RECORDING_TAIL.as_secs()
+            );
             return Ok(());
         }
     }

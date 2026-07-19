@@ -103,10 +103,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = camera.ensure_overlay_profile().await {
         warn!("could not verify camera overlay profile: {e}");
     }
-    if let Err(e) = camera.ensure_smart_motion().await {
-        warn!("could not verify SmartMotionDetect config: {e}");
-    }
-
     let mut storage = FileStorage::new(&format!("{}/{}", args.data_dir, args.name)).await?;
 
     let config = match storage.load_config().await {
@@ -217,6 +213,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Restore the persisted encoder settings before resuming the recording
     // pipeline, so ffmpeg never attaches to a stale camera configuration.
     hsv_state.resume_recorder().await;
+    // Encoder writes reset motion fields on some models. Apply detection last
+    // even when HomeKit has not selected a recording configuration yet.
+    if let Err(e) = camera.ensure_smart_motion().await {
+        warn!("could not verify AI/motion detection config: {e}");
+    }
 
     // Snapshots for the Home app tiles, served from a background-refreshed
     // cache so requests answer instantly. Secure-video gating: reject when the
@@ -224,10 +225,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let snapshots = SnapshotCache::new(camera.clone());
     snapshots.spawn_refresher();
     let snapshot_hsv = hsv_state.clone();
+    let snapshot_host = camera.host.clone();
+    let snapshot_name = args.name.clone();
     server
         .set_snapshot_handler(Box::new(move |width, height, reason| {
             let snapshots = snapshots.clone();
             let hsv = snapshot_hsv.clone();
+            let host = snapshot_host.clone();
+            let name = snapshot_name.clone();
             async move {
                 let periodic_ok = hsv.periodic_snapshots.load(Ordering::SeqCst);
                 let event_ok = hsv.event_snapshots.load(Ordering::SeqCst);
@@ -250,13 +255,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 let result = snapshots.get_scaled(width, height).await;
                 match &result {
-                    Ok(bytes) => info!(
-                        "snapshot served ({width}x{height}, reason {reason:?}, {} bytes)",
-                        bytes.len()
-                    ),
-                    Err(e) => warn!("snapshot failed ({width}x{height}): {e}"),
+                    Ok(image) => {
+                        let filename = snapshot_filename(&name);
+                        if let Err(e) = tokio::fs::write(&filename, &image.bytes).await {
+                            warn!("[{name}@{host}] could not save snapshot to {filename}: {e}");
+                        }
+                        info!(
+                            "[{name}@{host}] snapshot served ({width}x{height}, reason {reason:?}, {} bytes, source #{}, age {}ms, source {:016x}, output {:016x}, saved {filename})",
+                            image.bytes.len(),
+                            image.source_generation,
+                            image.source_age.as_millis(),
+                            image.source_fingerprint,
+                            image.output_fingerprint,
+                        );
+                    }
+                    Err(e) => warn!("[{name}@{host}] snapshot failed ({width}x{height}): {e}"),
                 }
-                result.map(hap::pointer::SnapshotResult::Jpeg)
+                result.map(|image| hap::pointer::SnapshotResult::Jpeg {
+                    image: image.bytes,
+                    camera_name: name
+                        .chars()
+                        .map(|c| if c.is_ascii() && !c.is_ascii_control() { c } else { '_' })
+                        .collect(),
+                    source_generation: image.source_generation,
+                    output_fingerprint: image.output_fingerprint,
+                })
             }
             .boxed()
         }))
@@ -293,6 +316,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+fn snapshot_filename(camera_name: &str) -> String {
+    let basename: String = camera_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{basename}.jpg")
 }
 
 /// Finds a free HAP port, preferring the conventional range.

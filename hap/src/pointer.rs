@@ -23,7 +23,12 @@ pub type MdnsResponder = Arc<Mutex<crate::transport::mdns::MdnsResponder>>;
 /// Outcome of a snapshot request.
 pub enum SnapshotResult {
     /// Serve the image.
-    Jpeg(Vec<u8>),
+    Jpeg {
+        image: Vec<u8>,
+        camera_name: String,
+        source_generation: u64,
+        output_fingerprint: u64,
+    },
     /// Reject with `207 Multi-Status` and the given HAP status code
     /// (e.g. -70401 insufficient privileges, -70412 not allowed in current state).
     HapStatus(i32),

@@ -172,15 +172,28 @@ impl HsvState {
             _ => 48000,
         };
         let params = format!(
-            "Encode[0].MainFormat[0].Video.Compression=H.264\
+            "Encode[0].MainFormat[0].VideoEnable=true\
+             &Encode[0].MainFormat[0].Video.Compression=H.264\
              &Encode[0].MainFormat[0].Video.resolution={w}x{h}\
              &Encode[0].MainFormat[0].Video.Width={w}\
              &Encode[0].MainFormat[0].Video.Height={h}\
              &Encode[0].MainFormat[0].Video.FPS={fps}\
              &Encode[0].MainFormat[0].Video.GOP={gop}\
              &Encode[0].MainFormat[0].Video.BitRate={bitrate}\
+             &Encode[0].MainFormat[0].Video.BitRateControl=VBR\
+             &Encode[0].MainFormat[0].Video.Profile=Main\
+             &Encode[0].MainFormat[0].Video.Quality=4\
+             &Encode[0].MainFormat[0].Video.Pack=DHAV\
+             &Encode[0].MainFormat[0].Video.Priority=0\
+             &Encode[0].MainFormat[0].Video.SVCTLayer=1\
+             &Encode[0].MainFormat[0].Video.encodeType=0\
              &Encode[0].MainFormat[0].Audio.Compression=AAC\
              &Encode[0].MainFormat[0].Audio.Frequency={audio_hz}\
+             &Encode[0].MainFormat[0].Audio.Bitrate=64\
+             &Encode[0].MainFormat[0].Audio.Depth=16\
+             &Encode[0].MainFormat[0].Audio.Channels[0]=0\
+             &Encode[0].MainFormat[0].Audio.Mode=0\
+             &Encode[0].MainFormat[0].Audio.Pack=DHAV\
              &Encode[0].MainFormat[0].AudioEnable=true",
             w = config.width,
             h = config.height,
@@ -189,10 +202,19 @@ impl HsvState {
             bitrate = config.video_bitrate_kbps,
         );
         match self.camera.set_config(&params).await {
-            Ok(()) => info!(
-                "camera main stream set to {}x{}@{} GOP {} for recording",
-                config.width, config.height, config.fps, gop
-            ),
+            Ok(()) => {
+                info!(
+                    "camera main stream set to {}x{}@{} GOP {} for recording",
+                    config.width, config.height, config.fps, gop
+                );
+                // Several Amcrest firmware families reset MotionDetect event
+                // actions when the main encoder is written. Detection must be
+                // the final camera profile applied, including on later HomeKit
+                // recording-configuration changes.
+                if let Err(e) = self.camera.ensure_smart_motion().await {
+                    warn!("failed to restore AI/motion profile after encoder config: {e}");
+                }
+            }
             Err(e) => warn!("failed to set camera encoder config: {e}"),
         }
     }

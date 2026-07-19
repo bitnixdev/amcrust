@@ -3,7 +3,7 @@
 use log::{info, warn};
 use serde_json::json;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::broadcast;
 use tokio::time::{Duration, sleep};
 
@@ -21,6 +21,8 @@ pub struct MotionMapper {
     accessory: pointer::Accessory,
     person_gen: Arc<AtomicU64>,
     vehicle_gen: Arc<AtomicU64>,
+    person_active: Arc<AtomicBool>,
+    vehicle_active: Arc<AtomicBool>,
     /// Shared "any motion active" flag, used by the HSV recording stream to
     /// decide when to mark end-of-stream.
     motion_active: Arc<std::sync::atomic::AtomicBool>,
@@ -35,6 +37,8 @@ impl MotionMapper {
             accessory,
             person_gen: Arc::new(AtomicU64::new(0)),
             vehicle_gen: Arc::new(AtomicU64::new(0)),
+            person_active: Arc::new(AtomicBool::new(false)),
+            vehicle_active: Arc::new(AtomicBool::new(false)),
             motion_active,
         }
     }
@@ -61,15 +65,28 @@ impl MotionMapper {
             "SmartMotionHuman" => false,
             _ => event.data.to_string().contains("Vehicle"),
         };
-        let (iid, generation, label) = if is_vehicle {
-            (vehicle_iid, &self.vehicle_gen, "vehicle")
+        let (iid, generation, active, other_active, label) = if is_vehicle {
+            (
+                vehicle_iid,
+                &self.vehicle_gen,
+                &self.vehicle_active,
+                &self.person_active,
+                "vehicle",
+            )
         } else {
-            (person_iid, &self.person_gen, "person")
+            (
+                person_iid,
+                &self.person_gen,
+                &self.person_active,
+                &self.vehicle_active,
+                "person",
+            )
         };
 
         match event.action.as_str() {
             "Start" => {
                 info!("{} motion started ({})", label, event.code);
+                active.store(true, Ordering::SeqCst);
                 self.motion_active.store(true, Ordering::SeqCst);
                 let generation_at_start = generation.fetch_add(1, Ordering::SeqCst) + 1;
                 set_motion(&self.accessory, iid, true).await;
@@ -77,18 +94,23 @@ impl MotionMapper {
                 // Schedule the safety-net reset.
                 let accessory = self.accessory.clone();
                 let generation = generation.clone();
+                let active = active.clone();
+                let other_active = other_active.clone();
                 let motion_active = self.motion_active.clone();
                 tokio::spawn(async move {
                     sleep(MOTION_TIMEOUT).await;
                     if generation.load(Ordering::SeqCst) == generation_at_start {
-                        motion_active.store(false, Ordering::SeqCst);
+                        active.store(false, Ordering::SeqCst);
+                        motion_active.store(other_active.load(Ordering::SeqCst), Ordering::SeqCst);
                         set_motion(&accessory, iid, false).await;
                     }
                 });
             }
             "Stop" => {
                 info!("{} motion stopped ({})", label, event.code);
-                self.motion_active.store(false, Ordering::SeqCst);
+                active.store(false, Ordering::SeqCst);
+                self.motion_active
+                    .store(other_active.load(Ordering::SeqCst), Ordering::SeqCst);
                 generation.fetch_add(1, Ordering::SeqCst);
                 set_motion(&self.accessory, iid, false).await;
             }

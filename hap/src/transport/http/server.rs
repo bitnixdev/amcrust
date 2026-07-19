@@ -174,9 +174,23 @@ impl Service<Request<Body>> for Api {
                 let mut handler_guard = snapshot_handler.lock().await;
                 match handler_guard.as_mut() {
                     Some(handler) => match handler(width, height, request.reason).await {
-                        Ok(pointer::SnapshotResult::Jpeg(image)) => Ok(Response::builder()
+                        Ok(pointer::SnapshotResult::Jpeg {
+                            image,
+                            camera_name,
+                            source_generation,
+                            output_fingerprint,
+                        }) => Ok(Response::builder()
                             .status(StatusCode::OK)
                             .header("Content-Type", "image/jpeg")
+                            .header("Content-Length", image.len().to_string())
+                            .header("Cache-Control", "no-store, no-cache, must-revalidate")
+                            .header("Pragma", "no-cache")
+                            .header("X-Amcrust-Camera", camera_name)
+                            .header("X-Amcrust-Source-Generation", source_generation.to_string())
+                            .header(
+                                "X-Amcrust-Output-Fingerprint",
+                                format!("{output_fingerprint:016x}"),
+                            )
                             .body(Body::from(image))
                             .expect("couldn't build snapshot response")),
                         Ok(pointer::SnapshotResult::HapStatus(code)) => {
@@ -380,7 +394,18 @@ impl Server {
                 http.http1_keep_alive(true);
                 http.http1_preserve_header_case(true);
 
-                tokio::spawn(encrypted_stream.map_err(|e| error!("{:?}", e)).map(|_| ()));
+                tokio::spawn(
+                    encrypted_stream
+                        .map_err(|e| match e.kind() {
+                            std::io::ErrorKind::BrokenPipe
+                            | std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::NotConnected => {
+                                debug!("controller stream disconnected: {e}")
+                            }
+                            _ => error!("{e:?}"),
+                        })
+                        .map(|_| ()),
+                );
                 tokio::spawn(
                     http.serve_connection(stream_wrapper, api)
                         .map_err(|e| error!("{:?}", e))

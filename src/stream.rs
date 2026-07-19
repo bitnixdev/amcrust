@@ -3,7 +3,7 @@
 
 use log::{error, info, warn};
 use rand::Rng;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket as StdUdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -28,7 +28,6 @@ const ADDR_VIDEO_PORT: u8 = 0x03;
 const ADDR_AUDIO_PORT: u8 = 0x04;
 
 // SRTP parameter tags.
-const SRTP_CRYPTO_SUITE: u8 = 0x01;
 const SRTP_MASTER_KEY: u8 = 0x02;
 const SRTP_MASTER_SALT: u8 = 0x03;
 
@@ -71,9 +70,7 @@ struct Session {
     audio_key: Vec<u8>,
     video_ssrc: u32,
     audio_ssrc: u32,
-    video_local_port: u16,
-    video_local_rtcp_port: u16,
-    video_port_reservations: Option<(StdUdpSocket, StdUdpSocket)>,
+    video_out_socket: Option<tokio::net::UdpSocket>,
     audio_out_socket: Option<tokio::net::UdpSocket>,
 }
 
@@ -81,7 +78,11 @@ struct Session {
 struct Inner {
     /// Prepared sessions and running streams, keyed by HAP session id.
     sessions: std::collections::HashMap<Vec<u8>, Session>,
+    /// Video and audio use independent FFmpeg processes so an audio source or
+    /// resampler stall can never throttle stream-copied video.
     children: std::collections::HashMap<Vec<u8>, Child>,
+    audio_children: std::collections::HashMap<Vec<u8>, Child>,
+    video_proxies: std::collections::HashMap<Vec<u8>, tokio::task::JoinHandle<()>>,
     /// Audio RTP proxy tasks, keyed by HAP session id.
     audio_proxies: std::collections::HashMap<Vec<u8>, tokio::task::JoinHandle<()>>,
     /// Response for the most recent SetupEndpoints write, read back by the
@@ -163,24 +164,19 @@ impl StreamManager {
             let mut rng = rand::thread_rng();
             (rng.gen_range(1..0x7fff_ffff), rng.gen_range(1..0x7fff_ffff))
         };
-        let video_port_reservations = match reserve_udp_pair(self.local_ip) {
+        let bind_ip = unspecified_for(self.local_ip);
+        let (video_out_socket, video_rtcp_reservation) = match bind_tokio_udp_pair(bind_ip).await {
             Ok(pair) => pair,
             Err(e) => {
-                warn!("could not reserve video RTP/RTCP ports: {e}");
+                warn!("could not reserve video RTP/RTCP port: {e}");
                 return;
             }
         };
-        let video_local_port = video_port_reservations
-            .0
-            .local_addr()
-            .map(|a| a.port())
-            .unwrap_or(0);
-        let video_local_rtcp_port = video_port_reservations
-            .1
-            .local_addr()
-            .map(|a| a.port())
-            .unwrap_or(0);
-        let bind_ip = unspecified_for(self.local_ip);
+        let video_local_port = video_out_socket.local_addr().map(|a| a.port()).unwrap_or(0);
+        // HomeKit multiplexes video RTP and RTCP on the one advertised port.
+        // Reserving the adjacent port while choosing the even port avoids
+        // collisions with software that assumes an RTP/RTCP pair.
+        drop(video_rtcp_reservation);
         let audio_out_socket = match tokio::net::UdpSocket::bind((bind_ip, 0)).await {
             Ok(socket) => socket,
             Err(e) => {
@@ -198,20 +194,13 @@ impl StreamManager {
             audio_key: srtp_key(&audio_srtp),
             video_ssrc,
             audio_ssrc,
-            video_local_port,
-            video_local_rtcp_port,
-            video_port_reservations: Some(video_port_reservations),
+            video_out_socket: Some(video_out_socket),
             audio_out_socket: Some(audio_out_socket),
         };
 
         info!(
-            "stream setup: controller {}:{} (video) :{} (audio); accessory :{} (video/RTCP :{}) :{} (audio RTP/RTCP)",
-            controller_ip,
-            video_port,
-            audio_port,
-            video_local_port,
-            video_local_rtcp_port,
-            audio_local_port,
+            "stream setup: controller {}:{} (video) :{} (audio); accessory :{} (video RTP/RTCP) :{} (audio RTP/RTCP)",
+            controller_ip, video_port, audio_port, video_local_port, audio_local_port,
         );
 
         // Build the response: echo the session id and SRTP parameters, present
@@ -362,7 +351,13 @@ impl StreamManager {
         if let Some(mut child) = inner.children.remove(&session.id) {
             let _ = child.start_kill();
         }
+        if let Some(mut child) = inner.audio_children.remove(&session.id) {
+            let _ = child.start_kill();
+        }
         if let Some(proxy) = inner.audio_proxies.remove(&session.id) {
+            proxy.abort();
+        }
+        if let Some(proxy) = inner.video_proxies.remove(&session.id) {
             proxy.abort();
         }
 
@@ -376,21 +371,35 @@ impl StreamManager {
         );
 
         let pkt_size = max_mtu.clamp(188, 1378);
+        let (video_local_rtp, video_local_rtcp) =
+            match bind_tokio_udp_pair(IpAddr::V4(Ipv4Addr::LOCALHOST)).await {
+                Ok(pair) => pair,
+                Err(e) => {
+                    warn!("could not bind video proxy socket: {e}");
+                    return;
+                }
+            };
+        let video_local_rtp_port = video_local_rtp.local_addr().map(|a| a.port()).unwrap_or(0);
+        let video_local_rtcp_port = video_local_rtcp.local_addr().map(|a| a.port()).unwrap_or(0);
         let video_dest = format!(
-            "srtp://{}:{}?rtcpport={}&localrtpport={}&localrtcpport={}&pkt_size={}",
-            session.controller_ip,
-            session.video_port,
-            session.video_port,
-            session.video_local_port,
-            session.video_local_rtcp_port,
-            pkt_size,
+            "rtp://127.0.0.1:{video_local_rtp_port}?rtcpport={video_local_rtcp_port}&pkt_size={pkt_size}"
         );
+        let Some(video_proxy) = spawn_media_proxy(
+            "video",
+            video_local_rtp,
+            video_local_rtcp,
+            session.video_out_socket.take().unwrap(),
+            session.controller_ip.clone(),
+            session.video_port,
+            session.video_key.clone(),
+            1,
+        ) else {
+            return;
+        };
 
-        use base64::Engine;
-        let b64 = base64::engine::general_purpose::STANDARD;
-
-        let mut cmd = Command::new("ffmpeg");
-        cmd.arg("-hide_banner")
+        let mut video_cmd = Command::new("ffmpeg");
+        video_cmd
+            .arg("-hide_banner")
             .args(["-loglevel", "warning"])
             .args(["-fflags", "+genpts+nobuffer"])
             .args(["-flags", "low_delay"])
@@ -403,34 +412,45 @@ impl StreamManager {
             .args(["-probesize", "65536"])
             .args(["-analyzeduration", "0"])
             .args(["-rtsp_transport", "tcp"])
-            .args(["-i", &self.rtsp_url]);
-
-        let audio_enabled =
-            self.audio && !session.audio_key.is_empty() && session.audio_out_socket.is_some();
-        if audio_enabled {
-            // Use the main stream's 48 kHz AAC track as the audio source. It
-            // is materially more stable than the low-rate extra-stream audio,
-            // while allowed_media_types avoids pulling a second video track.
-            cmd.args(["-use_wallclock_as_timestamps", "1"])
-                .args(["-rtsp_transport", "tcp"])
-                .args(["-allowed_media_types", "audio"])
-                .args(["-i", &self.audio_rtsp_url]);
-        }
-
-        cmd.args(["-map", "0:v:0"])
+            .args(["-i", &self.rtsp_url])
+            .args(["-map", "0:v:0"])
             .arg("-an")
             .args(["-c:v", "copy"])
             .args(["-payload_type", &payload_type.to_string()])
             .args(["-ssrc", &session.video_ssrc.to_string()])
             .args(["-f", "rtp"])
-            .args(["-srtp_out_suite", "AES_CM_128_HMAC_SHA1_80"])
-            .args(["-srtp_out_params", &b64.encode(&session.video_key)])
-            .arg(&video_dest);
+            .arg(&video_dest)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        video_cmd.kill_on_drop(true);
 
-        // Audio goes through a local RTP/RTCP proxy. It preserves the pacing
-        // correction required by these cameras, secures both RTP and RTCP,
-        // and multiplexes them onto the controller's negotiated audio port.
-        let mut audio_proxy: Option<tokio::task::JoinHandle<()>> = None;
+        let audio_enabled =
+            self.audio && !session.audio_key.is_empty() && session.audio_out_socket.is_some();
+
+        info!("starting video ffmpeg → {video_dest}");
+        match video_cmd.spawn() {
+            Ok(mut child) => {
+                if let Some(stderr) = child.stderr.take() {
+                    tokio::spawn(async move {
+                        let mut lines = BufReader::new(stderr).lines();
+                        while let Ok(Some(line)) = lines.next_line().await {
+                            warn!("video ffmpeg: {line}");
+                        }
+                    });
+                }
+                inner.children.insert(session.id.clone(), child);
+                inner.video_proxies.insert(session.id.clone(), video_proxy);
+            }
+            Err(e) => {
+                video_proxy.abort();
+                error!("failed to spawn video ffmpeg: {e}");
+                return;
+            }
+        }
+
+        // Audio has its own RTSP reader/encoder process and local RTP/RTCP
+        // proxy. Nothing in this path can block or pace the video process.
         if audio_enabled {
             match bind_tokio_udp_pair(IpAddr::V4(Ipv4Addr::LOCALHOST)).await {
                 Ok((local_rtp, local_rtcp)) => {
@@ -443,21 +463,24 @@ impl StreamManager {
                         _ => 20,
                     };
                     let bitrate = format!("{}k", audio_max_bitrate.clamp(16, 64));
-                    cmd.args(["-map", "1:a:0"])
+                    let mut audio_cmd = Command::new("ffmpeg");
+                    audio_cmd
+                        .arg("-hide_banner")
+                        .args(["-loglevel", "warning"])
+                        .args(["-fflags", "+genpts+nobuffer"])
+                        .args(["-flags", "low_delay"])
+                        .args(["-use_wallclock_as_timestamps", "1"])
+                        .args(["-rtsp_transport", "tcp"])
+                        .args(["-allowed_media_types", "audio"])
+                        .args(["-i", &self.audio_rtsp_url])
+                        .args(["-map", "0:a:0"])
                         .arg("-vn")
                         .args(["-c:a", "libopus"])
-                        // These are libopus private options. Keep the audio
-                        // stream specifier: `fec` is also an RTP muxer option,
-                        // and an unqualified `-fec 1` makes FFmpeg reject the
-                        // entire output as an unsupported RTP FEC protocol.
                         .args(["-application:a", "voip"])
                         .args(["-vbr:a", "on"])
                         .args(["-packet_loss:a", "5"])
                         .args(["-fec:a", "1"])
                         .args(["-frame_duration:a", &packet_time.to_string()])
-                        // The camera under-delivers audio samples relative to
-                        // wall time; async resampling fills gaps with silence
-                        // so the output tracks real time.
                         .args([
                             "-af",
                             "aresample=async=1000:min_hard_comp=0.100:first_pts=0",
@@ -468,52 +491,42 @@ impl StreamManager {
                         .args(["-payload_type", &audio_payload_type.to_string()])
                         .args(["-ssrc", &session.audio_ssrc.to_string()])
                         .args(["-f", "rtp"])
-                        .arg(&audio_dest);
+                        .arg(&audio_dest)
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::piped());
+                    audio_cmd.kill_on_drop(true);
 
-                    audio_proxy = spawn_audio_proxy(
-                        local_rtp,
-                        local_rtcp,
-                        session.audio_out_socket.take().unwrap(),
-                        session.controller_ip.clone(),
-                        session.audio_port,
-                        session.audio_key.clone(),
-                        48000 / audio_rate_hz.max(1),
-                    );
+                    info!("starting audio ffmpeg → {audio_dest}");
+                    match audio_cmd.spawn() {
+                        Ok(mut child) => {
+                            if let Some(stderr) = child.stderr.take() {
+                                tokio::spawn(async move {
+                                    let mut lines = BufReader::new(stderr).lines();
+                                    while let Ok(Some(line)) = lines.next_line().await {
+                                        warn!("audio ffmpeg: {line}");
+                                    }
+                                });
+                            }
+                            let proxy = spawn_media_proxy(
+                                "audio",
+                                local_rtp,
+                                local_rtcp,
+                                session.audio_out_socket.take().unwrap(),
+                                session.controller_ip.clone(),
+                                session.audio_port,
+                                session.audio_key.clone(),
+                                48000 / audio_rate_hz.max(1),
+                            );
+                            inner.audio_children.insert(session.id.clone(), child);
+                            if let Some(proxy) = proxy {
+                                inner.audio_proxies.insert(session.id.clone(), proxy);
+                            }
+                        }
+                        Err(e) => warn!("failed to spawn audio ffmpeg, video remains active: {e}"),
+                    }
                 }
                 Err(e) => warn!("could not bind audio proxy socket, audio disabled: {e}"),
-            }
-        }
-
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
-        cmd.kill_on_drop(true);
-
-        // SetupEndpoints advertised these ports. Release their reservation
-        // immediately before FFmpeg binds them as its RTP/RTCP source pair.
-        drop(session.video_port_reservations.take());
-
-        info!("starting ffmpeg → {video_dest}");
-        match cmd.spawn() {
-            Ok(mut child) => {
-                if let Some(stderr) = child.stderr.take() {
-                    tokio::spawn(async move {
-                        let mut lines = BufReader::new(stderr).lines();
-                        while let Ok(Some(line)) = lines.next_line().await {
-                            warn!("ffmpeg: {line}");
-                        }
-                    });
-                }
-                inner.children.insert(session.id.clone(), child);
-                if let Some(proxy) = audio_proxy {
-                    inner.audio_proxies.insert(session.id.clone(), proxy);
-                }
-            }
-            Err(e) => {
-                error!("failed to spawn ffmpeg: {e}");
-                if let Some(proxy) = audio_proxy {
-                    proxy.abort();
-                }
             }
         }
     }
@@ -527,7 +540,13 @@ impl StreamManager {
                     let _ = child.start_kill();
                     info!("stream stopped");
                 }
+                if let Some(mut child) = inner.audio_children.remove(&sid) {
+                    let _ = child.start_kill();
+                }
                 if let Some(proxy) = inner.audio_proxies.remove(&sid) {
+                    proxy.abort();
+                }
+                if let Some(proxy) = inner.video_proxies.remove(&sid) {
                     proxy.abort();
                 }
                 inner.sessions.remove(&sid);
@@ -536,7 +555,13 @@ impl StreamManager {
                 for (_, mut child) in inner.children.drain() {
                     let _ = child.start_kill();
                 }
+                for (_, mut child) in inner.audio_children.drain() {
+                    let _ = child.start_kill();
+                }
                 for (_, proxy) in inner.audio_proxies.drain() {
+                    proxy.abort();
+                }
+                for (_, proxy) in inner.video_proxies.drain() {
                     proxy.abort();
                 }
                 inner.sessions.clear();
@@ -560,24 +585,6 @@ fn unspecified_for(ip: IpAddr) -> IpAddr {
     }
 }
 
-fn reserve_udp_pair(ip: IpAddr) -> std::io::Result<(StdUdpSocket, StdUdpSocket)> {
-    let bind_ip = unspecified_for(ip);
-    for _ in 0..64 {
-        let rtp = StdUdpSocket::bind(SocketAddr::new(bind_ip, 0))?;
-        let port = rtp.local_addr()?.port();
-        if port % 2 != 0 || port == u16::MAX {
-            continue;
-        }
-        if let Ok(rtcp) = StdUdpSocket::bind(SocketAddr::new(bind_ip, port + 1)) {
-            return Ok((rtp, rtcp));
-        }
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::AddrNotAvailable,
-        "could not reserve an even RTP/odd RTCP port pair",
-    ))
-}
-
 async fn bind_tokio_udp_pair(
     ip: IpAddr,
 ) -> std::io::Result<(tokio::net::UdpSocket, tokio::net::UdpSocket)> {
@@ -599,28 +606,29 @@ async fn bind_tokio_udp_pair(
 
 /// Proxies FFmpeg's plain RTP and RTCP to the controller as SRTP/SRTCP on one
 /// multiplexed port, and returns controller SRTCP feedback to FFmpeg.
-fn spawn_audio_proxy(
+fn spawn_media_proxy(
+    label: &'static str,
     local_rtp: tokio::net::UdpSocket,
     local_rtcp: tokio::net::UdpSocket,
     out_socket: tokio::net::UdpSocket,
     controller_ip: String,
-    audio_port: u16,
-    audio_key: Vec<u8>,
+    controller_port: u16,
+    key: Vec<u8>,
     ratio: u32,
 ) -> Option<tokio::task::JoinHandle<()>> {
-    let mut srtp = match crate::srtp::SrtpSession::new(&audio_key) {
+    let mut srtp = match crate::srtp::SrtpSession::new(&key) {
         Some(srtp) => srtp,
         None => {
-            warn!("invalid audio SRTP key material, audio disabled");
+            warn!("invalid {label} SRTP key material, stream disabled");
             return None;
         }
     };
     let mut rescaler = crate::srtp::TimestampRescaler::new(ratio);
 
     Some(tokio::spawn(async move {
-        let dest = format!("{controller_ip}:{audio_port}");
+        let dest = format!("{controller_ip}:{controller_port}");
         if let Err(e) = out_socket.connect(&dest).await {
-            warn!("audio proxy could not connect to {dest}: {e}");
+            warn!("{label} proxy could not connect to {dest}: {e}");
             return;
         }
         let mut rtp_buf = [0u8; 2048];
@@ -630,6 +638,7 @@ fn spawn_audio_proxy(
         let mut sent_rtp = 0u64;
         let mut sent_rtcp = 0u64;
         let mut received_feedback = 0u64;
+        let mut logged_keyframe = false;
         loop {
             tokio::select! {
                 result = local_rtp.recv(&mut rtp_buf) => {
@@ -643,7 +652,11 @@ fn spawn_audio_proxy(
                             }
                             sent_rtp += 1;
                             if sent_rtp == 1 {
-                                info!("audio proxy: first RTP packet → {dest}");
+                                info!("{label} proxy: first RTP packet → {dest}");
+                            }
+                            if label == "video" && !logged_keyframe && h264_contains_idr(packet) {
+                                info!("video proxy: first H.264 keyframe packet → {dest}");
+                                logged_keyframe = true;
                             }
                         }
                     }
@@ -659,7 +672,7 @@ fn spawn_audio_proxy(
                         }
                         sent_rtcp += 1;
                         if sent_rtcp == 1 {
-                            info!("audio proxy: first SRTCP sender report → {dest}");
+                            info!("{label} proxy: first SRTCP sender report → {dest}");
                         }
                     }
                 }
@@ -671,13 +684,55 @@ fn spawn_audio_proxy(
                         }
                         received_feedback += 1;
                         if received_feedback == 1 {
-                            info!("audio proxy: first controller SRTCP feedback received");
+                            info!("{label} proxy: first controller SRTCP feedback received");
                         }
                     }
                 }
             }
         }
     }))
+}
+
+fn h264_contains_idr(packet: &[u8]) -> bool {
+    if packet.len() < 13 || packet[0] >> 6 != 2 {
+        return false;
+    }
+    let mut offset = 12 + usize::from(packet[0] & 0x0f) * 4;
+    if packet[0] & 0x10 != 0 {
+        if offset + 4 > packet.len() {
+            return false;
+        }
+        let extension_words = u16::from_be_bytes([packet[offset + 2], packet[offset + 3]]);
+        offset += 4 + usize::from(extension_words) * 4;
+    }
+    let Some(payload) = packet.get(offset..) else {
+        return false;
+    };
+    let Some(&nal_header) = payload.first() else {
+        return false;
+    };
+    match nal_header & 0x1f {
+        5 => true,
+        // FU-A: the second byte carries Start and the original NAL type.
+        28 if payload.len() >= 2 => payload[1] & 0x80 != 0 && payload[1] & 0x1f == 5,
+        // STAP-A: walk the length-prefixed aggregated NAL units.
+        24 => {
+            let mut index = 1;
+            while index + 2 <= payload.len() {
+                let length = usize::from(u16::from_be_bytes([payload[index], payload[index + 1]]));
+                index += 2;
+                if length == 0 || index + length > payload.len() {
+                    return false;
+                }
+                if payload[index] & 0x1f == 5 {
+                    return true;
+                }
+                index += length;
+            }
+            false
+        }
+        _ => false,
+    }
 }
 
 // --- Supported configuration TLVs, advertised via the stream management service ---
@@ -751,4 +806,22 @@ pub fn supported_audio_config() -> Vec<u8> {
 /// SupportedRTPConfiguration: SRTP with AES_CM_128_HMAC_SHA1_80.
 pub fn supported_rtp_config() -> Vec<u8> {
     tlv8::Writer::new().u8(0x02, 0x00).build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::h264_contains_idr;
+
+    #[test]
+    fn detects_single_and_fragmented_h264_idr_packets() {
+        let mut single = vec![0x80, 99, 0, 1, 0, 0, 0, 1, 0, 0, 0, 42];
+        single.extend_from_slice(&[0x65, 1, 2, 3]);
+        assert!(h264_contains_idr(&single));
+
+        let mut fua = vec![0x80, 99, 0, 2, 0, 0, 0, 2, 0, 0, 0, 42];
+        fua.extend_from_slice(&[0x7c, 0x85, 1, 2, 3]);
+        assert!(h264_contains_idr(&fua));
+        fua[13] = 0x05;
+        assert!(!h264_contains_idr(&fua));
+    }
 }
