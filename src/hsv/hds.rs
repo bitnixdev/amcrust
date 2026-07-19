@@ -392,7 +392,7 @@ impl Connection {
 
         self.respond(id, 0, Value::dict(vec![("status", Value::Int64(0))]))
             .await?;
-        debug!("dataSend recording stream {stream_id} opened");
+        info!("HomeKit recording started (stream {stream_id})");
 
         let cancel = Arc::new(AtomicBool::new(false));
         self.active_stream = Some((stream_id, cancel.clone()));
@@ -408,6 +408,7 @@ impl Connection {
             }
             busy.store(false, Ordering::SeqCst);
             metrics.recording_stream_active(false);
+            info!("HomeKit recording stopped (stream {stream_id})");
         });
 
         Ok(())
