@@ -97,6 +97,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = camera.ensure_live_substream(args.rtsp_subtype).await {
         warn!("could not verify live substream config: {e}");
     }
+    if let Err(e) = camera.ensure_audio_profile().await {
+        warn!("could not verify camera audio profile: {e}");
+    }
+    if let Err(e) = camera.ensure_overlay_profile().await {
+        warn!("could not verify camera overlay profile: {e}");
+    }
     if let Err(e) = camera.ensure_smart_motion().await {
         warn!("could not verify SmartMotionDetect config: {e}");
     }
@@ -151,7 +157,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let local_ip = config.host;
     let hap_port = config.port;
 
-    let streams = StreamManager::new(camera.rtsp_url(args.rtsp_subtype), args.audio, local_ip);
+    let streams = StreamManager::new(
+        camera.rtsp_url(args.rtsp_subtype),
+        camera.rtsp_url(0),
+        args.audio,
+        local_ip,
+    );
 
     // HomeKit Secure Video state, recorder, and data stream server.
     let motion_active = Arc::new(AtomicBool::new(false));

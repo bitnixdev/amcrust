@@ -28,9 +28,16 @@ Supported/tested cameras: Amcrest `IP8M-2696E-AI` and `IP8M-2796E-AI`.
   main-stream encoder (resolution, fps, GOP = fragment length, bitrate, AAC
   sample rate) to match, and ffmpeg stream-copies into fMP4. Requires a home
   hub and iCloud+; see docs/hds-wire-format.md for the wire format reference.
-- **Optional audio** (`--audio`): camera AAC audio transcoded to Opus for live
-  view. Recording audio is AAC-LC stream-copy (toggled by the Home app's
-  recording-audio switch).
+- **Optional audio** (`--audio`): the camera's main-stream 48 kHz AAC audio is
+  transcoded to the Opus format negotiated by HomeKit. Live audio carries RTP
+  and RTCP in both directions through an SRTP/SRTCP proxy, including sender
+  reports and controller feedback. Recording audio is AAC-LC stream-copy
+  (toggled by the Home app's recording-audio switch).
+- **Consistent camera profile**: on every connection, amcrust checks and, when
+  necessary, normalizes the live substream, microphone/main audio track, and
+  burned-in overlays. This includes identical automatic timestamp font sizing
+  for the main stream, substreams, and snapshots; a top-right timestamp; and
+  disabled channel-name/mobile-status burn-ins.
 
 ## Running
 

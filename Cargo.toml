@@ -29,8 +29,5 @@ chacha20poly1305 = "0.10"
 hkdf = "0.12"
 sha2 = "0.10"
 
-# SRTP for the audio RTP path (RFC 3711)
-aes = "0.8"
-ctr = "0.9"
-hmac = "0.12"
-sha1 = "0.10"
+# SRTP/SRTCP for the audio RTP control path (RFC 3711)
+webrtc-srtp = "0.17"

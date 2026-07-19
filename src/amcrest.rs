@@ -179,9 +179,37 @@ impl AmcrestClient {
         let width = field("Video.Width")
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(0);
-        let audio = field("AudioEnable").as_deref() == Some("true");
+        let height = field("Video.Height")
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0);
+        let bitrate = field("Video.BitRate")
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0);
+        let bitrate_control = field("Video.BitRateControl").unwrap_or_default();
+        let profile = field("Video.Profile").unwrap_or_default();
+        let audio_enabled = field("AudioEnable").as_deref() == Some("true");
+        let audio_codec = field("Audio.Compression").unwrap_or_default();
+        let audio_frequency = field("Audio.Frequency")
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0);
+        let audio_bitrate = field("Audio.Bitrate")
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0);
 
-        if enabled && h264 && fps > 0 && gop == fps && width >= 1280 && audio {
+        if enabled
+            && h264
+            && width == 1280
+            && height == 720
+            && fps == 15
+            && gop == 15
+            && bitrate == 1024
+            && bitrate_control == "VBR"
+            && profile == "Main"
+            && audio_enabled
+            && audio_codec == "AAC"
+            && audio_frequency == 16000
+            && audio_bitrate == 64
+        {
             return Ok(());
         }
 
@@ -199,11 +227,136 @@ impl AmcrestClient {
              &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.GOP=15\
              &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.BitRate=1024\
              &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.BitRateControl=VBR\
+             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Profile=Main\
+             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Quality=4\
              &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.AudioEnable=true\
              &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Audio.Compression=AAC\
+             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Audio.Bitrate=64\
+             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Audio.Depth=16\
+             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Audio.Channels%5B0%5D=0\
              &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Audio.Frequency=16000"
         );
         self.set_config(&params).await
+    }
+
+    /// Normalizes the camera microphone and the high-quality audio track used
+    /// as the live HomeKit audio source.
+    pub async fn ensure_audio_profile(
+        &self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let resp = self
+            .get("/cgi-bin/configManager.cgi?action=getConfig&name=All")
+            .await?;
+        let body = resp.text().await?;
+        let desired = [
+            "table.All.AudioInput[0].AudioSource=Mic",
+            "table.All.AudioInputVolume[0]=100",
+            "table.All.AudioInDenoise[0].enable=true",
+            "table.All.AudioInDenoise[0].level=50",
+            "table.All.Encode[0].MainFormat[0].AudioEnable=true",
+            "table.All.Encode[0].MainFormat[0].Audio.Compression=AAC",
+            "table.All.Encode[0].MainFormat[0].Audio.Frequency=48000",
+            "table.All.Encode[0].MainFormat[0].Audio.Bitrate=64",
+            "table.All.Encode[0].MainFormat[0].Audio.Depth=16",
+        ];
+        if desired.iter().all(|setting| body.contains(setting)) {
+            return Ok(());
+        }
+
+        info!(
+            "[{}] normalizing microphone and main audio track",
+            self.host
+        );
+        self.set_config(
+            "AudioInput%5B0%5D.AudioSource=Mic\
+             &AudioInputVolume%5B0%5D=100\
+             &AudioInDenoise%5B0%5D.enable=true\
+             &AudioInDenoise%5B0%5D.level=50\
+             &Encode%5B0%5D.MainFormat%5B0%5D.AudioEnable=true\
+             &Encode%5B0%5D.MainFormat%5B0%5D.Audio.Compression=AAC\
+             &Encode%5B0%5D.MainFormat%5B0%5D.Audio.Frequency=48000\
+             &Encode%5B0%5D.MainFormat%5B0%5D.Audio.Bitrate=64\
+             &Encode%5B0%5D.MainFormat%5B0%5D.Audio.Depth=16\
+             &Encode%5B0%5D.MainFormat%5B0%5D.Audio.Channels%5B0%5D=0",
+        )
+        .await
+    }
+
+    /// Applies a consistent, minimal burned-in overlay to every camera: a
+    /// white, bordered timestamp at the upper right with identical automatic
+    /// font sizing on the main stream, substreams, and snapshots.
+    pub async fn ensure_overlay_profile(
+        &self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let resp = self
+            .get("/cgi-bin/configManager.cgi?action=getConfig&name=VideoWidget")
+            .await?;
+        let body = resp.text().await?;
+        let desired = [
+            "table.VideoWidget[0].FontSize=0",
+            "table.VideoWidget[0].FontSizeExtra1=0",
+            "table.VideoWidget[0].FontSizeExtra2=0",
+            "table.VideoWidget[0].FontSizeExtra3=0",
+            "table.VideoWidget[0].FontSizeSnapshot=0",
+            "table.VideoWidget[0].TimeTitle.EncodeBlend=true",
+            "table.VideoWidget[0].TimeTitle.PreviewBlend=true",
+            "table.VideoWidget[0].TimeTitle.ShowWeek=false",
+            "table.VideoWidget[0].TimeTitle.FrontColor[0]=255",
+            "table.VideoWidget[0].TimeTitle.FrontColor[1]=255",
+            "table.VideoWidget[0].TimeTitle.FrontColor[2]=255",
+            "table.VideoWidget[0].TimeTitle.FrontColor[3]=0",
+            "table.VideoWidget[0].TimeTitle.BackColor[0]=0",
+            "table.VideoWidget[0].TimeTitle.BackColor[1]=0",
+            "table.VideoWidget[0].TimeTitle.BackColor[2]=0",
+            "table.VideoWidget[0].TimeTitle.BackColor[3]=128",
+            "table.VideoWidget[0].TimeTitle.Rect[0]=5319",
+            "table.VideoWidget[0].TimeTitle.Rect[1]=352",
+            "table.VideoWidget[0].TimeTitle.Rect[2]=7929",
+            "table.VideoWidget[0].TimeTitle.Rect[3]=769",
+            "table.VideoWidget[0].ChannelTitle.EncodeBlend=false",
+            "table.VideoWidget[0].ChannelTitle.PreviewBlend=false",
+            "table.VideoWidget[0].OSDMobileState.EncodeBlend=false",
+            "table.VideoWidget[0].OSDMobileState.PreviewBlend=false",
+        ];
+        let scale_is_one = body.contains("table.VideoWidget[0].FontSizeScale=1\n")
+            || body.contains("table.VideoWidget[0].FontSizeScale=1\r\n")
+            || body.contains("table.VideoWidget[0].FontSizeScale=1.000000");
+        if scale_is_one && desired.iter().all(|setting| body.contains(setting)) {
+            return Ok(());
+        }
+
+        info!(
+            "[{}] normalizing timestamp and overlay appearance",
+            self.host
+        );
+        self.set_config(
+            "VideoWidget%5B0%5D.FontSize=0\
+             &VideoWidget%5B0%5D.FontSizeExtra1=0\
+             &VideoWidget%5B0%5D.FontSizeExtra2=0\
+             &VideoWidget%5B0%5D.FontSizeExtra3=0\
+             &VideoWidget%5B0%5D.FontSizeSnapshot=0\
+             &VideoWidget%5B0%5D.FontSizeScale=1\
+             &VideoWidget%5B0%5D.TimeTitle.EncodeBlend=true\
+             &VideoWidget%5B0%5D.TimeTitle.PreviewBlend=true\
+             &VideoWidget%5B0%5D.TimeTitle.ShowWeek=false\
+             &VideoWidget%5B0%5D.TimeTitle.FrontColor%5B0%5D=255\
+             &VideoWidget%5B0%5D.TimeTitle.FrontColor%5B1%5D=255\
+             &VideoWidget%5B0%5D.TimeTitle.FrontColor%5B2%5D=255\
+             &VideoWidget%5B0%5D.TimeTitle.FrontColor%5B3%5D=0\
+             &VideoWidget%5B0%5D.TimeTitle.BackColor%5B0%5D=0\
+             &VideoWidget%5B0%5D.TimeTitle.BackColor%5B1%5D=0\
+             &VideoWidget%5B0%5D.TimeTitle.BackColor%5B2%5D=0\
+             &VideoWidget%5B0%5D.TimeTitle.BackColor%5B3%5D=128\
+             &VideoWidget%5B0%5D.TimeTitle.Rect%5B0%5D=5319\
+             &VideoWidget%5B0%5D.TimeTitle.Rect%5B1%5D=352\
+             &VideoWidget%5B0%5D.TimeTitle.Rect%5B2%5D=7929\
+             &VideoWidget%5B0%5D.TimeTitle.Rect%5B3%5D=769\
+             &VideoWidget%5B0%5D.ChannelTitle.EncodeBlend=false\
+             &VideoWidget%5B0%5D.ChannelTitle.PreviewBlend=false\
+             &VideoWidget%5B0%5D.OSDMobileState.EncodeBlend=false\
+             &VideoWidget%5B0%5D.OSDMobileState.PreviewBlend=false",
+        )
+        .await
     }
 
     /// Fetches a JPEG snapshot from the camera.
