@@ -311,11 +311,11 @@ impl AmcrestClient {
 
     async fn apply_supported_settings_rpc(
         &self,
+        session: &str,
         name: &str,
         desired: &[(String, String)],
     ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-        let session = self.rpc_login().await?;
-        let mut table = self.rpc_get_config(&session, name, 3).await?;
+        let mut table = self.rpc_get_config(session, name, 3).await?;
         let mut updates = 0;
         for (key, desired_value) in desired {
             let Some(pointer) = config_key_pointer(name, key) else {
@@ -333,7 +333,7 @@ impl AmcrestClient {
             }
         }
         if updates > 0 {
-            self.rpc_set_config(&session, name, &table, 4).await?;
+            self.rpc_set_config(session, name, &table, 4).await?;
         }
         Ok(updates)
     }
@@ -530,23 +530,24 @@ impl AmcrestClient {
         .into_iter()
         .map(|(key, value)| (key.to_string(), value.to_string()))
         .collect::<Vec<_>>();
+        let session = self.rpc_login().await?;
         let analyse_updates = self
-            .apply_supported_settings_rpc("VideoAnalyseRule", &analyse_profile)
+            .apply_supported_settings_rpc(&session, "VideoAnalyseRule", &analyse_profile)
             .await?;
 
         // Updating the legacy analytics engine resets SmartMotion/MotionDetect
         // on several firmware families. Apply both profiles after
         // VideoAnalyseRule, with MotionDetect deliberately last.
         let final_smart_updates = self
-            .apply_supported_settings_rpc("SmartMotionDetect", &smart_profile)
+            .apply_supported_settings_rpc(&session, "SmartMotionDetect", &smart_profile)
             .await?;
         let motion_updates = self
-            .apply_supported_settings_rpc("MotionDetect", &motion)
+            .apply_supported_settings_rpc(&session, "MotionDetect", &motion)
             .await?;
         let total_updates = analyse_updates + final_smart_updates + motion_updates;
         if total_updates > 0 {
             info!(
-                "[{}] requested AI/motion normalization ({} reported settings differed)",
+                "[{}] applied AI/motion normalization ({} settings changed)",
                 self.host, total_updates
             );
         }
@@ -574,7 +575,7 @@ impl AmcrestClient {
         ));
         if !refused.is_empty() {
             warn!(
-                "[{}] camera refused {} reported AI/motion settings after setConfig: {}",
+                "[{}] camera did not retain {} AI/motion settings after RPC2 setConfig: {}",
                 self.host,
                 refused.len(),
                 refused.join(", ")
