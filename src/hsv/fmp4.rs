@@ -11,6 +11,8 @@ use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, broadcast};
 use tokio::time::Instant;
 
+use crate::metrics::{ErrorSubsystem, Metrics};
+
 #[derive(Clone, Debug)]
 pub struct Fragment {
     pub data: Arc<Vec<u8>>,
@@ -40,14 +42,16 @@ pub struct RecorderConfig {
 pub struct Recorder {
     state: Arc<Mutex<RecorderState>>,
     live_tx: broadcast::Sender<Fragment>,
+    metrics: Arc<Metrics>,
 }
 
 impl Recorder {
-    pub fn new() -> Self {
+    pub fn new(metrics: Arc<Metrics>) -> Self {
         let (live_tx, _) = broadcast::channel(16);
         Self {
             state: Arc::new(Mutex::new(RecorderState::default())),
             live_tx,
+            metrics,
         }
     }
 
@@ -117,12 +121,16 @@ impl Recorder {
                     {
                         // Quiet when this pipeline was deliberately replaced.
                         if recorder.state.lock().await.generation == generation {
+                            recorder.metrics.error(ErrorSubsystem::Recording);
                             error!("recorder stream ended: {e}");
                         }
                     }
                 });
             }
-            Err(e) => error!("failed to spawn recorder ffmpeg: {e}"),
+            Err(e) => {
+                self.metrics.error(ErrorSubsystem::Recording);
+                error!("failed to spawn recorder ffmpeg: {e}");
+            }
         }
     }
 
@@ -227,6 +235,7 @@ impl Recorder {
                     }
                     drop(state);
 
+                    self.metrics.recording_fragment(complete.data.len());
                     let _ = self.live_tx.send(complete);
                 }
                 _ if !init_done => init.extend_from_slice(&box_bytes),

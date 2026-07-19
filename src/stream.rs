@@ -10,6 +10,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
+use crate::metrics::{ErrorSubsystem, Metrics};
 use crate::tlv8;
 
 // SetupEndpoints request/response tags.
@@ -98,16 +99,24 @@ pub struct StreamManager {
     audio_rtsp_url: String,
     audio: bool,
     local_ip: IpAddr,
+    metrics: Arc<Metrics>,
 }
 
 impl StreamManager {
-    pub fn new(rtsp_url: String, audio_rtsp_url: String, audio: bool, local_ip: IpAddr) -> Self {
+    pub fn new(
+        rtsp_url: String,
+        audio_rtsp_url: String,
+        audio: bool,
+        local_ip: IpAddr,
+        metrics: Arc<Metrics>,
+    ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(Inner::default())),
             rtsp_url,
             audio_rtsp_url,
             audio,
             local_ip,
+            metrics,
         }
     }
 
@@ -168,6 +177,7 @@ impl StreamManager {
         let (video_out_socket, video_rtcp_reservation) = match bind_tokio_udp_pair(bind_ip).await {
             Ok(pair) => pair,
             Err(e) => {
+                self.metrics.error(ErrorSubsystem::LiveStream);
                 warn!("could not reserve video RTP/RTCP port: {e}");
                 return;
             }
@@ -180,6 +190,7 @@ impl StreamManager {
         let audio_out_socket = match tokio::net::UdpSocket::bind((bind_ip, 0)).await {
             Ok(socket) => socket,
             Err(e) => {
+                self.metrics.error(ErrorSubsystem::LiveStream);
                 warn!("could not reserve audio RTP/RTCP port: {e}");
                 return;
             }
@@ -360,6 +371,7 @@ impl StreamManager {
         if let Some(proxy) = inner.video_proxies.remove(&session.id) {
             proxy.abort();
         }
+        self.metrics.set_live_connections(inner.children.len());
 
         info!(
             "selected live audio: Opus mono {}Hz, {}ms packets, payload {}, max {}kbps, RTCP {:.3}s",
@@ -375,6 +387,7 @@ impl StreamManager {
             match bind_tokio_udp_pair(IpAddr::V4(Ipv4Addr::LOCALHOST)).await {
                 Ok(pair) => pair,
                 Err(e) => {
+                    self.metrics.error(ErrorSubsystem::LiveStream);
                     warn!("could not bind video proxy socket: {e}");
                     return;
                 }
@@ -394,6 +407,7 @@ impl StreamManager {
             session.video_key.clone(),
             1,
         ) else {
+            self.metrics.error(ErrorSubsystem::LiveStream);
             return;
         };
 
@@ -441,9 +455,12 @@ impl StreamManager {
                 }
                 inner.children.insert(session.id.clone(), child);
                 inner.video_proxies.insert(session.id.clone(), video_proxy);
+                self.metrics.live_stream_started();
+                self.metrics.set_live_connections(inner.children.len());
             }
             Err(e) => {
                 video_proxy.abort();
+                self.metrics.error(ErrorSubsystem::LiveStream);
                 error!("failed to spawn video ffmpeg: {e}");
                 return;
             }
@@ -523,10 +540,16 @@ impl StreamManager {
                                 inner.audio_proxies.insert(session.id.clone(), proxy);
                             }
                         }
-                        Err(e) => warn!("failed to spawn audio ffmpeg, video remains active: {e}"),
+                        Err(e) => {
+                            self.metrics.error(ErrorSubsystem::LiveStream);
+                            warn!("failed to spawn audio ffmpeg, video remains active: {e}");
+                        }
                     }
                 }
-                Err(e) => warn!("could not bind audio proxy socket, audio disabled: {e}"),
+                Err(e) => {
+                    self.metrics.error(ErrorSubsystem::LiveStream);
+                    warn!("could not bind audio proxy socket, audio disabled: {e}");
+                }
             }
         }
     }
@@ -567,6 +590,7 @@ impl StreamManager {
                 inner.sessions.clear();
             }
         }
+        self.metrics.set_live_connections(inner.children.len());
     }
 
     /// Stops all streams; used on shutdown.

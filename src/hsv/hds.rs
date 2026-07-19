@@ -12,6 +12,7 @@ use tokio::time::{Duration, Instant, timeout};
 use crate::hsv::codec::{self, Value};
 use crate::hsv::frame::{self, SessionKeys};
 use crate::hsv::recording::HsvState;
+use crate::metrics::{ErrorSubsystem, Metrics};
 
 const PREPARED_SESSION_TTL: Duration = Duration::from_secs(10);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -40,10 +41,11 @@ pub struct HdsServer {
     state: Arc<HsvState>,
     /// True while a dataSend recording stream is running (one at a time).
     recording_busy: Arc<AtomicBool>,
+    metrics: Arc<Metrics>,
 }
 
 impl HdsServer {
-    pub fn new(state: Arc<HsvState>) -> Self {
+    pub fn new(state: Arc<HsvState>, metrics: Arc<Metrics>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 listener: None,
@@ -51,6 +53,7 @@ impl HdsServer {
             })),
             state,
             recording_busy: Arc::new(AtomicBool::new(false)),
+            metrics,
         }
     }
 
@@ -90,13 +93,17 @@ impl HdsServer {
                             Ok((stream, addr)) => {
                                 info!("HDS connection from {addr}");
                                 let server = server.clone();
+                                server.metrics.data_stream_opened();
                                 tokio::spawn(async move {
                                     if let Err(e) = server.handle_connection(stream).await {
+                                        server.metrics.error(ErrorSubsystem::DataStream);
                                         info!("HDS connection ended: {e}");
                                     }
+                                    server.metrics.data_stream_closed();
                                 });
                             }
                             Err(e) => {
+                                server.metrics.error(ErrorSubsystem::DataStream);
                                 error!("HDS accept error: {e}");
                                 break;
                             }
@@ -244,8 +251,9 @@ impl Connection {
     fn stop_active_stream(&mut self) {
         if let Some((_, cancel)) = self.active_stream.take() {
             cancel.store(true, Ordering::SeqCst);
+            self.server.recording_busy.store(false, Ordering::SeqCst);
+            self.server.metrics.recording_stream_active(false);
         }
-        self.server.recording_busy.store(false, Ordering::SeqCst);
     }
 
     async fn handle_payload(&mut self, payload: Vec<u8>) -> Result<(), String> {
@@ -380,6 +388,7 @@ impl Connection {
                 .respond(id, 6, Value::dict(vec![("status", Value::Int64(2))]))
                 .await;
         }
+        self.server.metrics.recording_stream_active(true);
 
         self.respond(id, 0, Value::dict(vec![("status", Value::Int64(0))]))
             .await?;
@@ -391,14 +400,23 @@ impl Connection {
         let writer = self.writer.clone();
         let state = self.server.state.clone();
         let busy = self.server.recording_busy.clone();
+        let metrics = self.server.metrics.clone();
         tokio::spawn(async move {
             if let Err(e) = pump_recording(writer, state, stream_id, cancel).await {
+                metrics.error(ErrorSubsystem::DataStream);
                 warn!("recording stream {stream_id} ended with error: {e}");
             }
             busy.store(false, Ordering::SeqCst);
+            metrics.recording_stream_active(false);
         });
 
         Ok(())
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.stop_active_stream();
     }
 }
 

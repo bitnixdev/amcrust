@@ -10,6 +10,7 @@ use tokio::sync::Mutex;
 
 use crate::amcrest::AmcrestClient;
 use crate::hsv::fmp4::{Recorder, RecorderConfig};
+use crate::metrics::Metrics;
 use crate::tlv8;
 
 pub const PREBUFFER_MS: u32 = 4000;
@@ -59,6 +60,7 @@ impl HsvState {
         data_dir: &str,
         camera: AmcrestClient,
         motion_active: Arc<AtomicBool>,
+        metrics: Arc<Metrics>,
     ) -> Arc<Self> {
         let path = PathBuf::from(data_dir).join("hsv.json");
         let persisted: PersistedState = std::fs::read(&path)
@@ -88,7 +90,7 @@ impl HsvState {
             periodic_snapshots: AtomicBool::new(persisted.periodic_snapshots),
             homekit_active: AtomicBool::new(persisted.homekit_active),
             selected: Mutex::new(selected),
-            recorder: Recorder::new(),
+            recorder: Recorder::new(metrics),
             motion_active,
             camera,
             path,

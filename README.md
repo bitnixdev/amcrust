@@ -41,6 +41,10 @@ Supported/tested cameras: Amcrest `IP8M-2696E-AI` and `IP8M-2796E-AI`.
   disabled channel-name/mobile-status burn-ins. SmartMotion is enabled for
   people and vehicles over the full frame; obsolete face/IVS rules are
   disabled, and every writable motion setting is read back after application.
+- **Health and metrics**: a separate HTTP listener serves JSON at `/health` and
+  Prometheus text exposition at `/metrics`, suitable for Prometheus or
+  VictoriaMetrics scraping. Metrics cover uptime, camera events, errors,
+  snapshots, reconnects, open connections, motion, and live/recording video.
 
 ## Running
 
@@ -64,6 +68,14 @@ Credentials can also live in a `.env` file. Options (all settable via env vars):
 | `--data-dir` | `DATA_DIR` | `./data` | pairing state (`<data-dir>/<name>/`) |
 | `--rtsp-subtype` | `RTSP_SUBTYPE` | `2` | RTSP stream: 0 = main (4K), 1/2 = sub |
 | `--audio` | `AUDIO` | `true` | send Opus audio |
+| `--metrics-port` | `METRICS_PORT` | `9090` | `/health` and `/metrics` HTTP port (unique per instance) |
+
+For example:
+
+```sh
+curl http://localhost:9090/health
+curl http://localhost:9090/metrics
+```
 
 On startup the log prints the pairing PIN; add the accessory in the Home app
 via "Add Accessory → More options…". The instance must be reachable from your

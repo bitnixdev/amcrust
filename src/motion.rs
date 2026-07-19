@@ -11,6 +11,7 @@ use hap::{HapType, pointer};
 
 use crate::accessory::motion_service_iids;
 use crate::amcrest::CameraEvent;
+use crate::metrics::Metrics;
 
 /// Safety net: clear a motion sensor this long after the last Start if the
 /// camera never sends a Stop.
@@ -26,12 +27,14 @@ pub struct MotionMapper {
     /// Shared "any motion active" flag, used by the HSV recording stream to
     /// decide when to mark end-of-stream.
     motion_active: Arc<std::sync::atomic::AtomicBool>,
+    metrics: Arc<Metrics>,
 }
 
 impl MotionMapper {
     pub fn new(
         accessory: pointer::Accessory,
         motion_active: Arc<std::sync::atomic::AtomicBool>,
+        metrics: Arc<Metrics>,
     ) -> Self {
         Self {
             accessory,
@@ -40,6 +43,7 @@ impl MotionMapper {
             person_active: Arc::new(AtomicBool::new(false)),
             vehicle_active: Arc::new(AtomicBool::new(false)),
             motion_active,
+            metrics,
         }
     }
 
@@ -82,12 +86,14 @@ impl MotionMapper {
                 "person",
             )
         };
+        self.metrics.event(is_vehicle, &event.action);
 
         match event.action.as_str() {
             "Start" => {
                 info!("{} motion started ({})", label, event.code);
                 active.store(true, Ordering::SeqCst);
                 self.motion_active.store(true, Ordering::SeqCst);
+                self.metrics.motion_active(true);
                 let generation_at_start = generation.fetch_add(1, Ordering::SeqCst) + 1;
                 set_motion(&self.accessory, iid, true).await;
 
@@ -97,11 +103,13 @@ impl MotionMapper {
                 let active = active.clone();
                 let other_active = other_active.clone();
                 let motion_active = self.motion_active.clone();
+                let metrics = self.metrics.clone();
                 tokio::spawn(async move {
                     sleep(MOTION_TIMEOUT).await;
                     if generation.load(Ordering::SeqCst) == generation_at_start {
                         active.store(false, Ordering::SeqCst);
                         motion_active.store(other_active.load(Ordering::SeqCst), Ordering::SeqCst);
+                        metrics.motion_active(other_active.load(Ordering::SeqCst));
                         set_motion(&accessory, iid, false).await;
                     }
                 });
@@ -111,6 +119,8 @@ impl MotionMapper {
                 active.store(false, Ordering::SeqCst);
                 self.motion_active
                     .store(other_active.load(Ordering::SeqCst), Ordering::SeqCst);
+                self.metrics
+                    .motion_active(other_active.load(Ordering::SeqCst));
                 generation.fetch_add(1, Ordering::SeqCst);
                 set_motion(&self.accessory, iid, false).await;
             }

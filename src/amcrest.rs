@@ -747,13 +747,22 @@ impl AmcrestClient {
 
     /// Runs the AI event stream forever, reconnecting on errors, publishing
     /// events to `tx`.
-    pub async fn run_event_stream(&self, tx: broadcast::Sender<CameraEvent>) {
+    pub async fn run_event_stream(
+        &self,
+        tx: broadcast::Sender<CameraEvent>,
+        metrics: std::sync::Arc<crate::metrics::Metrics>,
+    ) {
         loop {
             info!("[{}] connecting to event stream...", self.host);
-            match self.stream_events(&tx).await {
+            match self.stream_events(&tx, &metrics).await {
                 Ok(()) => warn!("[{}] event stream ended, reconnecting...", self.host),
-                Err(e) => error!("[{}] event stream error: {e}, reconnecting...", self.host),
+                Err(e) => {
+                    metrics.error(crate::metrics::ErrorSubsystem::EventStream);
+                    error!("[{}] event stream error: {e}, reconnecting...", self.host);
+                }
             }
+            metrics.event_stream_connected(false);
+            metrics.event_stream_reconnect();
             sleep(RECONNECT_DELAY).await;
         }
     }
@@ -761,11 +770,13 @@ impl AmcrestClient {
     async fn stream_events(
         &self,
         tx: &broadcast::Sender<CameraEvent>,
+        metrics: &crate::metrics::Metrics,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let path = format!("/cgi-bin/eventManager.cgi?action=attach&codes=[{EVENT_CODES}]");
         let resp = self.get(&path).await?;
 
         info!("[{}] connected, streaming events...", self.host);
+        metrics.event_stream_connected(true);
 
         let mut buffer = String::new();
         let mut stream = resp.bytes_stream();

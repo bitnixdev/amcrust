@@ -1,6 +1,7 @@
 mod accessory;
 mod amcrest;
 mod hsv;
+mod metrics;
 mod motion;
 mod srtp;
 mod stream;
@@ -22,6 +23,7 @@ use accessory::CameraAccessory;
 use amcrest::{AmcrestClient, CameraEvent, SnapshotCache};
 use hsv::hds::HdsServer;
 use hsv::recording::HsvState;
+use metrics::{ErrorSubsystem, Metrics};
 use motion::MotionMapper;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -67,6 +69,10 @@ struct Args {
     /// Transcode and send camera audio for live view (AAC → Opus)
     #[arg(long, env = "AUDIO", default_value = "true")]
     audio: bool,
+
+    /// HTTP port for Prometheus metrics and health checks
+    #[arg(long, env = "METRICS_PORT", default_value = "9090")]
+    metrics_port: u16,
 }
 
 #[tokio::main]
@@ -75,6 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
     let args = Args::parse();
+    let metrics = Metrics::new();
 
     let camera = AmcrestClient::new(
         args.host.clone(),
@@ -158,6 +165,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         camera.rtsp_url(0),
         args.audio,
         local_ip,
+        metrics.clone(),
     );
 
     // HomeKit Secure Video state, recorder, and data stream server.
@@ -166,8 +174,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &format!("{}/{}", args.data_dir, args.name),
         camera.clone(),
         motion_active.clone(),
+        metrics.clone(),
     );
-    let hds = HdsServer::new(hsv_state.clone());
+    let hds = HdsServer::new(hsv_state.clone(), metrics.clone());
+
+    let metrics_addr = std::net::SocketAddr::from(([0, 0, 0, 0], args.metrics_port));
+    let _metrics_server = metrics::start_server(metrics_addr, metrics.clone(), hsv_state.clone())?;
+    info!("health and metrics HTTP server on {metrics_addr}");
 
     let camera_accessory_probe = CameraAccessory::new(
         1,
@@ -227,13 +240,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let snapshot_hsv = hsv_state.clone();
     let snapshot_host = camera.host.clone();
     let snapshot_name = args.name.clone();
+    let snapshot_metrics = metrics.clone();
     server
         .set_snapshot_handler(Box::new(move |width, height, reason| {
             let snapshots = snapshots.clone();
             let hsv = snapshot_hsv.clone();
             let host = snapshot_host.clone();
             let name = snapshot_name.clone();
+            let metrics = snapshot_metrics.clone();
             async move {
+                metrics.snapshot_request();
                 let periodic_ok = hsv.periodic_snapshots.load(Ordering::SeqCst);
                 let event_ok = hsv.event_snapshots.load(Ordering::SeqCst);
                 let allowed = match reason {
@@ -256,6 +272,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let result = snapshots.get_scaled(width, height).await;
                 match &result {
                     Ok(image) => {
+                        metrics.snapshot_success();
                         let filename = snapshot_filename(&name);
                         if let Err(e) = tokio::fs::write(&filename, &image.bytes).await {
                             warn!("[{name}@{host}] could not save snapshot to {filename}: {e}");
@@ -269,7 +286,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             image.output_fingerprint,
                         );
                     }
-                    Err(e) => warn!("[{name}@{host}] snapshot failed ({width}x{height}): {e}"),
+                    Err(e) => {
+                        metrics.error(ErrorSubsystem::Snapshot);
+                        warn!("[{name}@{host}] snapshot failed ({width}x{height}): {e}");
+                    }
                 }
                 result.map(|image| hap::pointer::SnapshotResult::Jpeg {
                     image: image.bytes,
@@ -288,8 +308,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // AI detection events → motion sensors (and the recording trigger flag).
     let (tx, rx) = broadcast::channel::<CameraEvent>(64);
     let event_camera = camera.clone();
-    tokio::spawn(async move { event_camera.run_event_stream(tx).await });
-    let mapper = MotionMapper::new(accessory_ptr, motion_active);
+    let event_metrics = metrics.clone();
+    tokio::spawn(async move { event_camera.run_event_stream(tx, event_metrics).await });
+    let mapper = MotionMapper::new(accessory_ptr, motion_active, metrics);
     tokio::spawn(async move { mapper.run(rx).await });
 
     info!(
