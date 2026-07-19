@@ -23,7 +23,7 @@ use hap::{
         camera_recording_management::CameraRecordingManagementService,
         camera_stream_management::CameraStreamManagementService,
         data_stream_transport_management::DataStreamTransportManagementService,
-        motion_sensor::MotionSensorService,
+        microphone::MicrophoneService, motion_sensor::MotionSensorService,
     },
 };
 
@@ -40,6 +40,7 @@ const IID_MOTION_VEHICLE: u64 = 40;
 const IID_OPERATING_MODE: u64 = 50;
 const IID_RECORDING_MGMT: u64 = 60;
 const IID_DATA_STREAM: u64 = 70;
+const IID_MICROPHONE: u64 = 80;
 
 /// MotionSensor service extended with the `Active` characteristic, as the
 /// secure-video spec requires.
@@ -141,6 +142,7 @@ pub struct CameraAccessory {
     pub operating_mode: CameraOperatingModeService,
     pub recording_management: CameraRecordingManagementService,
     pub data_stream: DataStreamTransportManagementService,
+    pub microphone: Option<MicrophoneService>,
 }
 
 impl CameraAccessory {
@@ -173,6 +175,9 @@ impl CameraAccessory {
         if let Some(s) = motion_person.inner_mut().status_active.as_mut() {
             s.set_value(json!(true)).await?;
         }
+        motion_person.inner_mut().status_fault = None;
+        motion_person.inner_mut().status_low_battery = None;
+        motion_person.inner_mut().status_tampered = None;
         motion_person.active.set_value(json!(1u8)).await?;
 
         let mut motion_vehicle = HsvMotionSensorService::new(IID_MOTION_VEHICLE, id);
@@ -182,11 +187,24 @@ impl CameraAccessory {
         if let Some(s) = motion_vehicle.inner_mut().status_active.as_mut() {
             s.set_value(json!(true)).await?;
         }
+        motion_vehicle.inner_mut().status_fault = None;
+        motion_vehicle.inner_mut().status_low_battery = None;
+        motion_vehicle.inner_mut().status_tampered = None;
         motion_vehicle.active.set_value(json!(1u8)).await?;
 
         let operating_mode = build_operating_mode(id, hsv).await?;
         let recording_management = build_recording_management(id, hsv).await?;
         let data_stream = build_data_stream(id, hds, secret_slot).await?;
+        let microphone = if streams.audio_enabled() {
+            let mut service = MicrophoneService::new(IID_MICROPHONE, id);
+            service.mute.set_value(json!(false)).await?;
+            if let Some(volume) = service.volume.as_mut() {
+                volume.set_value(json!(100u8)).await?;
+            }
+            Some(service)
+        } else {
+            None
+        };
 
         Ok(Self {
             id,
@@ -197,6 +215,7 @@ impl CameraAccessory {
             operating_mode,
             recording_management,
             data_stream,
+            microphone,
         })
     }
 }
@@ -508,7 +527,7 @@ impl HapAccessory for CameraAccessory {
     }
 
     fn get_services(&self) -> Vec<&dyn HapService> {
-        vec![
+        let mut services: Vec<&dyn HapService> = vec![
             &self.accessory_information,
             &self.stream_management,
             &self.motion_person,
@@ -516,11 +535,15 @@ impl HapAccessory for CameraAccessory {
             &self.operating_mode,
             &self.recording_management,
             &self.data_stream,
-        ]
+        ];
+        if let Some(microphone) = &self.microphone {
+            services.push(microphone);
+        }
+        services
     }
 
     fn get_mut_services(&mut self) -> Vec<&mut dyn HapService> {
-        vec![
+        let mut services: Vec<&mut dyn HapService> = vec![
             &mut self.accessory_information,
             &mut self.stream_management,
             &mut self.motion_person,
@@ -528,7 +551,11 @@ impl HapAccessory for CameraAccessory {
             &mut self.operating_mode,
             &mut self.recording_management,
             &mut self.data_stream,
-        ]
+        ];
+        if let Some(microphone) = &mut self.microphone {
+            services.push(microphone);
+        }
+        services
     }
 }
 

@@ -102,6 +102,10 @@ impl StreamManager {
         }
     }
 
+    pub fn audio_enabled(&self) -> bool {
+        self.audio
+    }
+
     /// Handles a controller write to SetupEndpoints and prepares the response
     /// that the controller will read back.
     pub async fn handle_setup_write(&self, payload: Vec<u8>) {
