@@ -9,25 +9,12 @@
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs-staging.follows = "nixpkgs-staging";
     };
-
-    rust-overlay = {
-      url = "github:oxalica/rust-overlay";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
-  outputs = {
-    chips,
-    rust-overlay,
-    ...
-  }:
+  outputs = {chips, ...}:
     chips.lib.use {
       # Generate new devShells with `nix run .#init-dev-shell <GITHUB_USERNAME>`
       devShellsDir = ./nix/devShells;
       packagesDir = ./nix/packages;
-      # nixosModulesDir = ./nix/nixosModules;
-      overlays = [
-        rust-overlay.overlays.default
-      ];
     };
 }
