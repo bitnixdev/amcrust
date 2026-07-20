@@ -10,6 +10,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
+use crate::amcrest::VideoProfile;
 use crate::metrics::{ErrorSubsystem, Metrics};
 use crate::tlv8;
 
@@ -100,6 +101,7 @@ pub struct StreamManager {
     audio: bool,
     local_ip: IpAddr,
     metrics: Arc<Metrics>,
+    video_profile: VideoProfile,
 }
 
 impl StreamManager {
@@ -109,6 +111,7 @@ impl StreamManager {
         audio: bool,
         local_ip: IpAddr,
         metrics: Arc<Metrics>,
+        video_profile: VideoProfile,
     ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(Inner::default())),
@@ -117,11 +120,16 @@ impl StreamManager {
             audio,
             local_ip,
             metrics,
+            video_profile,
         }
     }
 
     pub fn audio_enabled(&self) -> bool {
         self.audio
+    }
+
+    pub fn supported_video_config(&self) -> Vec<u8> {
+        supported_video_config(self.video_profile)
     }
 
     /// Handles a controller write to SetupEndpoints and prepares the response
@@ -273,11 +281,41 @@ impl StreamManager {
                 let video_params = tlv8::find(&items, SELECTED_VIDEO_PARAMS)
                     .map(|v| tlv8::parse(v))
                     .unwrap_or_default();
+                let video_attributes = tlv8::find(&video_params, 0x03)
+                    .map(|v| tlv8::parse(v))
+                    .unwrap_or_default();
+                let selected_width = tlv8::find_u16(&video_attributes, 0x01);
+                let selected_height = tlv8::find_u16(&video_attributes, 0x02);
+                let selected_fps = tlv8::find_u8(&video_attributes, 0x03);
+                if selected_width.is_some_and(|value| value != self.video_profile.width)
+                    || selected_height.is_some_and(|value| value != self.video_profile.height)
+                    || selected_fps.is_some_and(|value| value != self.video_profile.fps)
+                {
+                    warn!(
+                        "controller selected unsupported live format {:?}x{:?}@{:?}; packet-copy source is {}x{}@{}",
+                        selected_width,
+                        selected_height,
+                        selected_fps,
+                        self.video_profile.width,
+                        self.video_profile.height,
+                        self.video_profile.fps,
+                    );
+                    return;
+                }
                 let rtp_params = tlv8::find(&video_params, VIDEO_RTP_PARAMS)
                     .map(|v| tlv8::parse(v))
                     .unwrap_or_default();
                 let payload_type = tlv8::find_u8(&rtp_params, RTP_PAYLOAD_TYPE).unwrap_or(99);
                 let max_mtu = tlv8::find_u16(&rtp_params, RTP_MAX_MTU).unwrap_or(1316);
+                let max_bitrate = tlv8::find_u16(&rtp_params, RTP_MAX_BITRATE).unwrap_or_default();
+                debug!(
+                    "selected live video: {}x{}@{}, source {}kbps, controller max {}kbps",
+                    self.video_profile.width,
+                    self.video_profile.height,
+                    self.video_profile.fps,
+                    self.video_profile.bitrate_kbps,
+                    max_bitrate,
+                );
 
                 // Audio: negotiated Opus payload type & sample rate.
                 let audio_params = tlv8::find(&items, SELECTED_AUDIO_PARAMS)
@@ -761,9 +799,9 @@ fn h264_contains_idr(packet: &[u8]) -> bool {
 
 // --- Supported configuration TLVs, advertised via the stream management service ---
 
-/// SupportedVideoStreamConfiguration: H.264 (all common profiles/levels,
-/// non-interleaved packetization) at a set of resolutions up to 720p.
-pub fn supported_video_config() -> Vec<u8> {
+/// SupportedVideoStreamConfiguration for the exact packet-copy source. We do
+/// not advertise sizes that would require transcoding.
+pub fn supported_video_config(profile: VideoProfile) -> Vec<u8> {
     let mut params = tlv8::Writer::new();
     // Profiles: constrained baseline, main, high.
     params
@@ -783,16 +821,11 @@ pub fn supported_video_config() -> Vec<u8> {
     params.u8(0x03, 0x00);
     let params = params.build();
 
-    let attributes: Vec<Vec<u8>> = [(1280u16, 720u16), (640, 360), (480, 270), (320, 240)]
-        .iter()
-        .map(|&(w, h)| {
-            tlv8::Writer::new()
-                .u16(0x01, w)
-                .u16(0x02, h)
-                .u8(0x03, 30)
-                .build()
-        })
-        .collect();
+    let attributes = [tlv8::Writer::new()
+        .u16(0x01, profile.width)
+        .u16(0x02, profile.height)
+        .u8(0x03, profile.fps)
+        .build()];
 
     let mut codec_config = tlv8::Writer::new();
     codec_config.u8(0x01, 0x00); // codec type: H.264
@@ -834,7 +867,7 @@ pub fn supported_rtp_config() -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::h264_contains_idr;
+    use super::*;
 
     #[test]
     fn detects_single_and_fragmented_h264_idr_packets() {
@@ -847,5 +880,17 @@ mod tests {
         assert!(h264_contains_idr(&fua));
         fua[13] = 0x05;
         assert!(!h264_contains_idr(&fua));
+    }
+
+    #[test]
+    fn advertises_only_the_exact_live_profile() {
+        let raw = supported_video_config(VideoProfile::LIVE_1080P);
+        let root = tlv8::parse(&raw);
+        let codec = tlv8::parse(tlv8::find(&root, 0x01).unwrap());
+        let attributes = tlv8::parse(tlv8::find(&codec, 0x03).unwrap());
+        assert_eq!(tlv8::find_u16(&attributes, 0x01), Some(1920));
+        assert_eq!(tlv8::find_u16(&attributes, 0x02), Some(1080));
+        assert_eq!(tlv8::find_u8(&attributes, 0x03), Some(15));
+        assert_eq!(codec.iter().filter(|item| item.tag == 0x03).count(), 1);
     }
 }

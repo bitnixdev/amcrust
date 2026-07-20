@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
 
-use crate::amcrest::AmcrestClient;
+use crate::amcrest::{AmcrestClient, EncoderCapabilities};
 use crate::hsv::fmp4::{Recorder, RecorderConfig};
 use crate::metrics::Metrics;
 use crate::tlv8;
@@ -55,6 +55,7 @@ pub struct HsvState {
     camera: AmcrestClient,
     path: PathBuf,
     configuration_lock: Mutex<()>,
+    capabilities: EncoderCapabilities,
 }
 
 impl HsvState {
@@ -64,6 +65,7 @@ impl HsvState {
         camera: AmcrestClient,
         motion_active: Arc<AtomicBool>,
         metrics: Arc<Metrics>,
+        capabilities: EncoderCapabilities,
     ) -> Arc<Self> {
         let path = PathBuf::from(data_dir).join("hsv.json");
         let persisted: PersistedState = std::fs::read(&path)
@@ -78,13 +80,23 @@ impl HsvState {
                 homekit_active: true,
             });
 
-        let selected = persisted.selected_b64.as_ref().and_then(|b64| {
-            use base64::Engine;
-            base64::engine::general_purpose::STANDARD
-                .decode(b64)
-                .ok()
-                .and_then(|raw| parse_selected(&raw))
-        });
+        let selected = persisted
+            .selected_b64
+            .as_ref()
+            .and_then(|b64| {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD
+                    .decode(b64)
+                    .ok()
+                    .and_then(|raw| parse_selected(&raw))
+            })
+            .filter(|selected| {
+                capabilities.recording_attributes().contains(&(
+                    selected.width,
+                    selected.height,
+                    selected.fps,
+                ))
+            });
 
         Arc::new(Self {
             camera_name,
@@ -99,7 +111,12 @@ impl HsvState {
             camera,
             path,
             configuration_lock: Mutex::new(()),
+            capabilities,
         })
+    }
+
+    pub fn recording_attributes(&self) -> Vec<(u16, u16, u8)> {
+        self.capabilities.recording_attributes()
     }
 
     pub async fn persist(&self) {
@@ -132,6 +149,17 @@ impl HsvState {
             warn!("could not parse selected recording configuration");
             return;
         };
+        if !self.capabilities.recording_attributes().contains(&(
+            config.width,
+            config.height,
+            config.fps,
+        )) {
+            warn!(
+                "rejecting unsupported recording configuration {}x{}@{}",
+                config.width, config.height, config.fps
+            );
+            return;
+        }
         let _configuration_guard = self.configuration_lock.lock().await;
         let current = self.selected.lock().await.clone();
         if current
@@ -185,6 +213,13 @@ impl HsvState {
     /// recording configuration, so ffmpeg can stream-copy.
     async fn apply_camera_settings(&self, config: &SelectedConfig) {
         let gop = config.fps as u32 * config.iframe_interval_ms / 1000;
+        let video_bitrate_kbps = self
+            .capabilities
+            .main_bitrate_range
+            .map(|(_, max)| max)
+            .map_or(config.video_bitrate_kbps, |max| {
+                config.video_bitrate_kbps.min(max)
+            });
         let audio_hz: u32 = match config.audio_sample_rate {
             0 => 8000,
             1 => 16000,
@@ -200,7 +235,7 @@ impl HsvState {
                 config.height,
                 config.fps,
                 gop,
-                config.video_bitrate_kbps,
+                video_bitrate_kbps,
                 audio_hz,
             )
             .await
@@ -210,6 +245,14 @@ impl HsvState {
                     "[{}] camera main stream set to {}x{}@{} GOP {} for recording",
                     self.camera_name, config.width, config.height, config.fps, gop
                 );
+                if let Some((width, height)) = self.capabilities.best_snapshot_resolution()
+                    && let Err(e) = self.camera.ensure_snapshot_resolution(width, height).await
+                {
+                    warn!(
+                        "[{}] failed to restore maximum-quality snapshot profile: {e}",
+                        self.camera_name
+                    );
+                }
                 // Several Amcrest firmware families reset MotionDetect event
                 // actions when the main encoder is written. Detection must be
                 // the final camera profile applied, including on later HomeKit
@@ -290,16 +333,7 @@ pub fn supported_camera_recording_config() -> Vec<u8> {
         .build()
 }
 
-/// Recording resolutions we can configure the camera's main stream to.
-/// (fps 15: the 4K sensors on these cameras top out at 15 fps.)
-const RECORDING_ATTRIBUTES: &[(u16, u16, u8)] = &[
-    (1280, 720, 15),
-    (1920, 1080, 15),
-    (2688, 1520, 15),
-    (3840, 2160, 15),
-];
-
-pub fn supported_video_recording_config() -> Vec<u8> {
+pub fn supported_video_recording_config(attributes: &[(u16, u16, u8)]) -> Vec<u8> {
     let mut params = tlv8::Writer::new();
     params
         .u8(0x01, 0x00)
@@ -318,7 +352,7 @@ pub fn supported_video_recording_config() -> Vec<u8> {
     let mut codec_config = tlv8::Writer::new();
     codec_config.u8(0x01, 0x00); // H.264
     codec_config.bytes(0x02, &params);
-    for (i, &(w, h, fps)) in RECORDING_ATTRIBUTES.iter().enumerate() {
+    for (i, &(w, h, fps)) in attributes.iter().enumerate() {
         if i > 0 {
             codec_config.delimiter();
         }
@@ -470,7 +504,10 @@ mod tests {
         assert!(tlv8::find(&rec, 0x01).is_some());
         assert_eq!(tlv8::find(&rec, 0x02).map(|v| v.len()), Some(8));
 
-        let video = tlv8::parse(&supported_video_recording_config());
+        let video = tlv8::parse(&supported_video_recording_config(&[
+            (3840, 2160, 15),
+            (1920, 1080, 15),
+        ]));
         let codec = tlv8::parse(tlv8::find(&video, 0x01).unwrap());
         assert_eq!(tlv8::find_u8(&codec, 0x01), Some(0));
 

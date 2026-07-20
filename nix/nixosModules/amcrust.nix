@@ -67,9 +67,13 @@
       };
 
       rtspSubtype = mkOption {
-        type = types.ints.between 0 2;
+        type = types.ints.between 1 2;
         default = 2;
-        description = "RTSP stream subtype used for HomeKit live video.";
+        description = ''
+          RTSP substream used for HomeKit live video. The selected stream is
+          automatically configured to its highest verified profile up to
+          1080p at 4 Mbps; subtype 2 is recommended.
+        '';
       };
 
       audio = mkOption {

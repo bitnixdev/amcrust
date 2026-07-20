@@ -228,6 +228,74 @@ pub struct AmcrestClient {
     client: Client,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VideoProfile {
+    pub width: u16,
+    pub height: u16,
+    pub fps: u8,
+    pub bitrate_kbps: u32,
+}
+
+impl VideoProfile {
+    pub const LIVE_1080P: Self = Self {
+        width: 1920,
+        height: 1080,
+        fps: 15,
+        bitrate_kbps: 4096,
+    };
+
+    pub const LIVE_720P: Self = Self {
+        width: 1280,
+        height: 720,
+        fps: 15,
+        bitrate_kbps: 2048,
+    };
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EncoderCapabilities {
+    pub main_resolutions: Vec<(u16, u16)>,
+    pub extra_resolutions: Vec<(u16, u16)>,
+    pub snapshot_resolutions: Vec<(u16, u16)>,
+    pub main_bitrate_range: Option<(u32, u32)>,
+    pub extra_bitrate_range: Option<(u32, u32)>,
+    pub main_fps_max: Option<u8>,
+    pub extra_fps_max: Option<u8>,
+}
+
+impl EncoderCapabilities {
+    pub fn recording_attributes(&self) -> Vec<(u16, u16, u8)> {
+        let candidates = [
+            (3840, 2160, 15),
+            (2688, 1520, 15),
+            (1920, 1080, 15),
+            (1280, 720, 15),
+        ];
+        if self.main_resolutions.is_empty() {
+            return vec![(1920, 1080, 15), (1280, 720, 15)];
+        }
+        let supported: Vec<_> = candidates
+            .into_iter()
+            .filter(|&(width, height, fps)| {
+                self.main_resolutions.contains(&(width, height))
+                    && self.main_fps_max.is_none_or(|max| fps <= max)
+            })
+            .collect();
+        if supported.is_empty() {
+            vec![(1920, 1080, 15), (1280, 720, 15)]
+        } else {
+            supported
+        }
+    }
+
+    pub fn best_snapshot_resolution(&self) -> Option<(u16, u16)> {
+        self.snapshot_resolutions
+            .iter()
+            .copied()
+            .max_by_key(|&(width, height)| u32::from(width) * u32::from(height))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CameraEvent {
     pub code: String,
@@ -253,6 +321,30 @@ impl AmcrestClient {
             "rtsp://{}:{}@{}:554/cam/realmonitor?channel=1&subtype={}",
             self.username, self.password, self.host, subtype
         )
+    }
+
+    /// Queries the encoder modes exposed by this camera. Firmware families
+    /// vary in how completely they populate these fields, so callers still
+    /// verify every configuration by reading it back.
+    pub async fn encoder_capabilities(
+        &self,
+    ) -> Result<EncoderCapabilities, Box<dyn std::error::Error + Send + Sync>> {
+        let response = match self
+            .get("/cgi-bin/encode.cgi?action=getConfigCaps&channel=1")
+            .await
+        {
+            Ok(response) => response,
+            Err(channel_one_error) => {
+                debug!(
+                    "[{}] encode capabilities channel 1 failed ({channel_one_error}); trying channel 0",
+                    self.host
+                );
+                self.get("/cgi-bin/encode.cgi?action=getConfigCaps&channel=0")
+                    .await?
+            }
+        };
+        let body = response.text().await?;
+        Ok(parse_encoder_capabilities(&body))
     }
 
     /// Performs a digest-authenticated GET for the given path + query.
@@ -823,103 +915,87 @@ impl AmcrestClient {
         Ok(())
     }
 
-    /// Ensures the live-view substream is enabled and HomeKit-friendly:
-    /// H.264, 1280x720, 15 fps with 1 s keyframes. Cameras ship with sub
-    /// stream 2 disabled or misconfigured, which breaks live view.
+    /// Configures the selected live-view substream to its highest verified
+    /// packet-copy profile and returns the profile retained by the camera.
     pub async fn ensure_live_substream(
         &self,
         subtype: u8,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        _capabilities: &EncoderCapabilities,
+    ) -> Result<VideoProfile, Box<dyn std::error::Error + Send + Sync>> {
         if subtype == 0 {
-            return Ok(()); // main stream is managed by the recording config
+            return Err("the main stream is reserved for HSV recording".into());
         }
         let idx = subtype - 1;
-        let resp = self
-            .get("/cgi-bin/configManager.cgi?action=getConfig&name=Encode")
-            .await?;
-        let body = resp.text().await?;
-
-        let field = |name: &str| -> Option<String> {
-            let prefix = format!("table.Encode[0].ExtraFormat[{idx}].{name}=");
-            body.lines()
-                .find(|l| l.starts_with(&prefix))
-                .map(|l| l[prefix.len()..].trim().to_string())
+        let initial = self.encode_config().await?;
+        let existing = live_profile_from_config(&initial, idx);
+        let candidates: &[VideoProfile] = if subtype == 2 {
+            &[VideoProfile::LIVE_1080P, VideoProfile::LIVE_720P]
+        } else {
+            &[VideoProfile::LIVE_720P]
         };
 
-        let enabled = field("VideoEnable").as_deref() == Some("true");
-        let h264 = field("Video.Compression").as_deref() == Some("H.264");
-        let fps = field("Video.FPS")
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(0);
-        let gop = field("Video.GOP")
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(0);
-        let width = field("Video.Width")
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(0);
-        let height = field("Video.Height")
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(0);
-        let bitrate = field("Video.BitRate")
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(0);
-        let bitrate_control = field("Video.BitRateControl").unwrap_or_default();
-        let profile = field("Video.Profile").unwrap_or_default();
-        let quality = field("Video.Quality").and_then(|v| v.parse::<u32>().ok());
-        let pack = field("Video.Pack").unwrap_or_default();
-        let priority = field("Video.Priority").and_then(|v| v.parse::<u32>().ok());
-        let svc_layers = field("Video.SVCTLayer").and_then(|v| v.parse::<u32>().ok());
-        let ai_gop = field("Video.AiGOP").and_then(|v| v.parse::<u32>().ok());
-        let audio_enabled = field("AudioEnable").as_deref() == Some("true");
-        let audio_codec = field("Audio.Compression").unwrap_or_default();
-        let audio_frequency = field("Audio.Frequency")
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(0);
-        let audio_bitrate = field("Audio.Bitrate")
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(0);
-        let audio_depth = field("Audio.Depth").and_then(|v| v.parse::<u32>().ok());
-        let audio_channel = field("Audio.Channels[0]").and_then(|v| v.parse::<u32>().ok());
-        let audio_pack = field("Audio.Pack").unwrap_or_default();
-
-        if enabled
-            && h264
-            && width == 1280
-            && height == 720
-            && fps == 15
-            && gop == 15
-            && bitrate == 2048
-            && bitrate_control == "VBR"
-            && profile == "High"
-            && quality == Some(6)
-            && pack == "DHAV"
-            && priority == Some(0)
-            && svc_layers == Some(1)
-            && ai_gop.is_none_or(|value| value == 15)
-            && audio_enabled
-            && audio_codec == "AAC"
-            && audio_frequency == 16000
-            && audio_bitrate == 64
-            && audio_depth == Some(16)
-            && audio_channel == Some(0)
-            && audio_pack == "DHAV"
-        {
-            return Ok(());
+        for &candidate in candidates {
+            if live_config_matches(&initial, idx, candidate) {
+                return Ok(candidate);
+            }
+            info!(
+                "[{}] trying live substream {subtype} at {}x{}@{} {}kbps",
+                self.host, candidate.width, candidate.height, candidate.fps, candidate.bitrate_kbps,
+            );
+            if let Err(error) = self.apply_live_profile(idx, candidate).await {
+                warn!(
+                    "[{}] live substream {subtype} rejected {}x{}: {error}",
+                    self.host, candidate.width, candidate.height
+                );
+                continue;
+            }
+            let readback = self.encode_config().await?;
+            if live_config_matches(&readback, idx, candidate) {
+                info!(
+                    "[{}] live profile verified: subtype {subtype}, {}x{}@{} {}kbps",
+                    self.host,
+                    candidate.width,
+                    candidate.height,
+                    candidate.fps,
+                    candidate.bitrate_kbps,
+                );
+                return Ok(candidate);
+            }
+            warn!(
+                "[{}] camera did not retain {}x{} live profile; trying fallback",
+                self.host, candidate.width, candidate.height
+            );
         }
 
-        info!(
-            "[{}] configuring live substream {subtype} for HomeKit (was: enabled={enabled} h264={h264} {width}w {fps}fps gop {gop})",
-            self.host
-        );
+        let final_config = self.encode_config().await?;
+        live_profile_from_config(&final_config, idx)
+            .or(existing)
+            .ok_or_else(|| "camera has no usable live substream configuration".into())
+    }
+
+    async fn encode_config(&self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self
+            .get("/cgi-bin/configManager.cgi?action=getConfig&name=Encode")
+            .await?
+            .text()
+            .await?)
+    }
+
+    async fn apply_live_profile(
+        &self,
+        idx: u8,
+        profile: VideoProfile,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let resolution = format!("{}x{}", profile.width, profile.height);
         let params = format!(
             "Encode%5B0%5D.ExtraFormat%5B{idx}%5D.VideoEnable=true\
              &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Compression=H.264\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.resolution=1280x720\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Width=1280\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Height=720\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.FPS=15\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.GOP=15\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.BitRate=2048\
+             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.resolution={resolution}\
+             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Width={}\
+             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Height={}\
+             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.FPS={}\
+             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.GOP={}\
+             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.BitRate={}\
              &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.BitRateControl=VBR\
              &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Profile=High\
              &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Quality=6\
@@ -932,12 +1008,16 @@ impl AmcrestClient {
              &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Audio.Depth=16\
              &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Audio.Channels%5B0%5D=0\
              &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Audio.Pack=DHAV\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Audio.Frequency=16000"
+             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Audio.Frequency=16000",
+            profile.width, profile.height, profile.fps, profile.fps, profile.bitrate_kbps,
         );
         self.set_config(&params).await?;
-        if ai_gop.is_some() && ai_gop != Some(15) {
+        let body = self.encode_config().await?;
+        let ai_gop_key = format!("table.Encode[0].ExtraFormat[{idx}].Video.AiGOP=");
+        if body.lines().any(|line| line.starts_with(&ai_gop_key)) {
             self.set_config(&format!(
-                "Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.AiGOP=15"
+                "Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.AiGOP={}",
+                profile.fps
             ))
             .await?;
         }
@@ -1108,6 +1188,54 @@ impl AmcrestClient {
                 .await?;
             }
         }
+        Ok(())
+    }
+
+    /// Configures regular snapshots at the highest resolution reported by the
+    /// camera. Unsupported model-specific fields are skipped by the RPC helper.
+    pub async fn ensure_snapshot_profile(
+        &self,
+        capabilities: &EncoderCapabilities,
+    ) -> Result<Option<(u16, u16)>, Box<dyn std::error::Error + Send + Sync>> {
+        let Some((width, height)) = capabilities.best_snapshot_resolution() else {
+            warn!(
+                "[{}] snapshot capabilities unavailable; retaining camera settings",
+                self.host
+            );
+            return Ok(None);
+        };
+        self.ensure_snapshot_resolution(width, height).await?;
+        Ok(Some((width, height)))
+    }
+
+    pub async fn ensure_snapshot_resolution(
+        &self,
+        width: u16,
+        height: u16,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let desired = vec![
+            ("Encode[0].SnapFormat[0].VideoEnable".into(), "true".into()),
+            (
+                "Encode[0].SnapFormat[0].Video.Compression".into(),
+                "MJPG".into(),
+            ),
+            (
+                "Encode[0].SnapFormat[0].Video.Width".into(),
+                width.to_string(),
+            ),
+            (
+                "Encode[0].SnapFormat[0].Video.Height".into(),
+                height.to_string(),
+            ),
+            ("Encode[0].SnapFormat[0].Video.Quality".into(), "6".into()),
+        ];
+        let session = self.rpc_login().await?;
+        self.apply_supported_settings_rpc(&session, "Encode", &desired)
+            .await?;
+        info!(
+            "[{}] snapshot profile verified: {}x{}, MJPEG quality 6",
+            self.host, width, height
+        );
         Ok(())
     }
 
@@ -1469,6 +1597,139 @@ fn fingerprint(bytes: &[u8]) -> u64 {
     hasher.finish()
 }
 
+fn parse_encoder_capabilities(body: &str) -> EncoderCapabilities {
+    EncoderCapabilities {
+        main_resolutions: capability_values(
+            body,
+            "headMain.Video.ResolutionTypes",
+            ".MainFormat[0].Video.ResolutionTypes",
+        )
+        .as_deref()
+        .map(parse_resolutions)
+        .unwrap_or_default(),
+        extra_resolutions: capability_values(
+            body,
+            "headExtra.Video.ResolutionTypes",
+            ".ExtraFormat[1].Video.ResolutionTypes",
+        )
+        .as_deref()
+        .map(parse_resolutions)
+        .unwrap_or_default(),
+        snapshot_resolutions: capability_values(
+            body,
+            "headSnap.Video.ResolutionTypes",
+            ".SnapFormat[0].Video.ResolutionTypes",
+        )
+        .as_deref()
+        .map(parse_resolutions)
+        .unwrap_or_default(),
+        main_bitrate_range: capability_values(
+            body,
+            "headMain.Video.BitRateOptions",
+            ".MainFormat[0].Video.BitRateOptions",
+        )
+        .as_deref()
+        .and_then(parse_bitrate_range),
+        extra_bitrate_range: capability_values(
+            body,
+            "headExtra.Video.BitRateOptions",
+            ".ExtraFormat[1].Video.BitRateOptions",
+        )
+        .as_deref()
+        .and_then(parse_bitrate_range),
+        main_fps_max: capability_values(
+            body,
+            "headMain.Video.FPSMax",
+            ".MainFormat[0].Video.FPSMax",
+        )
+        .and_then(|v| v.split(',').next()?.parse().ok()),
+        extra_fps_max: capability_values(
+            body,
+            "headExtra.Video.FPSMax",
+            ".ExtraFormat[1].Video.FPSMax",
+        )
+        .and_then(|v| v.split(',').next()?.parse().ok()),
+    }
+}
+
+fn capability_values(body: &str, documented: &str, indexed: &str) -> Option<String> {
+    let values: Vec<_> = body
+        .lines()
+        .filter_map(|line| {
+            let (key, value) = line.trim().split_once('=')?;
+            (key == documented
+                || key.starts_with(&format!("{documented}["))
+                || key.contains(indexed))
+            .then_some(value.trim())
+        })
+        .collect();
+    (!values.is_empty()).then(|| values.join(","))
+}
+
+fn live_config_field(body: &str, idx: u8, name: &str) -> Option<String> {
+    let prefix = format!("table.Encode[0].ExtraFormat[{idx}].{name}=");
+    body.lines().find_map(|line| {
+        line.strip_prefix(&prefix)
+            .map(|value| value.trim().to_string())
+    })
+}
+
+fn live_profile_from_config(body: &str, idx: u8) -> Option<VideoProfile> {
+    Some(VideoProfile {
+        width: live_config_field(body, idx, "Video.Width")?.parse().ok()?,
+        height: live_config_field(body, idx, "Video.Height")?.parse().ok()?,
+        fps: live_config_field(body, idx, "Video.FPS")?.parse().ok()?,
+        bitrate_kbps: live_config_field(body, idx, "Video.BitRate")?
+            .parse()
+            .ok()?,
+    })
+}
+
+fn live_config_matches(body: &str, idx: u8, expected: VideoProfile) -> bool {
+    live_profile_from_config(body, idx) == Some(expected)
+        && live_config_field(body, idx, "VideoEnable").as_deref() == Some("true")
+        && live_config_field(body, idx, "Video.Compression").as_deref() == Some("H.264")
+        && live_config_field(body, idx, "Video.GOP").and_then(|value| value.parse().ok())
+            == Some(u32::from(expected.fps))
+        && live_config_field(body, idx, "Video.BitRateControl").as_deref() == Some("VBR")
+        && live_config_field(body, idx, "Video.Profile").as_deref() == Some("High")
+        && live_config_field(body, idx, "Video.Quality").as_deref() == Some("6")
+}
+
+fn parse_bitrate_range(value: &str) -> Option<(u32, u32)> {
+    let mut values = value.split(',').filter_map(|part| part.trim().parse().ok());
+    Some((values.next()?, values.next()?))
+}
+
+fn parse_resolutions(value: &str) -> Vec<(u16, u16)> {
+    let mut resolutions = Vec::new();
+    for raw in value.split(',') {
+        let normalized = raw.trim().to_ascii_uppercase().replace(' ', "");
+        let named = match normalized.as_str() {
+            "QFHD" | "4K" => Some((3840, 2160)),
+            "1080" | "1080P" => Some((1920, 1080)),
+            "720" | "720P" => Some((1280, 720)),
+            "D1" => Some((704, 480)),
+            "VGA" => Some((640, 480)),
+            "CIF" => Some((352, 240)),
+            _ => None,
+        };
+        let parsed = named.or_else(|| {
+            let mut dimensions = normalized
+                .split(|character: char| !character.is_ascii_digit())
+                .filter(|part| !part.is_empty())
+                .filter_map(|part| part.parse::<u16>().ok());
+            Some((dimensions.next()?, dimensions.next()?))
+        });
+        if let Some(resolution) = parsed
+            && !resolutions.contains(&resolution)
+        {
+            resolutions.push(resolution);
+        }
+    }
+    resolutions
+}
+
 fn parse_event_line(line: &str) -> Option<CameraEvent> {
     // Format: Code=SmartMotionHuman;action=Start;index=0;data={...}
     let mut code = None;
@@ -1625,5 +1886,61 @@ mod tests {
         assert!(!ffmpeg_detected_black_frame(
             b"Input #0, image2pipe, from 'pipe:0'"
         ));
+    }
+
+    #[test]
+    fn parses_documented_encoder_capabilities_and_orders_best_first() {
+        let capabilities = parse_encoder_capabilities(
+            "headMain.Video.BitRateOptions=3,8192\n\
+             headMain.Video.FPSMax=15\n\
+             headMain.Video.ResolutionTypes=720P,1080P,2688x1520,QFHD\n\
+             headExtra.Video.BitRateOptions=768,4352\n\
+             headExtra.Video.FPSMax=15\n\
+             headExtra.Video.ResolutionTypes=720P,1080P\n\
+             headSnap.Video.ResolutionTypes=1080P,3840*2160(3840x2160)",
+        );
+        assert_eq!(capabilities.main_bitrate_range, Some((3, 8192)));
+        assert_eq!(capabilities.extra_bitrate_range, Some((768, 4352)));
+        assert_eq!(
+            capabilities.recording_attributes(),
+            vec![
+                (3840, 2160, 15),
+                (2688, 1520, 15),
+                (1920, 1080, 15),
+                (1280, 720, 15),
+            ]
+        );
+        assert_eq!(capabilities.best_snapshot_resolution(), Some((3840, 2160)));
+    }
+
+    #[test]
+    fn parses_indexed_firmware_capability_keys() {
+        let capabilities = parse_encoder_capabilities(
+            "caps[0].MainFormat[0].Video.ResolutionTypes[0]=3840x2160\n\
+             caps[0].MainFormat[0].Video.ResolutionTypes[1]=1920x1080\n\
+             caps[0].ExtraFormat[1].Video.ResolutionTypes[0]=1920x1080\n\
+             caps[0].ExtraFormat[1].Video.ResolutionTypes[1]=1280x720\n\
+             caps[0].SnapFormat[0].Video.ResolutionTypes=3840x2160",
+        );
+        assert_eq!(capabilities.main_resolutions[0], (3840, 2160));
+        assert_eq!(capabilities.main_resolutions[1], (1920, 1080));
+        assert_eq!(capabilities.extra_resolutions[0], (1920, 1080));
+        assert_eq!(capabilities.snapshot_resolutions[0], (3840, 2160));
+    }
+
+    #[test]
+    fn verifies_exact_packet_copy_live_profile() {
+        let body = "table.Encode[0].ExtraFormat[1].VideoEnable=true\n\
+                    table.Encode[0].ExtraFormat[1].Video.Compression=H.264\n\
+                    table.Encode[0].ExtraFormat[1].Video.Width=1920\n\
+                    table.Encode[0].ExtraFormat[1].Video.Height=1080\n\
+                    table.Encode[0].ExtraFormat[1].Video.FPS=15\n\
+                    table.Encode[0].ExtraFormat[1].Video.GOP=15\n\
+                    table.Encode[0].ExtraFormat[1].Video.BitRate=4096\n\
+                    table.Encode[0].ExtraFormat[1].Video.BitRateControl=VBR\n\
+                    table.Encode[0].ExtraFormat[1].Video.Profile=High\n\
+                    table.Encode[0].ExtraFormat[1].Video.Quality=6";
+        assert!(live_config_matches(body, 1, VideoProfile::LIVE_1080P));
+        assert!(!live_config_matches(body, 1, VideoProfile::LIVE_720P));
     }
 }

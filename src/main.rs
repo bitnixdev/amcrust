@@ -21,7 +21,7 @@ use hap::{
 };
 
 use accessory::CameraAccessory;
-use amcrest::{AmcrestClient, CameraEvent, SnapshotCache};
+use amcrest::{AmcrestClient, CameraEvent, EncoderCapabilities, SnapshotCache, VideoProfile};
 use hsv::hds::HdsServer;
 use hsv::recording::HsvState;
 use metrics::{ErrorSubsystem, Metrics};
@@ -69,8 +69,13 @@ struct Args {
     #[arg(long, env = "DATA_DIR", default_value = "./data")]
     data_dir: String,
 
-    /// RTSP stream subtype to serve to HomeKit (0 = main, 1/2 = sub streams)
-    #[arg(long, env = "RTSP_SUBTYPE", default_value = "2")]
+    /// RTSP substream to serve to HomeKit (subtype 2 supports 1080p)
+    #[arg(
+        long,
+        env = "RTSP_SUBTYPE",
+        default_value = "2",
+        value_parser = clap::value_parser!(u8).range(1..=2)
+    )]
     rtsp_subtype: u8,
 
     /// Transcode and send camera audio for live view (AAC → Opus)
@@ -117,11 +122,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     info!("camera {} at {} ({model})", args.name, args.host);
 
+    let capabilities = match camera.encoder_capabilities().await {
+        Ok(capabilities) => capabilities,
+        Err(error) => {
+            warn!("could not query encoder capabilities: {error}; using conservative fallbacks");
+            EncoderCapabilities::default()
+        }
+    };
     // Make sure the live-view substream is enabled and configured; cameras
     // ship with sub stream 2 disabled, which breaks HomeKit live view.
-    if let Err(e) = camera.ensure_live_substream(args.rtsp_subtype).await {
-        warn!("could not verify live substream config: {e}");
-    }
+    let live_profile = match camera
+        .ensure_live_substream(args.rtsp_subtype, &capabilities)
+        .await
+    {
+        Ok(profile) => profile,
+        Err(error) => {
+            warn!("could not verify live substream config: {error}; advertising 720p fallback");
+            VideoProfile::LIVE_720P
+        }
+    };
     if let Err(e) = camera.ensure_media_profile(args.ir_lighting).await {
         warn!("could not verify camera media profile: {e}");
     }
@@ -194,6 +213,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.audio,
         local_ip,
         metrics.clone(),
+        live_profile,
     );
 
     // HomeKit Secure Video state, recorder, and data stream server.
@@ -204,6 +224,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         camera.clone(),
         motion_active.clone(),
         metrics.clone(),
+        capabilities.clone(),
     );
     let hds = HdsServer::new(
         args.name.clone(),
@@ -269,6 +290,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Restore the persisted encoder settings before resuming the recording
     // pipeline, so ffmpeg never attaches to a stale camera configuration.
     hsv_state.resume_recorder().await;
+    if let Err(e) = camera.ensure_snapshot_profile(&capabilities).await {
+        warn!("could not verify maximum-quality snapshot config: {e}");
+    }
     // Encoder writes reset motion fields on some models. Apply detection last
     // even when HomeKit has not selected a recording configuration yet.
     if let Err(e) = camera.ensure_smart_motion().await {

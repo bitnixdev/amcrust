@@ -389,7 +389,7 @@ fn typed_response(
 #[cfg(test)]
 mod tests {
     use super::{HttpState, Metrics, handle};
-    use crate::amcrest::AmcrestClient;
+    use crate::amcrest::{AmcrestClient, EncoderCapabilities};
     use crate::hsv::recording::HsvState;
     use hyper::{Body, Request, StatusCode};
     use std::sync::Arc;
@@ -422,6 +422,11 @@ mod tests {
             AmcrestClient::new("camera.invalid".into(), "user".into(), "password".into()),
             Arc::new(AtomicBool::new(false)),
             metrics.clone(),
+            EncoderCapabilities {
+                main_resolutions: vec![(1920, 1080)],
+                main_bitrate_range: Some((3, 8192)),
+                ..Default::default()
+            },
         );
         let state = HttpState { metrics, hsv };
 

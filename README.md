@@ -10,11 +10,14 @@ Supported/tested cameras: Amcrest `IP8M-2696E-AI` and `IP8M-2796E-AI`.
 ## What it does
 
 - **Live video in the Home app**: HAP RTP stream management with SRTP. Video is
-  taken from the camera's H.264 High-profile RTSP substream at the camera's
-  highest VBR quality setting and stream-copied (no transcoding) through an
-  RTP/RTCP-multiplexing SRTP proxy.
+  taken from the camera's H.264 High-profile RTSP substream at the highest
+  verified profile up to 1080p/15 fps/4 Mbps and stream-copied (no
+  transcoding) through an RTP/RTCP-multiplexing SRTP proxy. Cameras that reject
+  1080p automatically fall back to a retained 720p profile.
 - **Snapshots**: Home app tile images served from the camera's `snapshot.cgi`
-  via the HAP `POST /resource` endpoint. For transport debugging,
+  via the HAP `POST /resource` endpoint. The camera's highest reported snapshot
+  resolution and JPEG quality are selected automatically; malformed or black
+  refreshes retain the last good tile. For transport debugging,
   `--save-snapshots` writes the most recently served JPEG to
   `<camera-name>.jpg` (disabled by default).
 - **AI detection events**: the camera's `eventManager.cgi` stream
@@ -26,10 +29,10 @@ Supported/tested cameras: Amcrest `IP8M-2696E-AI` and `IP8M-2796E-AI`.
   camera operating mode, recording management, HomeKit Data Stream transport
   (HKDF-SHA512 + ChaCha20-Poly1305 framing, DataStream binary encoding), and
   motion-triggered fragmented-MP4 delivery with a 4 s prebuffer. Recordings are
-  taken from the camera's 4K main stream with **no transcoding**: when a
-  controller selects a recording configuration, amcrust reprograms the camera's
-  main-stream encoder (resolution, fps, GOP = fragment length, bitrate, AAC
-  sample rate) to match, and ffmpeg stream-copies into fMP4. Requires a home
+  taken from the camera's best Home-selected main-stream mode, up to 4K, with
+  **no transcoding**. Amcrust advertises only modes reported by the camera,
+  reprograms the main-stream encoder (resolution, fps, GOP = fragment length,
+  bitrate, AAC sample rate) to match, and ffmpeg stream-copies into fMP4. Requires a home
   hub and iCloud+; see docs/hds-wire-format.md for the wire format reference.
 - **Optional audio** (`--audio`): the camera's main-stream 48 kHz AAC audio is
   transcoded to the Opus format negotiated by HomeKit. Live audio carries RTP
@@ -71,7 +74,7 @@ Credentials can also live in a `.env` file. Options (all settable via env vars):
 | `--hds-port`       | `HDS_PORT`         | OS-assigned        | Secure Video data-stream TCP port; must pass the firewall       |
 | `--pin`            | `HAP_PIN`          | randomly generated | override the persisted setup PIN (`1234-5678`)                  |
 | `--data-dir`       | `DATA_DIR`         | `./data`           | pairing state (`<data-dir>/<name>/`)                            |
-| `--rtsp-subtype`   | `RTSP_SUBTYPE`     | `2`                | RTSP stream: 0 = main (4K), 1/2 = sub                           |
+| `--rtsp-subtype`   | `RTSP_SUBTYPE`     | `2`                | live RTSP substream (1 or 2); subtype 2 supports 1080p          |
 | `--audio`          | `AUDIO`            | `true`             | send Opus audio                                                 |
 | `--ir-lighting`    | `IR_LIGHTING`       | `true`             | allow automatic IR illumination; disable behind glass          |
 | `--metrics-port`   | `METRICS_PORT`     | OS-assigned        | `/health` and `/metrics` HTTP port; set explicitly for scraping |

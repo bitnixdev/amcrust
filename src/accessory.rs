@@ -234,7 +234,7 @@ async fn build_stream_management(
     }
 
     svc.supported_video_stream_configuration
-        .set_value(json!(stream::supported_video_config()))
+        .set_value(json!(streams.supported_video_config()))
         .await?;
     svc.supported_audio_stream_configuration
         .set_value(json!(stream::supported_audio_config()))
@@ -344,7 +344,9 @@ async fn build_recording_management(
         .set_value(json!(recording::supported_camera_recording_config()))
         .await?;
     svc.supported_video_recording_configuration
-        .set_value(json!(recording::supported_video_recording_config()))
+        .set_value(json!(recording::supported_video_recording_config(
+            &hsv.recording_attributes()
+        )))
         .await?;
     svc.supported_audio_recording_configuration
         .set_value(json!(recording::supported_audio_recording_config()))
