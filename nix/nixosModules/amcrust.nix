@@ -78,6 +78,15 @@
         description = "Whether to transcode and send audio in live view.";
       };
 
+      irLighting = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Whether the camera may operate its infrared illuminator
+          automatically. Disable this for cameras mounted behind glass.
+        '';
+      };
+
       metricsPort = mkOption {
         type = types.port;
         default = 0;
@@ -115,6 +124,7 @@
         DATA_DIR = cfg.dataDir;
         RTSP_SUBTYPE = toString camera.rtspSubtype;
         AUDIO = lib.boolToString camera.audio;
+        IR_LIGHTING = lib.boolToString camera.irLighting;
         METRICS_PORT = toString camera.metricsPort;
         HDS_PORT = toString camera.hdsPort;
         SAVE_SNAPSHOTS = lib.boolToString camera.saveSnapshots;

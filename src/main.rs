@@ -77,6 +77,10 @@ struct Args {
     #[arg(long, env = "AUDIO", default_value = "true")]
     audio: bool,
 
+    /// Allow the camera's infrared illuminator to operate automatically
+    #[arg(long, env = "IR_LIGHTING", default_value = "true")]
+    ir_lighting: bool,
+
     /// HTTP port for Prometheus metrics and health checks
     #[arg(long, env = "METRICS_PORT", default_value = "0")]
     metrics_port: u16,
@@ -118,8 +122,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = camera.ensure_live_substream(args.rtsp_subtype).await {
         warn!("could not verify live substream config: {e}");
     }
-    if let Err(e) = camera.ensure_audio_profile().await {
-        warn!("could not verify camera audio profile: {e}");
+    if let Err(e) = camera.ensure_media_profile(args.ir_lighting).await {
+        warn!("could not verify camera media profile: {e}");
     }
     if let Err(e) = camera.ensure_overlay_profile().await {
         warn!("could not verify camera overlay profile: {e}");

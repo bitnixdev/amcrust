@@ -36,12 +36,14 @@ Supported/tested cameras: Amcrest `IP8M-2696E-AI` and `IP8M-2796E-AI`.
   reports and controller feedback. Recording audio is AAC-LC stream-copy
   (toggled by the Home app's recording-audio switch).
 - **Consistent camera profile**: on every connection, amcrust checks and, when
-  necessary, normalizes the live substream, microphone/main audio track, and
-  burned-in overlays. This includes identical automatic timestamp font sizing
-  for the main stream, substreams, and snapshots; a top-right timestamp; and
-  disabled channel-name/mobile-status burn-ins. SmartMotion is enabled for
-  people and vehicles over the full frame; obsolete face/IVS rules are
-  disabled, and every writable motion setting is read back after application.
+  necessary, normalizes the live substream, microphone/main audio track, image
+  profiles, enhancement/ROI/crop controls, exposure, day/night switching,
+  denoise, IR lighting, color, orientation, sharpness, white balance, and
+  burned-in overlays. Unsupported model-specific fields are skipped and every
+  changed media setting is read back after application. Timestamp sizing is
+  identical for the main stream, substreams, and snapshots; SmartMotion is
+  enabled for people and vehicles over the full frame, and obsolete face/IVS
+  rules are disabled.
 - **Health and metrics**: a separate HTTP listener serves JSON at `/health` and
   Prometheus text exposition at `/metrics`, suitable for Prometheus or
   VictoriaMetrics scraping. Metrics cover uptime, camera events, errors,
@@ -70,6 +72,7 @@ Credentials can also live in a `.env` file. Options (all settable via env vars):
 | `--data-dir`       | `DATA_DIR`         | `./data`           | pairing state (`<data-dir>/<name>/`)                            |
 | `--rtsp-subtype`   | `RTSP_SUBTYPE`     | `2`                | RTSP stream: 0 = main (4K), 1/2 = sub                           |
 | `--audio`          | `AUDIO`            | `true`             | send Opus audio                                                 |
+| `--ir-lighting`    | `IR_LIGHTING`       | `true`             | allow automatic IR illumination; disable behind glass          |
 | `--metrics-port`   | `METRICS_PORT`     | OS-assigned        | `/health` and `/metrics` HTTP port; set explicitly for scraping |
 | `--save-snapshots` | `SAVE_SNAPSHOTS`   | `false`            | write the last served JPEG to `<camera-name>.jpg`               |
 
@@ -115,6 +118,7 @@ through `nixosModules.default`. Import both into a NixOS configuration:
             cameras.frontyard = {
               host = "192.168.1.50";
               passwordFile = "/run/secrets/amcrest-frontyard";
+              irLighting = false; # camera is behind glass
               hapPort = 51826;
               hdsPort = 51926;
               metricsPort = 9090;

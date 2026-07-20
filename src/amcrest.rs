@@ -86,6 +86,140 @@ fn unapplied_rpc_settings(name: &str, table: &Value, desired: &[(String, String)
         .collect()
 }
 
+fn config_name(key: &str) -> Option<&str> {
+    let end = key.find(['[', '.']).unwrap_or(key.len());
+    (end > 0).then(|| &key[..end])
+}
+
+fn settings<const N: usize>(values: [(&str, &str); N]) -> Vec<(String, String)> {
+    values
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
+}
+
+/// The deterministic media profile applied to every supported camera. Missing
+/// model-specific fields are intentionally skipped by the RPC2 config helper.
+fn standard_media_profile(ir_lighting: bool) -> Vec<Vec<(String, String)>> {
+    let ir_mode = if ir_lighting { "Auto" } else { "Off" };
+    let smart_ir = if ir_lighting { "true" } else { "false" };
+    let mut profile = vec![
+        settings([
+            ("AudioInput[0].AudioSource", "Mic"),
+            ("AudioInputVolume[0]", "100"),
+            ("AudioInDenoise[0].enable", "false"),
+            ("AudioInDenoise[0].level", "50"),
+        ]),
+        settings([
+            ("SmartEncode[0].Enable", "false"),
+            ("AICoding[0].Enable", "false"),
+            ("TwoRefEncode.Enable", "false"),
+            ("VideoWaterMark[0].Enable", "false"),
+        ]),
+        settings([
+            ("Encode[0].MainFormat[0].AudioEnable", "true"),
+            ("Encode[0].MainFormat[0].Audio.Compression", "AAC"),
+            ("Encode[0].MainFormat[0].Audio.Frequency", "48000"),
+            ("Encode[0].MainFormat[0].Audio.Bitrate", "64"),
+            ("Encode[0].MainFormat[0].Audio.Depth", "16"),
+            ("Encode[0].MainFormat[0].Audio.Channels[0]", "0"),
+            ("Encode[0].MainFormat[0].Audio.Mode", "0"),
+            ("Encode[0].MainFormat[0].Audio.Pack", "DHAV"),
+        ]),
+        settings([
+            ("ImageEnhancement[0].Enable", "false"),
+            ("ImageEnhancement[0].CarWindowEnable", "false"),
+            ("ImageEnhancement[0].PlateEnable", "false"),
+            ("LDCorrection[0].Enable", "false"),
+        ]),
+        settings([
+            ("VideoEncodeROI[0].DynamicTrack", "false"),
+            ("VideoEncodeROI[0].Main", "false"),
+            ("VideoEncodeROI[0].Extra1", "false"),
+            ("VideoEncodeROI[0].Extra2", "false"),
+            ("VideoEncodeROI[0].Extra3", "false"),
+            ("VideoEncodeROI[0].Snapshot", "false"),
+            ("EncodeCrop[0].Extra1.Enable", "false"),
+            ("EncodeCrop[0].Extra2.Enable", "false"),
+        ]),
+        settings([
+            ("VideoInMode[0].Mode", "0"),
+            ("VideoInMode[0].Config[0]", "0"),
+            ("VideoInOptions[0].ExposureMode", "0"),
+            ("VideoInOptions[0].ExposureSpeed", "0"),
+            ("VideoInOptions[0].GainMin", "0"),
+            ("VideoInOptions[0].GainMax", "50"),
+            ("VideoInOptions[0].SlowShutter", "false"),
+            ("VideoInOptions[0].SmartIRExposure", smart_ir),
+        ]),
+        settings([
+            ("VideoImageControl[0].Flip", "false"),
+            ("VideoImageControl[0].Freeze", "false"),
+            ("VideoImageControl[0].Mirror", "false"),
+            ("VideoImageControl[0].Rotate90", "0"),
+            ("VideoImageControl[0].Stable", "0"),
+        ]),
+    ];
+
+    for config in 0..=2 {
+        profile.push(settings([
+            (&format!("VideoColor[0][{config}].Brightness"), "50"),
+            (&format!("VideoColor[0][{config}].ChromaSuppress"), "50"),
+            (&format!("VideoColor[0][{config}].Contrast"), "50"),
+            (&format!("VideoColor[0][{config}].Gamma"), "50"),
+            (&format!("VideoColor[0][{config}].Hue"), "50"),
+            (&format!("VideoColor[0][{config}].Saturation"), "50"),
+            (&format!("VideoColor[0][{config}].Style"), "Standard"),
+            (
+                &format!("VideoColor[0][{config}].TimeSection"),
+                "0 00:00:00-24:00:00",
+            ),
+        ]));
+        profile.push(settings([
+            (&format!("VideoInBacklight[0][{config}].Mode"), "Off"),
+            (&format!("VideoInDayNight[0][{config}].Type"), "Mechanism"),
+            (&format!("VideoInDayNight[0][{config}].Mode"), "Brightness"),
+            (&format!("VideoInDayNight[0][{config}].Sensitivity"), "2"),
+            (&format!("VideoInDayNight[0][{config}].Delay"), "6"),
+            (&format!("VideoInDefog[0][{config}].Mode"), "Off"),
+            (&format!("VideoInDefog[0][{config}].Intensity"), "0"),
+        ]));
+        profile.push(settings([
+            (&format!("VideoInDenoise[0][{config}].3DType"), "Auto"),
+            (
+                &format!("VideoInDenoise[0][{config}].3DAutoType.AutoLevel"),
+                "50",
+            ),
+            (
+                &format!("VideoInDenoise[0][{config}].3DManulType.SnfLevel"),
+                "50",
+            ),
+            (
+                &format!("VideoInDenoise[0][{config}].3DManulType.TnfLevel"),
+                "50",
+            ),
+            (&format!("VideoInSharpness[0][{config}].Sharpness"), "50"),
+            (&format!("VideoInWhiteBalance[0][{config}].Mode"), "Auto"),
+        ]));
+        profile.push(settings([
+            (&format!("Lighting[0][{config}].Mode"), ir_mode),
+            (&format!("Lighting[0][{config}].Correction"), "50"),
+            (&format!("Lighting[0][{config}].Sensitive"), "3"),
+            (&format!("Lighting[0][{config}].MiddleLight[0].Angle"), "50"),
+            (&format!("Lighting[0][{config}].MiddleLight[0].Light"), "50"),
+        ]));
+        profile.push(settings([
+            (&format!("VideoInRotate[0][{config}].Flip"), "false"),
+            (&format!("VideoInRotate[0][{config}].Freeze"), "false"),
+            (&format!("VideoInRotate[0][{config}].Mirror"), "false"),
+            (&format!("VideoInRotate[0][{config}].Rotate90"), "0"),
+            (&format!("VideoInRotate[0][{config}].Stable"), "0"),
+        ]));
+    }
+
+    profile
+}
+
 #[derive(Clone)]
 pub struct AmcrestClient {
     pub host: String,
@@ -417,13 +551,21 @@ impl AmcrestClient {
     }
 
     fn unapplied_supported_settings(current: &str, desired: &[(String, String)]) -> Vec<String> {
+        Self::unapplied_reported_settings(current, current, desired)
+    }
+
+    fn unapplied_reported_settings(
+        reported: &str,
+        actual: &str,
+        desired: &[(String, String)],
+    ) -> Vec<String> {
         desired
             .iter()
             .filter_map(|(key, value)| {
                 let prefix = format!("table.{key}=");
                 let expected = format!("table.{key}={value}");
-                let supported = current.lines().any(|line| line.starts_with(&prefix));
-                let applied = current.lines().any(|line| line.trim() == expected);
+                let supported = reported.lines().any(|line| line.starts_with(&prefix));
+                let applied = actual.lines().any(|line| line.trim() == expected);
                 (supported && !applied).then(|| key.clone())
             })
             .collect()
@@ -800,56 +942,36 @@ impl AmcrestClient {
         Ok(())
     }
 
-    /// Normalizes the camera microphone and the high-quality audio track used
-    /// as the live HomeKit audio source.
-    pub async fn ensure_audio_profile(
+    /// Normalizes every safe, writable media control used by HomeKit. The
+    /// active main/live encoder formats are managed separately because their
+    /// resolution and bitrate are negotiated at runtime; this profile covers
+    /// audio, enhancement features, ROI/crop, exposure, day/night, denoise,
+    /// lighting, color, orientation, sharpness, and white balance.
+    pub async fn ensure_media_profile(
         &self,
+        ir_lighting: bool,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let resp = self
-            .get("/cgi-bin/configManager.cgi?action=getConfig&name=All")
-            .await?;
-        let body = resp.text().await?;
-        let desired = [
-            "table.All.AudioInput[0].AudioSource=Mic",
-            "table.All.AudioInputVolume[0]=100",
-            "table.All.AudioInDenoise[0].enable=true",
-            "table.All.AudioInDenoise[0].level=50",
-            "table.All.SmartEncode[0].Enable=false",
-            "table.All.VideoWaterMark[0].Enable=false",
-            "table.All.Encode[0].MainFormat[0].AudioEnable=true",
-            "table.All.Encode[0].MainFormat[0].Audio.Compression=AAC",
-            "table.All.Encode[0].MainFormat[0].Audio.Frequency=48000",
-            "table.All.Encode[0].MainFormat[0].Audio.Bitrate=64",
-            "table.All.Encode[0].MainFormat[0].Audio.Depth=16",
-            "table.All.Encode[0].MainFormat[0].Audio.Channels[0]=0",
-            "table.All.Encode[0].MainFormat[0].Audio.Mode=0",
-            "table.All.Encode[0].MainFormat[0].Audio.Pack=DHAV",
-        ];
-        if desired.iter().all(|setting| body.contains(setting)) {
-            return Ok(());
+        use std::collections::BTreeMap;
+
+        let mut configs: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+        for setting in standard_media_profile(ir_lighting).into_iter().flatten() {
+            let Some(name) = config_name(&setting.0) else {
+                continue;
+            };
+            configs.entry(name.to_string()).or_default().push(setting);
         }
 
-        info!(
-            "[{}] normalizing microphone and main audio track",
-            self.host
-        );
-        self.set_config(
-            "AudioInput%5B0%5D.AudioSource=Mic\
-             &AudioInputVolume%5B0%5D=100\
-             &AudioInDenoise%5B0%5D.enable=true\
-             &AudioInDenoise%5B0%5D.level=50\
-             &SmartEncode%5B0%5D.Enable=false\
-             &VideoWaterMark%5B0%5D.Enable=false\
-             &Encode%5B0%5D.MainFormat%5B0%5D.AudioEnable=true\
-             &Encode%5B0%5D.MainFormat%5B0%5D.Audio.Compression=AAC\
-             &Encode%5B0%5D.MainFormat%5B0%5D.Audio.Frequency=48000\
-             &Encode%5B0%5D.MainFormat%5B0%5D.Audio.Bitrate=64\
-             &Encode%5B0%5D.MainFormat%5B0%5D.Audio.Depth=16\
-             &Encode%5B0%5D.MainFormat%5B0%5D.Audio.Channels%5B0%5D=0\
-             &Encode%5B0%5D.MainFormat%5B0%5D.Audio.Mode=0\
-             &Encode%5B0%5D.MainFormat%5B0%5D.Audio.Pack=DHAV",
-        )
-        .await
+        let session = self.rpc_login().await?;
+        let mut updates = 0;
+        for (name, desired) in configs {
+            updates += self
+                .apply_supported_settings_rpc(&session, &name, &desired)
+                .await?;
+        }
+        if updates > 0 {
+            info!("[{}] normalized {updates} media settings", self.host);
+        }
+        Ok(())
     }
 
     /// Applies a deterministic, minimal burned-in overlay to every camera.
@@ -1281,14 +1403,17 @@ fn parse_event_line(line: &str) -> Option<CameraEvent> {
         timestamp: Utc::now(),
     })
 }
-
 #[cfg(test)]
 mod tests {
-    use super::{config_key_pointer, config_value_like, unapplied_rpc_settings};
+    use std::collections::HashSet;
+
+    use super::*;
     use serde_json::json;
 
     #[test]
     fn converts_flat_config_keys_to_json_pointers() {
+        assert_eq!(config_name("AudioInputVolume[0]"), Some("AudioInputVolume"));
+        assert_eq!(config_name("TwoRefEncode.Enable"), Some("TwoRefEncode"));
         assert_eq!(
             config_key_pointer(
                 "MotionDetect",
@@ -1335,5 +1460,59 @@ mod tests {
             unapplied_rpc_settings("Encode", &table, &desired),
             vec!["Encode[0].Video.FPS"]
         );
+    }
+
+    #[test]
+    fn standard_media_profile_is_complete_and_has_unique_keys() {
+        let profile = standard_media_profile(true);
+        let entries: Vec<_> = profile.iter().flatten().collect();
+        let keys: HashSet<_> = entries.iter().map(|(key, _)| key).collect();
+        assert_eq!(keys.len(), entries.len());
+
+        let expected = [
+            ("AudioInDenoise[0].enable", "false"),
+            ("SmartEncode[0].Enable", "false"),
+            ("VideoInMode[0].Mode", "0"),
+            ("VideoInOptions[0].ExposureMode", "0"),
+            ("VideoEncodeROI[0].Main", "false"),
+            ("VideoInDenoise[0][2].3DType", "Auto"),
+            ("Lighting[0][2].Mode", "Auto"),
+        ];
+        for (key, value) in expected {
+            assert!(
+                entries
+                    .iter()
+                    .any(|entry| entry.0 == key && entry.1 == value),
+                "missing {key}={value}"
+            );
+        }
+    }
+
+    #[test]
+    fn infrared_override_disables_illuminator_in_every_profile() {
+        let profile = standard_media_profile(false);
+        let entries: Vec<_> = profile.iter().flatten().collect();
+        assert!(
+            entries.iter().any(|entry| {
+                entry.0 == "VideoInOptions[0].SmartIRExposure" && entry.1 == "false"
+            })
+        );
+        for config in 0..=2 {
+            let key = format!("Lighting[0][{config}].Mode");
+            assert!(
+                entries
+                    .iter()
+                    .any(|entry| entry.0 == key && entry.1 == "Off"),
+                "missing {key}=Off"
+            );
+        }
+    }
+
+    #[test]
+    fn readback_flags_fields_that_were_reported_but_disappeared() {
+        let desired = settings([("VideoInMode[0].Mode", "0")]);
+        let refused =
+            AmcrestClient::unapplied_reported_settings("table.VideoInMode[0].Mode=2", "", &desired);
+        assert_eq!(refused, ["VideoInMode[0].Mode"]);
     }
 }
