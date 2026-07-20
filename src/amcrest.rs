@@ -1262,6 +1262,7 @@ impl SnapshotCache {
                     SNAPSHOT_FETCH_TIMEOUT.as_secs()
                 )
             })??;
+        validate_jpeg_envelope(&bytes)?;
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         bytes.hash(&mut hasher);
         let frame = SnapshotFrame {
@@ -1398,19 +1399,26 @@ async fn scale_jpeg_inner(
     let filter =
         format!("scale='min({width},iw)':'min({height},ih)':force_original_aspect_ratio=decrease");
 
+    // Some Amcrest models occasionally return a valid, completely black JPEG
+    // while their snapshot encoder changes buffers. Have FFmpeg identify those
+    // frames so the cache can retain the last useful preview instead of making
+    // Home briefly replace the tile with black.
+    let filter = format!("{filter},blackframe=amount=99:threshold=24");
+
     let mut child = tokio::process::Command::new("ffmpeg")
-        .args(["-hide_banner", "-loglevel", "error"])
+        .args(["-hide_banner", "-loglevel", "info"])
         .args(["-f", "image2pipe", "-i", "pipe:0"])
         .args(["-frames:v", "1", "-vf", &filter])
         .args(["-f", "image2", "-c:v", "mjpeg", "-q:v", "4", "pipe:1"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
 
     let mut stdin = child.stdin.take().ok_or("no stdin")?;
     let mut stdout = child.stdout.take().ok_or("no stdout")?;
+    let mut stderr = child.stderr.take().ok_or("no stderr")?;
 
     let writer = async move {
         let _ = stdin.write_all(&input).await;
@@ -1418,17 +1426,39 @@ async fn scale_jpeg_inner(
     };
     let mut output = Vec::new();
     let reader = stdout.read_to_end(&mut output);
+    let mut diagnostics = Vec::new();
+    let diagnostics_reader = stderr.read_to_end(&mut diagnostics);
 
-    let (_, read_result) = tokio::join!(writer, reader);
+    let (_, read_result, diagnostics_result) = tokio::join!(writer, reader, diagnostics_reader);
     read_result?;
+    diagnostics_result?;
     let status = child.wait().await?;
     if !status.success() || output.is_empty() {
-        return Err(format!("ffmpeg snapshot scaling failed (status {status})").into());
+        let diagnostics = String::from_utf8_lossy(&diagnostics);
+        return Err(format!(
+            "ffmpeg snapshot scaling failed (status {status}): {}",
+            diagnostics.trim()
+        )
+        .into());
     }
     if !output.starts_with(&[0xff, 0xd8]) || !output.ends_with(&[0xff, 0xd9]) {
         return Err("ffmpeg snapshot scaling produced an invalid JPEG".into());
     }
+    if ffmpeg_detected_black_frame(&diagnostics) {
+        return Err("camera produced a nearly all-black snapshot".into());
+    }
     Ok(output)
+}
+
+fn validate_jpeg_envelope(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if bytes.len() < 4 || !bytes.starts_with(&[0xff, 0xd8]) || !bytes.ends_with(&[0xff, 0xd9]) {
+        return Err("camera returned an invalid JPEG snapshot".into());
+    }
+    Ok(())
+}
+
+fn ffmpeg_detected_black_frame(diagnostics: &[u8]) -> bool {
+    String::from_utf8_lossy(diagnostics).contains(" pblack:")
 }
 
 fn fingerprint(bytes: &[u8]) -> u64 {
@@ -1577,5 +1607,23 @@ mod tests {
         let refused =
             AmcrestClient::unapplied_reported_settings("table.VideoInMode[0].Mode=2", "", &desired);
         assert_eq!(refused, ["VideoInMode[0].Mode"]);
+    }
+
+    #[test]
+    fn rejects_malformed_snapshot_envelopes() {
+        assert!(validate_jpeg_envelope(&[0xff, 0xd8, 1, 2, 0xff, 0xd9]).is_ok());
+        assert!(validate_jpeg_envelope(b"").is_err());
+        assert!(validate_jpeg_envelope(b"camera busy").is_err());
+        assert!(validate_jpeg_envelope(&[0xff, 0xd8, 1, 2]).is_err());
+    }
+
+    #[test]
+    fn recognizes_ffmpeg_blackframe_diagnostic() {
+        assert!(ffmpeg_detected_black_frame(
+            b"[Parsed_blackframe_1] frame:0 pblack:100 pts:0"
+        ));
+        assert!(!ffmpeg_detected_black_frame(
+            b"Input #0, image2pipe, from 'pipe:0'"
+        ));
     }
 }
