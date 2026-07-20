@@ -521,8 +521,10 @@ impl AmcrestClient {
                 "Encode[0].MainFormat[0].Video.BitRateControl",
                 "VBR".to_string(),
             ),
-            ("Encode[0].MainFormat[0].Video.Profile", "Main".to_string()),
-            ("Encode[0].MainFormat[0].Video.Quality", "4".to_string()),
+            ("Encode[0].MainFormat[0].Video.Profile", "High".to_string()),
+            // Amcrest exposes a six-step VBR quality range; use its highest
+            // setting while retaining the bitrate selected by HomeKit.
+            ("Encode[0].MainFormat[0].Video.Quality", "6".to_string()),
             ("Encode[0].MainFormat[0].Video.Pack", "DHAV".to_string()),
             ("Encode[0].MainFormat[0].Video.Priority", "0".to_string()),
             ("Encode[0].MainFormat[0].Video.SVCTLayer", "1".to_string()),
@@ -886,10 +888,10 @@ impl AmcrestClient {
             && height == 720
             && fps == 15
             && gop == 15
-            && bitrate == 1024
+            && bitrate == 2048
             && bitrate_control == "VBR"
-            && profile == "Main"
-            && quality == Some(4)
+            && profile == "High"
+            && quality == Some(6)
             && pack == "DHAV"
             && priority == Some(0)
             && svc_layers == Some(1)
@@ -917,10 +919,10 @@ impl AmcrestClient {
              &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Height=720\
              &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.FPS=15\
              &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.GOP=15\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.BitRate=1024\
+             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.BitRate=2048\
              &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.BitRateControl=VBR\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Profile=Main\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Quality=4\
+             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Profile=High\
+             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Quality=6\
              &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Pack=DHAV\
              &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Priority=0\
              &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.SVCTLayer=1\

@@ -10,8 +10,9 @@ Supported/tested cameras: Amcrest `IP8M-2696E-AI` and `IP8M-2796E-AI`.
 ## What it does
 
 - **Live video in the Home app**: HAP RTP stream management with SRTP. Video is
-  taken from the camera's H.264 RTSP substream and stream-copied (no
-  transcoding) through an RTP/RTCP-multiplexing SRTP proxy.
+  taken from the camera's H.264 High-profile RTSP substream at the camera's
+  highest VBR quality setting and stream-copied (no transcoding) through an
+  RTP/RTCP-multiplexing SRTP proxy.
 - **Snapshots**: Home app tile images served from the camera's `snapshot.cgi`
   via the HAP `POST /resource` endpoint. For transport debugging,
   `--save-snapshots` writes the most recently served JPEG to
