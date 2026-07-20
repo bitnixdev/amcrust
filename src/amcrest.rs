@@ -1192,8 +1192,11 @@ struct SnapshotFrame {
     bytes: Vec<u8>,
 }
 
+#[derive(Clone)]
 struct ScaledSnapshot {
     source_generation: u64,
+    source_fetched_at: tokio::time::Instant,
+    source_fingerprint: u64,
     bytes: Vec<u8>,
 }
 
@@ -1206,6 +1209,9 @@ pub struct SnapshotImage {
 }
 
 const SNAPSHOT_REFRESH: Duration = Duration::from_secs(10);
+const SNAPSHOT_REFRESH_DEDUP: Duration = Duration::from_secs(1);
+const SNAPSHOT_FETCH_TIMEOUT: Duration = Duration::from_secs(4);
+const SNAPSHOT_SCALE_TIMEOUT: Duration = Duration::from_secs(4);
 /// Serve a stale snapshot for up to this long if the camera stops responding.
 const SNAPSHOT_MAX_AGE: Duration = Duration::from_secs(120);
 
@@ -1241,7 +1247,19 @@ impl SnapshotCache {
         use std::sync::atomic::Ordering;
 
         let _guard = self.refresh_lock.lock().await;
-        let bytes = self.client.snapshot().await?;
+        if let Some(frame) = self.latest.read().await.clone()
+            && frame.fetched_at.elapsed() <= SNAPSHOT_REFRESH_DEDUP
+        {
+            return Ok(frame);
+        }
+        let bytes = tokio::time::timeout(SNAPSHOT_FETCH_TIMEOUT, self.client.snapshot())
+            .await
+            .map_err(|_| {
+                format!(
+                    "camera snapshot timed out after {}s",
+                    SNAPSHOT_FETCH_TIMEOUT.as_secs()
+                )
+            })??;
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         bytes.hash(&mut hasher);
         let frame = SnapshotFrame {
@@ -1257,10 +1275,10 @@ impl SnapshotCache {
     /// Returns a recent camera frame. A failed refresh may fall back to the
     /// last good frame, but never for longer than SNAPSHOT_MAX_AGE.
     async fn get(&self) -> Result<SnapshotFrame, Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(frame) = self.latest.read().await.clone() {
-            if frame.fetched_at.elapsed() <= SNAPSHOT_REFRESH + Duration::from_secs(2) {
-                return Ok(frame);
-            }
+        if let Some(frame) = self.latest.read().await.clone()
+            && frame.fetched_at.elapsed() <= SNAPSHOT_MAX_AGE
+        {
+            return Ok(frame);
         }
 
         match self.refresh().await {
@@ -1289,26 +1307,51 @@ impl SnapshotCache {
         height: u32,
     ) -> Result<SnapshotImage, Box<dyn std::error::Error + Send + Sync>> {
         let raw = self.get().await?;
-        {
+        let stale = {
             let scaled = self.scaled.lock().await;
-            if let Some(snapshot) = scaled.get(&(width, height)) {
-                if snapshot.source_generation == raw.generation {
+            if let Some(snapshot) = scaled.get(&(width, height))
+                && snapshot.source_generation == raw.generation
+            {
+                return Ok(SnapshotImage {
+                    bytes: snapshot.bytes.clone(),
+                    source_generation: raw.generation,
+                    source_age: raw.fetched_at.elapsed(),
+                    source_fingerprint: raw.fingerprint,
+                    output_fingerprint: fingerprint(&snapshot.bytes),
+                });
+            }
+            scaled
+                .get(&(width, height))
+                .filter(|snapshot| snapshot.source_fetched_at.elapsed() <= SNAPSHOT_MAX_AGE)
+                .cloned()
+        };
+
+        let bytes = match scale_jpeg(raw.bytes, width, height).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                if let Some(snapshot) = stale {
+                    warn!(
+                        "[{}] serving scaled snapshot aged {:.1}s after scaling failure: {error}",
+                        self.client.host,
+                        snapshot.source_fetched_at.elapsed().as_secs_f32()
+                    );
                     return Ok(SnapshotImage {
-                        bytes: snapshot.bytes.clone(),
-                        source_generation: raw.generation,
-                        source_age: raw.fetched_at.elapsed(),
-                        source_fingerprint: raw.fingerprint,
                         output_fingerprint: fingerprint(&snapshot.bytes),
+                        bytes: snapshot.bytes,
+                        source_generation: snapshot.source_generation,
+                        source_age: snapshot.source_fetched_at.elapsed(),
+                        source_fingerprint: snapshot.source_fingerprint,
                     });
                 }
+                return Err(error);
             }
-        }
-
-        let bytes = scale_jpeg(raw.bytes, width, height).await?;
+        };
         self.scaled.lock().await.insert(
             (width, height),
             ScaledSnapshot {
                 source_generation: raw.generation,
+                source_fetched_at: raw.fetched_at,
+                source_fingerprint: raw.fingerprint,
                 bytes: bytes.clone(),
             },
         );
@@ -1324,6 +1367,24 @@ impl SnapshotCache {
 
 /// Scales a JPEG to the given size with ffmpeg, preserving aspect ratio.
 async fn scale_jpeg(
+    input: Vec<u8>,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    tokio::time::timeout(
+        SNAPSHOT_SCALE_TIMEOUT,
+        scale_jpeg_inner(input, width, height),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "ffmpeg snapshot scaling timed out after {}s",
+            SNAPSHOT_SCALE_TIMEOUT.as_secs()
+        )
+    })?
+}
+
+async fn scale_jpeg_inner(
     input: Vec<u8>,
     width: u32,
     height: u32,

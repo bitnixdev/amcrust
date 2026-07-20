@@ -46,6 +46,16 @@ pub type SnapshotFuture = futures::future::BoxFuture<
 pub type SnapshotHandler =
     Arc<Mutex<Option<Box<dyn FnMut(u32, u32, Option<i64>) -> SnapshotFuture + Send + Sync>>>>;
 
+/// Result of writing a complete snapshot response to the controller socket.
+#[derive(Clone, Copy, Debug)]
+pub enum SnapshotDelivery {
+    Delivered { bytes: usize },
+    Failed,
+}
+
+/// Observer invoked after encrypted snapshot delivery succeeds or fails.
+pub type SnapshotDeliveryHandler = Arc<RwLock<Option<Arc<dyn Fn(SnapshotDelivery) + Send + Sync>>>>;
+
 /// Slot holding the pair-verify shared secret of the session currently
 /// performing a characteristics write. Lets characteristic write handlers
 /// (e.g. Setup Data Stream Transport) derive session-bound keys.

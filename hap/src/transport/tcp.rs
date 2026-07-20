@@ -13,6 +13,7 @@ use futures::{
 use log::{debug, error};
 use std::{
     cmp::min,
+    collections::VecDeque,
     future::Future,
     io::{self, ErrorKind},
     pin::Pin,
@@ -25,12 +26,105 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::Result;
+use crate::{pointer, Result};
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
+struct SerializedOutputState {
+    http_response: Vec<u8>,
+    deferred_events: VecDeque<Vec<u8>>,
+}
+
+/// Serializes complete HTTP responses and asynchronous EVENT messages before
+/// they enter the encrypted transport. Hyper may issue several `poll_write`
+/// calls for one response, so events are deferred until `poll_flush` publishes
+/// the complete response as a single queue item.
+#[derive(Clone)]
+pub struct SerializedOutput {
+    sender: UnboundedSender<Vec<u8>>,
+    outgoing_waker: Arc<Mutex<Option<Waker>>>,
+    state: Arc<Mutex<SerializedOutputState>>,
+    snapshot_delivery_handler: pointer::SnapshotDeliveryHandler,
+}
+
+impl SerializedOutput {
+    fn new(
+        sender: UnboundedSender<Vec<u8>>,
+        outgoing_waker: Arc<Mutex<Option<Waker>>>,
+        snapshot_delivery_handler: pointer::SnapshotDeliveryHandler,
+    ) -> Self {
+        Self {
+            sender,
+            outgoing_waker,
+            state: Arc::new(Mutex::new(SerializedOutputState::default())),
+            snapshot_delivery_handler,
+        }
+    }
+
+    fn append_http(&self, bytes: &[u8]) {
+        self.state
+            .lock()
+            .expect("accessing serialized output")
+            .http_response
+            .extend_from_slice(bytes);
+    }
+
+    fn flush_http(&self) -> io::Result<()> {
+        let mut state = self.state.lock().expect("accessing serialized output");
+        if !state.http_response.is_empty() {
+            let response = std::mem::take(&mut state.http_response);
+            let is_snapshot = snapshot_body_len(&response).is_some();
+            if self.sender.unbounded_send(response).is_err() {
+                if is_snapshot {
+                    notify_snapshot_delivery(
+                        &self.snapshot_delivery_handler,
+                        pointer::SnapshotDelivery::Failed,
+                    );
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "controller disconnected",
+                ));
+            }
+        }
+        while let Some(event) = state.deferred_events.pop_front() {
+            self.sender.unbounded_send(event).map_err(|_| {
+                io::Error::new(io::ErrorKind::BrokenPipe, "controller disconnected")
+            })?;
+        }
+        drop(state);
+        self.wake_writer();
+        Ok(())
+    }
+
+    pub fn send_event(&self, event: Vec<u8>) -> io::Result<()> {
+        let mut state = self.state.lock().expect("accessing serialized output");
+        if state.http_response.is_empty() {
+            self.sender.unbounded_send(event).map_err(|_| {
+                io::Error::new(io::ErrorKind::BrokenPipe, "controller disconnected")
+            })?;
+        } else {
+            state.deferred_events.push_back(event);
+        }
+        drop(state);
+        self.wake_writer();
+        Ok(())
+    }
+
+    fn wake_writer(&self) {
+        if let Some(waker) = self
+            .outgoing_waker
+            .lock()
+            .expect("accessing outgoing_waker")
+            .take()
+        {
+            waker.wake();
+        }
+    }
+}
+
 pub struct StreamWrapper {
     incoming_receiver: UnboundedReceiver<Vec<u8>>,
-    outgoing_sender: UnboundedSender<Vec<u8>>,
+    serialized_output: SerializedOutput,
     incoming_waker: Arc<Mutex<Option<Waker>>>,
     outgoing_waker: Arc<Mutex<Option<Waker>>>,
     incoming_buf: BytesMut,
@@ -39,13 +133,13 @@ pub struct StreamWrapper {
 impl StreamWrapper {
     pub fn new(
         incoming_receiver: UnboundedReceiver<Vec<u8>>,
-        outgoing_sender: UnboundedSender<Vec<u8>>,
+        serialized_output: SerializedOutput,
         incoming_waker: Arc<Mutex<Option<Waker>>>,
         outgoing_waker: Arc<Mutex<Option<Waker>>>,
     ) -> StreamWrapper {
         StreamWrapper {
             incoming_receiver,
-            outgoing_sender,
+            serialized_output,
             incoming_waker,
             outgoing_waker,
             incoming_buf: BytesMut::new(),
@@ -81,10 +175,17 @@ impl AsyncRead for StreamWrapper {
     ) -> Poll<std::result::Result<(), io::Error>> {
         let stream_wrapper = Pin::into_inner(self);
 
+        if !stream_wrapper.incoming_buf.is_empty() {
+            let r_len = min(buf.remaining(), stream_wrapper.incoming_buf.len());
+            buf.put_slice(&stream_wrapper.incoming_buf[..r_len]);
+            stream_wrapper.incoming_buf.advance(r_len);
+            return Poll::Ready(Ok(()));
+        }
+
         match stream_wrapper.poll_receiver(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(_r_len) => {
-                let r_len = min(buf.capacity(), stream_wrapper.incoming_buf.len());
+                let r_len = min(buf.remaining(), stream_wrapper.incoming_buf.len());
                 buf.put_slice(&stream_wrapper.incoming_buf[..r_len]);
                 stream_wrapper.incoming_buf.advance(r_len);
 
@@ -121,19 +222,7 @@ impl AsyncWrite for StreamWrapper {
 
         debug!("writing {} Bytes to outgoing TCP stream sender", buf.len());
 
-        stream_wrapper
-            .outgoing_sender
-            .unbounded_send(buf.to_vec())
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "couldn't write"))?;
-
-        if let Some(waker) = stream_wrapper
-            .outgoing_waker
-            .lock()
-            .expect("accessing outgoing_waker")
-            .take()
-        {
-            waker.wake()
-        }
+        stream_wrapper.serialized_output.append_http(buf);
         if let Some(waker) = stream_wrapper
             .incoming_waker
             .lock()
@@ -154,16 +243,16 @@ impl AsyncWrite for StreamWrapper {
         self: Pin<&mut Self>,
         _cx: &mut Context,
     ) -> Poll<std::result::Result<(), io::Error>> {
-        // let stream_wrapper = Pin::into_inner(self);
-        // Poll::Ready(Write::flush(stream_wrapper))
-        Poll::Ready(Ok(()))
+        let stream_wrapper = Pin::into_inner(self);
+        Poll::Ready(stream_wrapper.serialized_output.flush_http())
     }
 
     fn poll_shutdown(
         self: Pin<&mut Self>,
         _cx: &mut Context,
     ) -> Poll<std::result::Result<(), io::Error>> {
-        Poll::Ready(Ok(()))
+        let stream_wrapper = Pin::into_inner(self);
+        Poll::Ready(stream_wrapper.serialized_output.flush_http())
     }
 }
 
@@ -173,7 +262,6 @@ pub struct Session {
     pub shared_secret: [u8; 32],
 }
 
-#[derive(Debug)]
 pub struct EncryptedStream {
     stream: TcpStream,
     incoming_sender: UnboundedSender<Vec<u8>>,
@@ -193,20 +281,17 @@ pub struct EncryptedStream {
     pending_plaintext_len: usize,
     encrypted_buf: BytesMut,
     decrypted_buf: BytesMut,
-    encrypted_readbuf_inner: [u8; 1042],
-    packet_len: usize,
-    decrypted_ready: bool,
-    missing_data_for_decrypted_buf: bool,
-    missing_data_for_encrypted_buf: bool,
+    snapshot_delivery_handler: pointer::SnapshotDeliveryHandler,
 }
 
 impl EncryptedStream {
     pub fn new(
         stream: TcpStream,
+        snapshot_delivery_handler: pointer::SnapshotDeliveryHandler,
     ) -> (
         EncryptedStream,
         UnboundedReceiver<Vec<u8>>,
-        UnboundedSender<Vec<u8>>,
+        SerializedOutput,
         oneshot::Sender<Session>,
         Arc<Mutex<Option<Waker>>>,
         Arc<Mutex<Option<Waker>>>,
@@ -218,6 +303,11 @@ impl EncryptedStream {
         let outgoing_waker = Arc::new(Mutex::new(None));
         let encrypted_buf = BytesMut::with_capacity(1042);
         let decrypted_buf = BytesMut::with_capacity(1024);
+        let serialized_output = SerializedOutput::new(
+            outgoing_sender,
+            outgoing_waker.clone(),
+            snapshot_delivery_handler.clone(),
+        );
 
         (
             EncryptedStream {
@@ -237,122 +327,42 @@ impl EncryptedStream {
                 pending_plaintext_len: 0,
                 encrypted_buf,
                 decrypted_buf,
-                encrypted_readbuf_inner: [0; 1042],
-                packet_len: 0,
-                decrypted_ready: false,
-                missing_data_for_decrypted_buf: false,
-                missing_data_for_encrypted_buf: false,
+                snapshot_delivery_handler,
             },
             incoming_receiver,
-            outgoing_sender,
+            serialized_output,
             sender,
             incoming_waker,
             outgoing_waker,
         )
     }
 
-    fn read_decrypted(&mut self, buf: &mut ReadBuf) -> Poll<std::result::Result<(), io::Error>> {
-        debug!("reading from decrypted buffer");
-
-        if self.decrypted_ready {
-            let r_len = min(buf.capacity(), self.packet_len - 16);
-
-            buf.put_slice(&self.decrypted_buf[..r_len]);
-
-            self.decrypted_buf.advance(r_len);
-
-            if r_len == self.packet_len - 16 {
-                self.decrypted_buf.clear();
-                self.decrypted_ready = false;
-            }
-
-            return Poll::Ready(Ok(()));
+    fn decrypt_buffered_record(&mut self) -> io::Result<bool> {
+        if self.encrypted_buf.len() < 2 {
+            return Ok(false);
         }
-
-        Poll::Pending
-    }
-
-    fn read_encrypted(&mut self, buf: &mut ReadBuf) -> Poll<std::result::Result<(), io::Error>> {
-        debug!("reading from encrypted buffer");
-
-        if self.missing_data_for_decrypted_buf {
-            let decrypted = decrypt_chunk(
-                &self.shared_secret.expect("missing shared secret"),
-                &self.encrypted_buf[..2],
-                &self.encrypted_buf[2..(self.packet_len - 14)],
-                &self.encrypted_buf[(self.packet_len - 14)..(self.packet_len + 2)],
-                &mut self.decrypt_count,
-            )
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "decryption failed"))?;
-
-            self.decrypted_buf.extend_from_slice(&decrypted);
-
-            self.encrypted_buf.advance(self.packet_len + 2);
-
-            self.missing_data_for_decrypted_buf = false;
-            self.decrypted_ready = true;
-
-            return self.read_decrypted(buf);
+        let plaintext_len = LittleEndian::read_u16(&self.encrypted_buf[..2]) as usize;
+        if plaintext_len > 1024 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "encrypted HAP record exceeds 1024 bytes",
+            ));
         }
-
-        Poll::Pending
-    }
-
-    fn read_stream(
-        &mut self,
-        cx: &mut Context,
-        buf: &mut ReadBuf,
-    ) -> Poll<std::result::Result<(), io::Error>> {
-        debug!("reading from TCP stream");
-
-        if self.missing_data_for_encrypted_buf {
-            let mut r_buf = ReadBuf::new(&mut self.encrypted_readbuf_inner);
-            let r = AsyncRead::poll_read(Pin::new(&mut self.stream), cx, &mut r_buf)?;
-
-            match r {
-                Poll::Pending => Poll::Pending,
-                Poll::Ready(()) => {
-                    self.encrypted_buf.extend_from_slice(r_buf.filled());
-
-                    if self.encrypted_buf.len() == self.packet_len + 2 {
-                        self.missing_data_for_encrypted_buf = false;
-                        self.missing_data_for_decrypted_buf = true;
-
-                        return self.read_encrypted(buf);
-                    }
-
-                    Poll::Pending
-                }
-            }
-        } else {
-            let mut r_buf = ReadBuf::new(&mut self.encrypted_readbuf_inner);
-            let r = AsyncRead::poll_read(Pin::new(&mut self.stream), cx, &mut r_buf)?;
-
-            match r {
-                Poll::Pending => Poll::Pending,
-                Poll::Ready(()) => {
-                    self.encrypted_buf.extend_from_slice(r_buf.filled());
-
-                    if self.encrypted_buf.len() >= 2 {
-                        self.packet_len =
-                            LittleEndian::read_u16(&self.encrypted_buf[..2]) as usize + 16;
-
-                        if self.encrypted_buf.len() == self.packet_len + 2 {
-                            self.missing_data_for_encrypted_buf = false;
-                            self.missing_data_for_decrypted_buf = true;
-
-                            self.read_encrypted(buf)
-                        } else {
-                            self.missing_data_for_encrypted_buf = true;
-
-                            Poll::Pending
-                        }
-                    } else {
-                        Poll::Pending
-                    }
-                }
-            }
+        let record_len = 2 + plaintext_len + 16;
+        if self.encrypted_buf.len() < record_len {
+            return Ok(false);
         }
+        let decrypted = decrypt_chunk(
+            &self.shared_secret.expect("missing shared secret"),
+            &self.encrypted_buf[..2],
+            &self.encrypted_buf[2..2 + plaintext_len],
+            &self.encrypted_buf[2 + plaintext_len..record_len],
+            &mut self.decrypt_count,
+        )
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "decryption failed"))?;
+        self.encrypted_buf.advance(record_len);
+        self.decrypted_buf.extend_from_slice(&decrypted);
+        Ok(true)
     }
 
     fn poll_outgoing(
@@ -368,6 +378,10 @@ impl EncryptedStream {
                         return Poll::Pending;
                     }
                     Poll::Ready(Err(e)) => {
+                        if snapshot_body_len(&data).is_some() {
+                            encrypted_stream
+                                .notify_snapshot_delivery(pointer::SnapshotDelivery::Failed);
+                        }
                         match e.kind() {
                             io::ErrorKind::BrokenPipe
                             | io::ErrorKind::ConnectionReset
@@ -390,9 +404,10 @@ impl EncryptedStream {
                     }
                     Poll::Ready(Ok(written)) => {
                         debug!("wrote {written} plaintext Bytes to outgoing TCP stream");
-                        let contains_jpeg = data.starts_with(&[0xff, 0xd8])
-                            || data.windows(6).any(|window| window == b"\r\n\r\n\xff\xd8");
-                        if data.len() > 4096 && contains_jpeg {
+                        if let Some(bytes) = snapshot_body_len(&data) {
+                            encrypted_stream.notify_snapshot_delivery(
+                                pointer::SnapshotDelivery::Delivered { bytes },
+                            );
                             log::info!(
                                 "encrypted snapshot body flushed to controller TCP socket ({written} bytes)"
                             );
@@ -421,6 +436,10 @@ impl EncryptedStream {
                 }
             }
         }
+    }
+
+    fn notify_snapshot_delivery(&self, delivery: pointer::SnapshotDelivery) {
+        notify_snapshot_delivery(&self.snapshot_delivery_handler, delivery);
     }
 
     fn poll_incoming(
@@ -512,14 +531,38 @@ impl AsyncRead for EncryptedStream {
             }
         }
 
-        match encrypted_stream.read_decrypted(buf) {
-            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-            Poll::Pending => match encrypted_stream.read_encrypted(buf) {
-                Poll::Ready(Ok(_size)) => Poll::Ready(Ok(())),
-                Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-                Poll::Pending => encrypted_stream.read_stream(cx, buf),
-            },
+        loop {
+            if !encrypted_stream.decrypted_buf.is_empty() {
+                let len = min(buf.remaining(), encrypted_stream.decrypted_buf.len());
+                buf.put_slice(&encrypted_stream.decrypted_buf[..len]);
+                encrypted_stream.decrypted_buf.advance(len);
+                return Poll::Ready(Ok(()));
+            }
+
+            match encrypted_stream.decrypt_buffered_record() {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(error) => return Poll::Ready(Err(error)),
+            }
+
+            let mut read_buf = [0u8; 4096];
+            let mut read = ReadBuf::new(&mut read_buf);
+            match AsyncRead::poll_read(Pin::new(&mut encrypted_stream.stream), cx, &mut read) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                Poll::Ready(Ok(())) if read.filled().is_empty() => {
+                    if encrypted_stream.encrypted_buf.is_empty() {
+                        return Poll::Ready(Ok(()));
+                    }
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "controller closed during an encrypted HAP record",
+                    )));
+                }
+                Poll::Ready(Ok(())) => encrypted_stream
+                    .encrypted_buf
+                    .extend_from_slice(read.filled()),
+            }
         }
     }
 }
@@ -626,6 +669,25 @@ fn decrypt_chunk(
     Ok(buffer)
 }
 
+fn snapshot_body_len(response: &[u8]) -> Option<usize> {
+    let body_offset = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")?
+        + 4;
+    let body = &response[body_offset..];
+    (body.starts_with(&[0xff, 0xd8]) && body.ends_with(&[0xff, 0xd9])).then_some(body.len())
+}
+
+fn notify_snapshot_delivery(
+    handler: &pointer::SnapshotDeliveryHandler,
+    delivery: pointer::SnapshotDelivery,
+) {
+    let callback = handler.read().ok().and_then(|handler| handler.clone());
+    if let Some(callback) = callback {
+        callback(delivery);
+    }
+}
+
 fn encrypt_chunk(
     shared_secret: &[u8; 32],
     data: &[u8],
@@ -660,4 +722,201 @@ fn compute_write_key(shared_secret: &[u8; 32]) -> Result<[u8; 32]> {
 
 fn compute_key(shared_secret: &[u8; 32], info: &[u8]) -> Result<[u8; 32]> {
     super::hkdf_extract_and_expand(b"Control-Salt", shared_secret, info)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+    use hyper::{server::conn::Http, service::service_fn, Body, Response};
+    use std::convert::Infallible;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn delivery_handler() -> pointer::SnapshotDeliveryHandler {
+        Arc::new(RwLock::new(None))
+    }
+
+    fn encrypt_controller_record(
+        secret: &[u8; 32],
+        plaintext: &[u8],
+        counter: &mut u64,
+    ) -> Vec<u8> {
+        let key = compute_read_key(secret).unwrap();
+        let aead = ChaCha20Poly1305::new(GenericArray::from_slice(&key));
+        let mut nonce = [0u8; 12];
+        LittleEndian::write_u64(&mut nonce[4..], *counter);
+        *counter += 1;
+        let mut aad = [0u8; 2];
+        LittleEndian::write_u16(&mut aad, plaintext.len() as u16);
+        let mut ciphertext = plaintext.to_vec();
+        let tag = aead
+            .encrypt_in_place_detached(Nonce::from_slice(&nonce), &aad, &mut ciphertext)
+            .unwrap();
+        [aad.as_slice(), ciphertext.as_slice(), tag.as_slice()].concat()
+    }
+
+    fn decrypt_accessory_record(secret: &[u8; 32], wire: &[u8], counter: u64) -> Vec<u8> {
+        let plaintext_len = LittleEndian::read_u16(&wire[..2]) as usize;
+        assert_eq!(wire.len(), 2 + plaintext_len + 16);
+        let key = compute_write_key(secret).unwrap();
+        let aead = ChaCha20Poly1305::new(GenericArray::from_slice(&key));
+        let mut nonce = [0u8; 12];
+        LittleEndian::write_u64(&mut nonce[4..], counter);
+        let mut plaintext = wire[2..2 + plaintext_len].to_vec();
+        aead.decrypt_in_place_detached(
+            Nonce::from_slice(&nonce),
+            &wire[..2],
+            &mut plaintext,
+            Tag::from_slice(&wire[2 + plaintext_len..]),
+        )
+        .unwrap();
+        plaintext
+    }
+
+    async fn connected_streams() -> (TcpStream, TcpStream) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = TcpStream::connect(address);
+        let server = listener.accept();
+        let (client, server) = tokio::join!(client, server);
+        let (server, _) = server.unwrap();
+        (server, client.unwrap())
+    }
+
+    #[tokio::test]
+    async fn encrypted_reader_accepts_fragmented_and_coalesced_records() {
+        let (server, mut client) = connected_streams().await;
+        let (mut encrypted, _, _, session_sender, _, _) =
+            EncryptedStream::new(server, delivery_handler());
+        let secret = [0x5a; 32];
+        session_sender
+            .send(Session {
+                controller_id: Uuid::nil(),
+                shared_secret: secret,
+            })
+            .unwrap();
+
+        let first = b"first encrypted HAP request";
+        let second = vec![0x42; 1024];
+        let mut counter = 0;
+        let mut wire = encrypt_controller_record(&secret, first, &mut counter);
+        wire.extend_from_slice(&encrypt_controller_record(&secret, &second, &mut counter));
+
+        client.write_all(&wire[..7]).await.unwrap();
+        tokio::task::yield_now().await;
+        client.write_all(&wire[7..]).await.unwrap();
+
+        let mut plaintext = vec![0; first.len() + second.len()];
+        encrypted.read_exact(&mut plaintext).await.unwrap();
+        assert_eq!(&plaintext[..first.len()], first);
+        assert_eq!(&plaintext[first.len()..], second);
+    }
+
+    #[tokio::test]
+    async fn event_is_deferred_until_complete_http_response_is_flushed() {
+        use crate::transport::http::{event_response, EventObject};
+
+        let (_incoming_sender, incoming_receiver) = mpsc::unbounded();
+        let (outgoing_sender, mut outgoing_receiver) = mpsc::unbounded();
+        let incoming_waker = Arc::new(Mutex::new(None));
+        let outgoing_waker = Arc::new(Mutex::new(None));
+        let serialized =
+            SerializedOutput::new(outgoing_sender, outgoing_waker.clone(), delivery_handler());
+        let mut wrapper = StreamWrapper::new(
+            incoming_receiver,
+            serialized.clone(),
+            incoming_waker,
+            outgoing_waker,
+        );
+
+        wrapper
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n")
+            .await
+            .unwrap();
+        let event = event_response(vec![EventObject {
+            iid: 2,
+            aid: 1,
+            value: serde_json::json!(true),
+        }])
+        .unwrap();
+        serialized.send_event(event.clone()).unwrap();
+        wrapper.write_all(b"JPEG").await.unwrap();
+        wrapper.flush().await.unwrap();
+
+        assert_eq!(
+            outgoing_receiver.next().await.unwrap(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nJPEG"
+        );
+        assert_eq!(outgoing_receiver.next().await.unwrap(), event);
+    }
+
+    #[tokio::test]
+    async fn encrypted_http_snapshot_round_trip_reports_delivery() {
+        let (server, mut client) = connected_streams().await;
+        let deliveries = Arc::new(AtomicU64::new(0));
+        let delivery_bytes = Arc::new(AtomicU64::new(0));
+        let deliveries_ = deliveries.clone();
+        let delivery_bytes_ = delivery_bytes.clone();
+        let handler: pointer::SnapshotDeliveryHandler =
+            Arc::new(RwLock::new(Some(Arc::new(move |delivery| {
+                if let pointer::SnapshotDelivery::Delivered { bytes } = delivery {
+                    deliveries_.fetch_add(1, Ordering::Relaxed);
+                    delivery_bytes_.fetch_add(bytes as u64, Ordering::Relaxed);
+                }
+            }))));
+        let secret = [0x33; 32];
+        let (encrypted, incoming, serialized, session_sender, incoming_waker, outgoing_waker) =
+            EncryptedStream::new(server, handler);
+        let wrapper = StreamWrapper::new(incoming, serialized, incoming_waker, outgoing_waker);
+        session_sender
+            .send(Session {
+                controller_id: Uuid::nil(),
+                shared_secret: secret,
+            })
+            .unwrap();
+
+        let encrypted_task = tokio::spawn(encrypted);
+        let http_task = tokio::spawn(async move {
+            Http::new()
+                .http1_only(true)
+                .serve_connection(
+                    wrapper,
+                    service_fn(|_| async {
+                        Ok::<_, Infallible>(
+                            Response::builder()
+                                .status(200)
+                                .header("Content-Type", "image/jpeg")
+                                .header("Content-Length", "4")
+                                .body(Body::from(vec![0xff, 0xd8, 0xff, 0xd9]))
+                                .unwrap(),
+                        )
+                    }),
+                )
+                .await
+                .unwrap();
+        });
+
+        let request = b"POST /resource HTTP/1.1\r\nHost: accessory\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let mut request_counter = 0;
+        let wire_request = encrypt_controller_record(&secret, request, &mut request_counter);
+        client.write_all(&wire_request).await.unwrap();
+
+        let mut header = [0u8; 2];
+        client.read_exact(&mut header).await.unwrap();
+        let encrypted_len = LittleEndian::read_u16(&header) as usize + 16;
+        let mut wire = Vec::from(header);
+        wire.resize(2 + encrypted_len, 0);
+        client.read_exact(&mut wire[2..]).await.unwrap();
+        let response = decrypt_accessory_record(&secret, &wire, 0);
+        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+        assert!(response.ends_with(&[0xff, 0xd8, 0xff, 0xd9]));
+        tokio::task::yield_now().await;
+        assert_eq!(deliveries.load(Ordering::Relaxed), 1);
+        assert_eq!(delivery_bytes.load(Ordering::Relaxed), 4);
+
+        drop(client);
+        http_task.await.unwrap();
+        encrypted_task.await.unwrap().unwrap();
+    }
 }

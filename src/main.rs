@@ -246,6 +246,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let server = IpServer::new(config, storage).await?;
+    let delivery_metrics = metrics.clone();
+    server.set_snapshot_delivery_handler(Arc::new(move |delivery| match delivery {
+        hap::pointer::SnapshotDelivery::Delivered { bytes } => {
+            delivery_metrics.snapshot_delivered(bytes)
+        }
+        hap::pointer::SnapshotDelivery::Failed => delivery_metrics.snapshot_delivery_failed(),
+    }));
 
     let camera_accessory = CameraAccessory::new(
         1,

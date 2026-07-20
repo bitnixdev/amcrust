@@ -32,6 +32,9 @@ pub struct Metrics {
     event_reconnects: AtomicU64,
     snapshot_requests: AtomicU64,
     snapshot_successes: AtomicU64,
+    snapshot_deliveries: AtomicU64,
+    snapshot_delivery_bytes: AtomicU64,
+    snapshot_delivery_errors: AtomicU64,
     live_stream_starts: AtomicU64,
     recording_fragments: AtomicU64,
     recording_bytes: AtomicU64,
@@ -59,6 +62,9 @@ impl Metrics {
             event_reconnects: AtomicU64::new(0),
             snapshot_requests: AtomicU64::new(0),
             snapshot_successes: AtomicU64::new(0),
+            snapshot_deliveries: AtomicU64::new(0),
+            snapshot_delivery_bytes: AtomicU64::new(0),
+            snapshot_delivery_errors: AtomicU64::new(0),
             live_stream_starts: AtomicU64::new(0),
             recording_fragments: AtomicU64::new(0),
             recording_bytes: AtomicU64::new(0),
@@ -101,6 +107,18 @@ impl Metrics {
 
     pub fn snapshot_success(&self) {
         self.snapshot_successes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn snapshot_delivered(&self, bytes: usize) {
+        self.snapshot_deliveries.fetch_add(1, Ordering::Relaxed);
+        self.snapshot_delivery_bytes
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    pub fn snapshot_delivery_failed(&self) {
+        self.snapshot_delivery_errors
+            .fetch_add(1, Ordering::Relaxed);
+        self.errors_snapshot.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn live_stream_started(&self) {
@@ -197,9 +215,18 @@ impl Metrics {
                 "# HELP amcrust_snapshot_requests_total HomeKit snapshot requests.\n",
                 "# TYPE amcrust_snapshot_requests_total counter\n",
                 "amcrust_snapshot_requests_total {}\n",
-                "# HELP amcrust_snapshot_successes_total Successful HomeKit snapshots.\n",
+                "# HELP amcrust_snapshot_successes_total Snapshot JPEGs generated successfully.\n",
                 "# TYPE amcrust_snapshot_successes_total counter\n",
                 "amcrust_snapshot_successes_total {}\n",
+                "# HELP amcrust_snapshot_deliveries_total Snapshot responses written to controller sockets.\n",
+                "# TYPE amcrust_snapshot_deliveries_total counter\n",
+                "amcrust_snapshot_deliveries_total {}\n",
+                "# HELP amcrust_snapshot_delivery_bytes_total Snapshot JPEG bytes written to controller sockets.\n",
+                "# TYPE amcrust_snapshot_delivery_bytes_total counter\n",
+                "amcrust_snapshot_delivery_bytes_total {}\n",
+                "# HELP amcrust_snapshot_delivery_errors_total Snapshot responses that failed during socket delivery.\n",
+                "# TYPE amcrust_snapshot_delivery_errors_total counter\n",
+                "amcrust_snapshot_delivery_errors_total {}\n",
                 "# HELP amcrust_live_stream_starts_total Live video streams started.\n",
                 "# TYPE amcrust_live_stream_starts_total counter\n",
                 "amcrust_live_stream_starts_total {}\n",
@@ -232,6 +259,9 @@ impl Metrics {
             Self::load(&self.event_reconnects),
             Self::load(&self.snapshot_requests),
             Self::load(&self.snapshot_successes),
+            Self::load(&self.snapshot_deliveries),
+            Self::load(&self.snapshot_delivery_bytes),
+            Self::load(&self.snapshot_delivery_errors),
             Self::load(&self.live_stream_starts),
             Self::load(&self.recording_fragments),
             Self::load(&self.recording_bytes),
@@ -249,11 +279,13 @@ impl Metrics {
             + Self::load(&self.errors_data_stream)
             + Self::load(&self.errors_recording);
         format!(
-            "amcrust stats: uptime={}s events(person={person_events}, vehicle={vehicle_events}, other={}) snapshots={}/{} live_streams={} recording_fragments={} recording_bytes={} errors={} connections(event={}, live={}, data={}) motion={}",
+            "amcrust stats: uptime={}s events(person={person_events}, vehicle={vehicle_events}, other={}) snapshots(generated={}/{}, delivered={}, delivery_errors={}) live_streams={} recording_fragments={} recording_bytes={} errors={} connections(event={}, live={}, data={}) motion={}",
             self.started.elapsed().as_secs(),
             Self::load(&self.event_other),
             Self::load(&self.snapshot_successes),
             Self::load(&self.snapshot_requests),
+            Self::load(&self.snapshot_deliveries),
+            Self::load(&self.snapshot_delivery_errors),
             Self::load(&self.live_stream_starts),
             Self::load(&self.recording_fragments),
             Self::load(&self.recording_bytes),
@@ -317,6 +349,10 @@ async fn handle(request: Request<Body>, state: HttpState) -> Result<Response<Bod
                 "event_stream_connected": state.metrics.event_stream_connected.load(Ordering::Relaxed),
                 "live_connections": state.metrics.live_connections.load(Ordering::Relaxed),
                 "recording_pipeline_running": recording_pipeline_running,
+                "snapshot_requests": Metrics::load(&state.metrics.snapshot_requests),
+                "snapshot_generated": Metrics::load(&state.metrics.snapshot_successes),
+                "snapshot_delivered": Metrics::load(&state.metrics.snapshot_deliveries),
+                "snapshot_delivery_errors": Metrics::load(&state.metrics.snapshot_delivery_errors),
             });
             typed_response(StatusCode::OK, "application/json", body.to_string())
         }
@@ -364,10 +400,17 @@ mod tests {
         let metrics = Metrics::new();
         metrics.event(false, "Start");
         metrics.snapshot_request();
+        metrics.snapshot_success();
+        metrics.snapshot_delivered(4096);
+        metrics.snapshot_delivery_failed();
         let output = metrics.render(true);
         assert!(output.contains("# TYPE amcrust_camera_events_total counter"));
         assert!(output.contains("amcrust_camera_events_total{type=\"person\",action=\"start\"} 1"));
         assert!(output.contains("amcrust_video_status{type=\"recording_pipeline\"} 1"));
+        assert!(output.contains("amcrust_snapshot_successes_total 1"));
+        assert!(output.contains("amcrust_snapshot_deliveries_total 1"));
+        assert!(output.contains("amcrust_snapshot_delivery_bytes_total 4096"));
+        assert!(output.contains("amcrust_snapshot_delivery_errors_total 1"));
     }
 
     #[tokio::test]

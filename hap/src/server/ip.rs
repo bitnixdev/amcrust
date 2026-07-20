@@ -27,6 +27,7 @@ pub struct IpServer {
     mdns_responder: pointer::MdnsResponder,
     aid_cache: Arc<Mutex<Vec<u64>>>,
     snapshot_handler: pointer::SnapshotHandler,
+    snapshot_delivery_handler: pointer::SnapshotDeliveryHandler,
     secret_slot: pointer::SharedSecretSlot,
 }
 
@@ -186,6 +187,8 @@ impl IpServer {
             Arc::new(Mutex::new(AccessoryDatabase::new(event_emitter.clone())));
 
         let snapshot_handler: pointer::SnapshotHandler = Arc::new(Mutex::new(None));
+        let snapshot_delivery_handler: pointer::SnapshotDeliveryHandler =
+            Arc::new(std::sync::RwLock::new(None));
         let secret_slot: pointer::SharedSecretSlot = Arc::new(std::sync::RwLock::new(None));
 
         let http_server = HttpServer::new(
@@ -195,6 +198,7 @@ impl IpServer {
             event_emitter,
             mdns_responder.clone(),
             snapshot_handler.clone(),
+            snapshot_delivery_handler.clone(),
             secret_slot.clone(),
         );
 
@@ -218,6 +222,7 @@ impl IpServer {
             mdns_responder,
             aid_cache,
             snapshot_handler,
+            snapshot_delivery_handler,
             secret_slot,
         };
 
@@ -230,6 +235,17 @@ impl IpServer {
         handler: Box<dyn FnMut(u32, u32, Option<i64>) -> pointer::SnapshotFuture + Send + Sync>,
     ) {
         *self.snapshot_handler.lock().await = Some(handler);
+    }
+
+    /// Sets the observer invoked after a snapshot response is written to the
+    /// encrypted controller socket.
+    pub fn set_snapshot_delivery_handler(
+        &self,
+        handler: Arc<dyn Fn(pointer::SnapshotDelivery) + Send + Sync>,
+    ) {
+        if let Ok(mut slot) = self.snapshot_delivery_handler.write() {
+            *slot = Some(handler);
+        }
     }
 
     /// The slot holding the pair-verify shared secret of the session currently

@@ -270,6 +270,7 @@ pub struct Server {
     event_emitter: pointer::EventEmitter,
     mdns_responder: pointer::MdnsResponder,
     snapshot_handler: pointer::SnapshotHandler,
+    snapshot_delivery_handler: pointer::SnapshotDeliveryHandler,
     secret_slot: pointer::SharedSecretSlot,
 }
 
@@ -281,6 +282,7 @@ impl Server {
         event_emitter: pointer::EventEmitter,
         mdns_responder: pointer::MdnsResponder,
         snapshot_handler: pointer::SnapshotHandler,
+        snapshot_delivery_handler: pointer::SnapshotDeliveryHandler,
         secret_slot: pointer::SharedSecretSlot,
     ) -> Self {
         Server {
@@ -290,6 +292,7 @@ impl Server {
             event_emitter,
             mdns_responder,
             snapshot_handler,
+            snapshot_delivery_handler,
             secret_slot,
         }
     }
@@ -301,6 +304,7 @@ impl Server {
         let event_emitter = self.event_emitter.clone();
         let mdns_responder = self.mdns_responder.clone();
         let snapshot_handler = self.snapshot_handler.clone();
+        let snapshot_delivery_handler = self.snapshot_delivery_handler.clone();
         let secret_slot = self.secret_slot.clone();
 
         async move {
@@ -321,14 +325,14 @@ impl Server {
                 let (
                     encrypted_stream,
                     stream_incoming,
-                    stream_outgoing,
+                    serialized_output,
                     session_sender,
                     incoming_waker,
                     outgoing_waker,
-                ) = EncryptedStream::new(stream);
+                ) = EncryptedStream::new(stream, snapshot_delivery_handler.clone());
                 let stream_wrapper = StreamWrapper::new(
                     stream_incoming,
-                    stream_outgoing.clone(),
+                    serialized_output.clone(),
                     incoming_waker,
                     outgoing_waker,
                 );
@@ -352,7 +356,7 @@ impl Server {
                     .await
                     .add_listener(Box::new(move |event| {
                         let event_subscriptions_ = event_subscriptions.clone();
-                        let stream_outgoing_ = stream_outgoing.clone();
+                        let serialized_output_ = serialized_output.clone();
                         async move {
                             match *event {
                                 Event::CharacteristicValueChanged {
@@ -372,7 +376,7 @@ impl Server {
                                             };
                                             let event_res = event_response(vec![event])
                                                 .expect("couldn't create event response");
-                                            if stream_outgoing_.unbounded_send(event_res).is_err() {
+                                            if serialized_output_.send_event(event_res).is_err() {
                                                 dropped_subscriptions.push(i);
                                             }
                                         }
