@@ -14,6 +14,8 @@ use tokio::time::{Duration, sleep};
 const EVENT_CODES: &str =
     "SmartMotionHuman,SmartMotionVehicle,CrossLineDetection,CrossRegionDetection";
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
+const RPC_CONFIG_ATTEMPTS: u8 = 3;
+const RPC_CONFIG_RETRY_DELAY: Duration = Duration::from_millis(150);
 
 fn config_key_pointer(name: &str, key: &str) -> Option<String> {
     let path = key.strip_prefix(name)?;
@@ -507,23 +509,43 @@ impl AmcrestClient {
         name: &str,
         id: u64,
     ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
-        let response = self
-            .rpc_post(
-                "/RPC2",
-                &json!({
-                    "method": "configManager.getConfig",
-                    "params": { "name": name },
-                    "id": id,
-                    "session": session
-                }),
-            )
-            .await?;
-        Self::require_rpc_success(&response, "configManager.getConfig")?;
-        response
-            .get("params")
-            .and_then(|params| params.get("table"))
-            .cloned()
-            .ok_or_else(|| format!("RPC2 getConfig {name} omitted params.table").into())
+        let mut last_error = None;
+        for attempt in 1..=RPC_CONFIG_ATTEMPTS {
+            let result = async {
+                let response = self
+                    .rpc_post(
+                        "/RPC2",
+                        &json!({
+                            "method": "configManager.getConfig",
+                            "params": { "name": name },
+                            "id": id,
+                            "session": session
+                        }),
+                    )
+                    .await?;
+                Self::require_rpc_success(&response, "configManager.getConfig")?;
+                response
+                    .get("params")
+                    .and_then(|params| params.get("table"))
+                    .cloned()
+                    .ok_or_else(|| format!("RPC2 getConfig {name} omitted params.table").into())
+            }
+            .await;
+            match result {
+                Ok(table) => return Ok(table),
+                Err(error) => {
+                    last_error = Some(error);
+                    if attempt < RPC_CONFIG_ATTEMPTS {
+                        debug!(
+                            "[{}] RPC2 getConfig {name} attempt {attempt} failed; retrying",
+                            self.host
+                        );
+                        sleep(RPC_CONFIG_RETRY_DELAY * u32::from(attempt)).await;
+                    }
+                }
+            }
+        }
+        Err(last_error.expect("RPC getConfig attempts is nonzero"))
     }
 
     async fn rpc_set_config(
@@ -1191,27 +1213,12 @@ impl AmcrestClient {
         Ok(())
     }
 
-    /// Configures regular snapshots at the highest resolution reported by the
-    /// camera. Unsupported model-specific fields are skipped by the RPC helper.
+    /// Configures regular snapshots for maximum JPEG quality. Amcrest firmware
+    /// commonly reports snapshot Width/Height fields but treats them as
+    /// read-only, so source resolution remains camera-managed.
     pub async fn ensure_snapshot_profile(
         &self,
         capabilities: &EncoderCapabilities,
-    ) -> Result<Option<(u16, u16)>, Box<dyn std::error::Error + Send + Sync>> {
-        let Some((width, height)) = capabilities.best_snapshot_resolution() else {
-            warn!(
-                "[{}] snapshot capabilities unavailable; retaining camera settings",
-                self.host
-            );
-            return Ok(None);
-        };
-        self.ensure_snapshot_resolution(width, height).await?;
-        Ok(Some((width, height)))
-    }
-
-    pub async fn ensure_snapshot_resolution(
-        &self,
-        width: u16,
-        height: u16,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let desired = vec![
             ("Encode[0].SnapFormat[0].VideoEnable".into(), "true".into()),
@@ -1219,23 +1226,22 @@ impl AmcrestClient {
                 "Encode[0].SnapFormat[0].Video.Compression".into(),
                 "MJPG".into(),
             ),
-            (
-                "Encode[0].SnapFormat[0].Video.Width".into(),
-                width.to_string(),
-            ),
-            (
-                "Encode[0].SnapFormat[0].Video.Height".into(),
-                height.to_string(),
-            ),
             ("Encode[0].SnapFormat[0].Video.Quality".into(), "6".into()),
         ];
         let session = self.rpc_login().await?;
         self.apply_supported_settings_rpc(&session, "Encode", &desired)
             .await?;
-        info!(
-            "[{}] snapshot profile verified: {}x{}, MJPEG quality 6",
-            self.host, width, height
-        );
+        if let Some((width, height)) = capabilities.best_snapshot_resolution() {
+            info!(
+                "[{}] snapshot profile verified: MJPEG quality 6, camera-managed resolution (reports up to {}x{})",
+                self.host, width, height
+            );
+        } else {
+            info!(
+                "[{}] snapshot profile verified: MJPEG quality 6, camera-managed resolution",
+                self.host
+            );
+        }
         Ok(())
     }
 

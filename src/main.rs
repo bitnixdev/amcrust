@@ -288,16 +288,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let accessory_ptr = server.add_accessory(camera_accessory).await?;
 
     // Restore the persisted encoder settings before resuming the recording
-    // pipeline, so ffmpeg never attaches to a stale camera configuration.
+    // pipeline, then restore snapshot and motion profiles exactly once. This
+    // keeps ffmpeg from attaching to stale camera settings.
     hsv_state.resume_recorder().await;
-    if let Err(e) = camera.ensure_snapshot_profile(&capabilities).await {
-        warn!("could not verify maximum-quality snapshot config: {e}");
-    }
-    // Encoder writes reset motion fields on some models. Apply detection last
-    // even when HomeKit has not selected a recording configuration yet.
-    if let Err(e) = camera.ensure_smart_motion().await {
-        warn!("could not verify AI/motion detection config: {e}");
-    }
 
     // Snapshots for the Home app tiles, served from a background-refreshed
     // cache so requests answer instantly. Secure-video gating: reject when the

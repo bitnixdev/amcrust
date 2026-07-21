@@ -87,7 +87,10 @@ impl Recorder {
         }
         cmd.args(["-f", "mp4"])
             .args(["-movflags", "frag_keyframe+empty_moov+default_base_moof"])
-            .args(["-reset_timestamps", "1"])
+            // `reset_timestamps` belongs to FFmpeg's segment muxer, not MP4.
+            // Keep generated wall-clock timestamps and shift the whole output
+            // timeline to zero without destroying packet timestamps.
+            .args(["-avoid_negative_ts", "make_zero"])
             .arg("pipe:1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

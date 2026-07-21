@@ -189,6 +189,7 @@ impl HsvState {
             .is_none_or(|selected| !same_encoder_settings(selected, &config))
         {
             self.apply_camera_settings(&config).await;
+            self.restore_dependent_camera_profiles().await;
         }
         *self.selected.lock().await = Some(config);
         self.persist().await;
@@ -201,6 +202,7 @@ impl HsvState {
         if let Some(config) = self.selected.lock().await.clone() {
             self.apply_camera_settings(&config).await;
         }
+        self.restore_dependent_camera_profiles().await;
         self.sync_recorder().await;
     }
 
@@ -245,29 +247,32 @@ impl HsvState {
                     "[{}] camera main stream set to {}x{}@{} GOP {} for recording",
                     self.camera_name, config.width, config.height, config.fps, gop
                 );
-                if let Some((width, height)) = self.capabilities.best_snapshot_resolution()
-                    && let Err(e) = self.camera.ensure_snapshot_resolution(width, height).await
-                {
-                    warn!(
-                        "[{}] failed to restore maximum-quality snapshot profile: {e}",
-                        self.camera_name
-                    );
-                }
-                // Several Amcrest firmware families reset MotionDetect event
-                // actions when the main encoder is written. Detection must be
-                // the final camera profile applied, including on later HomeKit
-                // recording-configuration changes.
-                if let Err(e) = self.camera.ensure_smart_motion().await {
-                    warn!(
-                        "[{}] failed to restore AI/motion profile after encoder config: {e}",
-                        self.camera_name
-                    );
-                }
             }
             Err(e) => warn!(
                 "[{}] failed to set camera encoder config: {e}",
                 self.camera_name
             ),
+        }
+    }
+
+    /// Restores camera profiles that an encoder write may reset. Motion must
+    /// remain last because some firmware resets it when other profiles change.
+    async fn restore_dependent_camera_profiles(&self) {
+        if let Err(e) = self
+            .camera
+            .ensure_snapshot_profile(&self.capabilities)
+            .await
+        {
+            warn!(
+                "[{}] failed to restore maximum-quality snapshot profile: {e}",
+                self.camera_name
+            );
+        }
+        if let Err(e) = self.camera.ensure_smart_motion().await {
+            warn!(
+                "[{}] failed to restore AI/motion profile after encoder config: {e}",
+                self.camera_name
+            );
         }
     }
 
