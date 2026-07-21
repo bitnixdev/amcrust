@@ -942,12 +942,12 @@ impl AmcrestClient {
         Ok(())
     }
 
-    /// Configures the selected live-view substream to its highest verified
-    /// packet-copy profile and returns the profile retained by the camera.
+    /// Configures a live-view substream to the requested native packet-copy
+    /// profile and returns the profile retained by the camera.
     pub async fn ensure_live_substream(
         &self,
         subtype: u8,
-        _capabilities: &EncoderCapabilities,
+        requested: VideoProfile,
     ) -> Result<VideoProfile, Box<dyn std::error::Error + Send + Sync>> {
         if subtype == 0 {
             return Err("the main stream is reserved for HSV recording".into());
@@ -955,49 +955,51 @@ impl AmcrestClient {
         let idx = subtype - 1;
         let initial = self.encode_config().await?;
         let existing = live_profile_from_config(&initial, idx);
-        let candidates: &[VideoProfile] = if subtype == 2 {
-            &[VideoProfile::LIVE_1080P, VideoProfile::LIVE_720P]
-        } else {
-            &[VideoProfile::LIVE_720P]
-        };
-
-        for &candidate in candidates {
-            if live_config_matches(&initial, idx, candidate) {
-                return Ok(candidate);
-            }
-            info!(
-                "[{}] trying live substream {subtype} at {}x{}@{} {}kbps",
-                self.host, candidate.width, candidate.height, candidate.fps, candidate.bitrate_kbps,
-            );
-            if let Err(error) = self.apply_live_profile(idx, candidate, &initial).await {
-                warn!(
-                    "[{}] live substream {subtype} rejected {}x{}: {error}",
-                    self.host, candidate.width, candidate.height
-                );
-                continue;
-            }
-            let readback = self.encode_config().await?;
-            if live_config_matches(&readback, idx, candidate) {
-                info!(
-                    "[{}] live profile verified: subtype {subtype}, {}x{}@{} {}kbps",
-                    self.host,
-                    candidate.width,
-                    candidate.height,
-                    candidate.fps,
-                    candidate.bitrate_kbps,
-                );
-                return Ok(candidate);
-            }
-            warn!(
-                "[{}] camera did not retain {}x{} live profile; trying fallback",
-                self.host, candidate.width, candidate.height
-            );
+        if live_config_matches(&initial, idx, requested) {
+            return Ok(requested);
         }
-
-        let final_config = self.encode_config().await?;
-        live_profile_from_config(&final_config, idx)
+        info!(
+            "[{}] setting live substream {subtype} to {}x{}@{} {}kbps",
+            self.host, requested.width, requested.height, requested.fps, requested.bitrate_kbps,
+        );
+        self.apply_live_profile(idx, requested, &initial).await?;
+        let readback = self.encode_config().await?;
+        if live_config_matches(&readback, idx, requested) {
+            info!(
+                "[{}] live profile verified: subtype {subtype}, {}x{}@{} {}kbps",
+                self.host, requested.width, requested.height, requested.fps, requested.bitrate_kbps,
+            );
+            return Ok(requested);
+        }
+        live_profile_from_config(&readback, idx)
             .or(existing)
-            .ok_or_else(|| "camera has no usable live substream configuration".into())
+            .ok_or_else(|| format!("camera did not retain live substream {subtype}").into())
+    }
+
+    /// Disables an unused camera substream and verifies both media tracks.
+    pub async fn disable_live_substream(
+        &self,
+        subtype: u8,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if subtype == 0 {
+            return Err("cannot disable the main stream".into());
+        }
+        let idx = subtype - 1;
+        let desired = vec![
+            (
+                format!("Encode[0].ExtraFormat[{idx}].VideoEnable"),
+                "false".into(),
+            ),
+            (
+                format!("Encode[0].ExtraFormat[{idx}].AudioEnable"),
+                "false".into(),
+            ),
+        ];
+        let session = self.rpc_login().await?;
+        self.apply_supported_settings_rpc(&session, "Encode", &desired)
+            .await?;
+        info!("[{}] disabled unused live substream {subtype}", self.host);
+        Ok(())
     }
 
     async fn encode_config(&self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
@@ -1848,7 +1850,6 @@ fn live_config_matches(body: &str, idx: u8, expected: VideoProfile) -> bool {
         && live_config_field(body, idx, "Video.GOP").and_then(|value| value.parse().ok())
             == Some(u32::from(expected.fps))
         && live_config_field(body, idx, "Video.BitRateControl").as_deref() == Some("VBR")
-        && live_config_field(body, idx, "Video.Profile").as_deref() == Some("High")
         && live_config_field(body, idx, "Video.Quality").as_deref() == Some("6")
         && AmcrestClient::unapplied_supported_settings(body, &live_profile_settings(idx, expected))
             .is_empty()
@@ -2156,6 +2157,7 @@ mod tests {
     fn verifies_exact_packet_copy_live_profile() {
         let body = "table.Encode[0].ExtraFormat[1].VideoEnable=true\n\
                     table.Encode[0].ExtraFormat[1].Video.Compression=H.264\n\
+                    table.Encode[0].ExtraFormat[1].Video.resolution=1920x1080\n\
                     table.Encode[0].ExtraFormat[1].Video.Width=1920\n\
                     table.Encode[0].ExtraFormat[1].Video.Height=1080\n\
                     table.Encode[0].ExtraFormat[1].Video.FPS=15\n\
@@ -2163,8 +2165,23 @@ mod tests {
                     table.Encode[0].ExtraFormat[1].Video.BitRate=4096\n\
                     table.Encode[0].ExtraFormat[1].Video.BitRateControl=VBR\n\
                     table.Encode[0].ExtraFormat[1].Video.Profile=High\n\
-                    table.Encode[0].ExtraFormat[1].Video.Quality=6";
+                    table.Encode[0].ExtraFormat[1].Video.Quality=6\n\
+                    table.Encode[0].ExtraFormat[1].Audio.Frequency=16000";
         assert!(live_config_matches(body, 1, VideoProfile::LIVE_1080P));
         assert!(!live_config_matches(body, 1, VideoProfile::LIVE_720P));
+
+        let wrong_resolution_selector =
+            body.replace("Video.resolution=1920x1080", "Video.resolution=1280x720");
+        assert!(!live_config_matches(
+            &wrong_resolution_selector,
+            1,
+            VideoProfile::LIVE_1080P
+        ));
+        let wrong_supported_audio = body.replace("Audio.Frequency=16000", "Audio.Frequency=8000");
+        assert!(!live_config_matches(
+            &wrong_supported_audio,
+            1,
+            VideoProfile::LIVE_1080P
+        ));
     }
 }

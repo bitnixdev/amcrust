@@ -92,35 +92,42 @@ struct Inner {
     setup_response: Vec<u8>,
 }
 
+#[derive(Clone, Debug)]
+pub struct VideoSource {
+    pub rtsp_url: String,
+    pub profile: VideoProfile,
+}
+
 /// Manages the active HomeKit streams for this camera.
 #[derive(Clone)]
 pub struct StreamManager {
     inner: Arc<Mutex<Inner>>,
-    rtsp_url: String,
+    video_sources: Vec<VideoSource>,
     audio_rtsp_url: String,
     audio: bool,
     local_ip: IpAddr,
     metrics: Arc<Metrics>,
-    video_profile: VideoProfile,
 }
 
 impl StreamManager {
     pub fn new(
-        rtsp_url: String,
+        video_sources: Vec<VideoSource>,
         audio_rtsp_url: String,
         audio: bool,
         local_ip: IpAddr,
         metrics: Arc<Metrics>,
-        video_profile: VideoProfile,
     ) -> Self {
+        assert!(
+            !video_sources.is_empty(),
+            "at least one live source is required"
+        );
         Self {
             inner: Arc::new(Mutex::new(Inner::default())),
-            rtsp_url,
+            video_sources,
             audio_rtsp_url,
             audio,
             local_ip,
             metrics,
-            video_profile,
         }
     }
 
@@ -129,7 +136,13 @@ impl StreamManager {
     }
 
     pub fn supported_video_config(&self) -> Vec<u8> {
-        supported_video_config(self.video_profile)
+        supported_video_config(
+            &self
+                .video_sources
+                .iter()
+                .map(|source| source.profile)
+                .collect::<Vec<_>>(),
+        )
     }
 
     /// Handles a controller write to SetupEndpoints and prepares the response
@@ -287,21 +300,9 @@ impl StreamManager {
                 let selected_width = tlv8::find_u16(&video_attributes, 0x01);
                 let selected_height = tlv8::find_u16(&video_attributes, 0x02);
                 let selected_fps = tlv8::find_u8(&video_attributes, 0x03);
-                if selected_width.is_some_and(|value| value != self.video_profile.width)
-                    || selected_height.is_some_and(|value| value != self.video_profile.height)
-                    || selected_fps.is_some_and(|value| value != self.video_profile.fps)
-                {
-                    warn!(
-                        "controller selected unsupported live format {:?}x{:?}@{:?}; packet-copy source is {}x{}@{}",
-                        selected_width,
-                        selected_height,
-                        selected_fps,
-                        self.video_profile.width,
-                        self.video_profile.height,
-                        self.video_profile.fps,
-                    );
-                    return;
-                }
+                let source =
+                    select_video_source(&self.video_sources, selected_width, selected_height)
+                        .clone();
                 let rtp_params = tlv8::find(&video_params, VIDEO_RTP_PARAMS)
                     .map(|v| tlv8::parse(v))
                     .unwrap_or_default();
@@ -309,14 +310,16 @@ impl StreamManager {
                 let max_mtu = tlv8::find_u16(&rtp_params, RTP_MAX_MTU).unwrap_or(1316);
                 let max_bitrate = tlv8::find_u16(&rtp_params, RTP_MAX_BITRATE).unwrap_or_default();
                 debug!(
-                    "selected live video: {}x{}@{}, source {}kbps, controller max {}kbps",
-                    self.video_profile.width,
-                    self.video_profile.height,
-                    self.video_profile.fps,
-                    self.video_profile.bitrate_kbps,
+                    "selected live video {:?}x{:?}@{:?}: native source {}x{}@{} {}kbps, controller max {}kbps",
+                    selected_width,
+                    selected_height,
+                    selected_fps,
+                    source.profile.width,
+                    source.profile.height,
+                    source.profile.fps,
+                    source.profile.bitrate_kbps,
                     max_bitrate,
                 );
-
                 // Audio: negotiated Opus payload type & sample rate.
                 let audio_params = tlv8::find(&items, SELECTED_AUDIO_PARAMS)
                     .map(|v| tlv8::parse(v))
@@ -344,6 +347,7 @@ impl StreamManager {
 
                 self.start_stream(
                     session_id,
+                    source,
                     payload_type,
                     max_mtu,
                     audio_payload_type,
@@ -372,6 +376,7 @@ impl StreamManager {
     async fn start_stream(
         &self,
         session_id: Option<Vec<u8>>,
+        video_source: VideoSource,
         payload_type: u8,
         max_mtu: u16,
         audio_payload_type: u8,
@@ -464,7 +469,7 @@ impl StreamManager {
             .args(["-probesize", "65536"])
             .args(["-analyzeduration", "0"])
             .args(["-rtsp_transport", "tcp"])
-            .args(["-i", &self.rtsp_url])
+            .args(["-i", &video_source.rtsp_url])
             .args(["-map", "0:v:0"])
             .arg("-an")
             .args(["-c:v", "copy"])
@@ -797,11 +802,21 @@ fn h264_contains_idr(packet: &[u8]) -> bool {
     }
 }
 
+fn select_video_source(
+    sources: &[VideoSource],
+    width: Option<u16>,
+    height: Option<u16>,
+) -> &VideoSource {
+    sources
+        .iter()
+        .find(|source| Some(source.profile.width) == width && Some(source.profile.height) == height)
+        .unwrap_or(&sources[0])
+}
+
 // --- Supported configuration TLVs, advertised via the stream management service ---
 
-/// SupportedVideoStreamConfiguration for the exact packet-copy source. We do
-/// not advertise sizes that would require transcoding.
-pub fn supported_video_config(profile: VideoProfile) -> Vec<u8> {
+/// SupportedVideoStreamConfiguration for the exact packet-copy source.
+pub fn supported_video_config(profiles: &[VideoProfile]) -> Vec<u8> {
     let mut params = tlv8::Writer::new();
     // Profiles: constrained baseline, main, high.
     params
@@ -821,11 +836,26 @@ pub fn supported_video_config(profile: VideoProfile) -> Vec<u8> {
     params.u8(0x03, 0x00);
     let params = params.build();
 
-    let attributes = [tlv8::Writer::new()
-        .u16(0x01, profile.width)
-        .u16(0x02, profile.height)
-        .u8(0x03, profile.fps)
-        .build()];
+    let mut unique_profiles = Vec::new();
+    for profile in profiles {
+        if !unique_profiles.iter().any(|current: &VideoProfile| {
+            current.width == profile.width
+                && current.height == profile.height
+                && current.fps == profile.fps
+        }) {
+            unique_profiles.push(*profile);
+        }
+    }
+    let attributes = unique_profiles
+        .into_iter()
+        .map(|profile| {
+            tlv8::Writer::new()
+                .u16(0x01, profile.width)
+                .u16(0x02, profile.height)
+                .u8(0x03, profile.fps)
+                .build()
+        })
+        .collect::<Vec<_>>();
 
     let mut codec_config = tlv8::Writer::new();
     codec_config.u8(0x01, 0x00); // codec type: H.264
@@ -883,14 +913,36 @@ mod tests {
     }
 
     #[test]
-    fn advertises_only_the_exact_live_profile() {
-        let raw = supported_video_config(VideoProfile::LIVE_1080P);
+    fn advertises_all_native_live_profiles() {
+        let raw = supported_video_config(&[VideoProfile::LIVE_720P, VideoProfile::LIVE_1080P]);
         let root = tlv8::parse(&raw);
         let codec = tlv8::parse(tlv8::find(&root, 0x01).unwrap());
         let attributes = tlv8::parse(tlv8::find(&codec, 0x03).unwrap());
-        assert_eq!(tlv8::find_u16(&attributes, 0x01), Some(1920));
-        assert_eq!(tlv8::find_u16(&attributes, 0x02), Some(1080));
+        assert_eq!(tlv8::find_u16(&attributes, 0x01), Some(1280));
+        assert_eq!(tlv8::find_u16(&attributes, 0x02), Some(720));
         assert_eq!(tlv8::find_u8(&attributes, 0x03), Some(15));
-        assert_eq!(codec.iter().filter(|item| item.tag == 0x03).count(), 1);
+        assert_eq!(codec.iter().filter(|item| item.tag == 0x03).count(), 2);
+    }
+
+    #[test]
+    fn selects_native_source_by_controller_dimensions() {
+        let sources = [
+            VideoSource {
+                rtsp_url: "rtsp://camera/subtype=2".into(),
+                profile: VideoProfile::LIVE_720P,
+            },
+            VideoSource {
+                rtsp_url: "rtsp://camera/subtype=0".into(),
+                profile: VideoProfile::LIVE_1080P,
+            },
+        ];
+        assert_eq!(
+            select_video_source(&sources, Some(1280), Some(720)).profile,
+            VideoProfile::LIVE_720P
+        );
+        assert_eq!(
+            select_video_source(&sources, Some(1920), Some(1080)).profile,
+            VideoProfile::LIVE_1080P
+        );
     }
 }

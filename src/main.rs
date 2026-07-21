@@ -28,7 +28,7 @@ use metrics::{ErrorSubsystem, Metrics};
 use motion::MotionMapper;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use stream::StreamManager;
+use stream::{StreamManager, VideoSource};
 
 /// A single Amcrest camera bridged to HomeKit as a camera/video accessory.
 /// Run one instance per camera.
@@ -129,18 +129,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             EncoderCapabilities::default()
         }
     };
-    // Make sure the live-view substream is enabled and configured; cameras
-    // ship with sub stream 2 disabled, which breaks HomeKit live view.
-    let live_profile = match camera
-        .ensure_live_substream(args.rtsp_subtype, &capabilities)
+    // Allocate native camera encoders without transcoding: main for HSV/1080p
+    // live and sub stream 2 for 720p live. Disable the unused D1 sub stream 1.
+    if args.rtsp_subtype != 2 {
+        warn!(
+            "rtsp subtype {} is overridden by the native multi-stream allocation",
+            args.rtsp_subtype
+        );
+    }
+    let live_720_profile = match camera
+        .ensure_live_substream(2, VideoProfile::LIVE_720P)
         .await
     {
-        Ok(profile) => profile,
+        Ok(profile) => Some(profile),
         Err(error) => {
-            warn!("could not verify live substream config: {error}; advertising 720p fallback");
-            VideoProfile::LIVE_720P
+            warn!("could not verify 720p live substream: {error}");
+            None
         }
     };
+    if let Err(error) = camera.disable_live_substream(1).await {
+        warn!("could not disable unused D1 substream: {error}");
+    }
     if let Err(e) = camera.ensure_media_profile(args.ir_lighting).await {
         warn!("could not verify camera media profile: {e}");
     }
@@ -207,15 +216,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hap_port = config.port;
     let setup_code = format_setup_code(&config.pin);
 
-    let streams = StreamManager::new(
-        camera.rtsp_url(args.rtsp_subtype),
-        camera.rtsp_url(0),
-        args.audio,
-        local_ip,
-        metrics.clone(),
-        live_profile,
-    );
-
     // HomeKit Secure Video state, recorder, and data stream server.
     let motion_active = Arc::new(AtomicBool::new(false));
     let hsv_state = HsvState::load(
@@ -225,6 +225,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         motion_active.clone(),
         metrics.clone(),
         capabilities.clone(),
+    );
+    let mut video_sources = Vec::new();
+    if let Some(profile) = live_720_profile {
+        video_sources.push(VideoSource {
+            rtsp_url: camera.rtsp_url(2),
+            profile,
+        });
+    }
+    if let Some(main_profile) = hsv_state.selected_main_profile().await {
+        video_sources.push(VideoSource {
+            rtsp_url: camera.rtsp_url(0),
+            profile: main_profile,
+        });
+    }
+    if video_sources.is_empty() {
+        return Err("camera has no verified native live stream".into());
+    }
+    let streams = StreamManager::new(
+        video_sources,
+        camera.rtsp_url(0),
+        args.audio,
+        local_ip,
+        metrics.clone(),
     );
     let hds = HdsServer::new(
         args.name.clone(),

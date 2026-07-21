@@ -9,11 +9,12 @@ Supported/tested cameras: Amcrest `IP8M-2696E-AI` and `IP8M-2796E-AI`.
 
 ## What it does
 
-- **Live video in the Home app**: HAP RTP stream management with SRTP. Video is
-  taken from the camera's H.264 High-profile RTSP substream at the highest
-  verified profile up to 1080p/15 fps/4 Mbps and stream-copied (no
-  transcoding) through an RTP/RTCP-multiplexing SRTP proxy. Cameras that reject
-  1080p automatically fall back to a retained 720p profile.
+- **Live video in the Home app**: HAP RTP stream management with SRTP. Amcrust
+  advertises and routes two native camera encoders without video transcoding:
+  the HSV-controlled main stream for 1080p and Sub Stream 2 at 720p/15 fps/2
+  Mbps. Home's requested dimensions select the matching RTSP source; H.264 is
+  always packet-copied through an RTP/RTCP-multiplexing SRTP proxy. The unused
+  D1-only Sub Stream 1 is disabled.
 - **Snapshots**: Home app tile images served from the camera's `snapshot.cgi`
   via the HAP `POST /resource` endpoint. Snapshot resolution is explicitly
   configured and verified against both encoder readback and the dimensions of

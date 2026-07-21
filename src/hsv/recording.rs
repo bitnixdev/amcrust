@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
 
-use crate::amcrest::{AmcrestClient, EncoderCapabilities};
+use crate::amcrest::{AmcrestClient, EncoderCapabilities, VideoProfile};
 use crate::hsv::fmp4::{Recorder, RecorderConfig};
 use crate::metrics::Metrics;
 use crate::tlv8;
@@ -117,6 +117,25 @@ impl HsvState {
 
     pub fn recording_attributes(&self) -> Vec<(u16, u16, u8)> {
         self.capabilities.recording_attributes()
+    }
+
+    /// Native main-stream profile available to live view without transcoding.
+    pub async fn selected_main_profile(&self) -> Option<VideoProfile> {
+        self.selected.lock().await.as_ref().map(|selected| {
+            if (selected.width, selected.height, selected.fps) == (1920, 1080, 15) {
+                VideoProfile {
+                    bitrate_kbps: selected.video_bitrate_kbps,
+                    ..VideoProfile::LIVE_1080P
+                }
+            } else {
+                VideoProfile {
+                    width: selected.width,
+                    height: selected.height,
+                    fps: selected.fps,
+                    bitrate_kbps: selected.video_bitrate_kbps,
+                }
+            }
+        })
     }
 
     pub async fn persist(&self) {

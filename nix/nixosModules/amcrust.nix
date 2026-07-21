@@ -70,9 +70,8 @@
         type = types.ints.between 1 2;
         default = 2;
         description = ''
-          RTSP substream used for HomeKit live video. The selected stream is
-          automatically configured to its highest verified profile up to
-          1080p at 4 Mbps; subtype 2 is recommended.
+          Legacy live-stream preference. Amcrust now allocates main plus Sub
+          Stream 2 automatically and disables Sub Stream 1; keep this at 2.
         '';
       };
 
