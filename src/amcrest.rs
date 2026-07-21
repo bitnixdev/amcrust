@@ -16,6 +16,8 @@ const EVENT_CODES: &str =
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 const RPC_CONFIG_ATTEMPTS: u8 = 3;
 const RPC_CONFIG_RETRY_DELAY: Duration = Duration::from_millis(150);
+const CAMERA_SNAPSHOT_JPEG_QUALITY: &str = "1";
+const HOMEKIT_SNAPSHOT_JPEG_QSCALE: &str = "31";
 
 fn config_key_pointer(name: &str, key: &str) -> Option<String> {
     let path = key.strip_prefix(name)?;
@@ -1409,7 +1411,10 @@ impl AmcrestClient {
                 "Encode[0].SnapFormat[0].Video.Compression".into(),
                 "MJPG".into(),
             ),
-            ("Encode[0].SnapFormat[0].Video.Quality".into(), "6".into()),
+            (
+                "Encode[0].SnapFormat[0].Video.Quality".into(),
+                CAMERA_SNAPSHOT_JPEG_QUALITY.into(),
+            ),
         ];
         if capabilities.snapshot_independent_resolution {
             desired.push((
@@ -1458,8 +1463,12 @@ impl AmcrestClient {
             "main-stream-linked selector"
         };
         info!(
-            "[{}] snapshot profile verified: {}x{} MJPEG quality 6 ({linkage})",
-            self.host, target.0, target.1
+            "[{}] snapshot profile verified: {}x{} MJPEG quality {} ({} bytes, {linkage})",
+            self.host,
+            target.0,
+            target.1,
+            CAMERA_SNAPSHOT_JPEG_QUALITY,
+            jpeg.len()
         );
         Ok(())
     }
@@ -1762,9 +1771,19 @@ async fn scale_jpeg_inner(
         .args(["-hide_banner", "-loglevel", "info"])
         .args(["-f", "image2pipe", "-i", "pipe:0"])
         .args(["-frames:v", "1", "-vf", &filter])
-        // Home receives a resized derivative, so use FFmpeg's highest
-        // practical MJPEG quality to avoid compounding the camera's JPEG loss.
-        .args(["-f", "image2", "-c:v", "mjpeg", "-q:v", "2", "pipe:1"])
+        // Preview reliability is more important than detail here. Produce the
+        // smallest practical baseline-compatible 4:2:0 JPEG for Home.
+        .args([
+            "-f",
+            "image2",
+            "-c:v",
+            "mjpeg",
+            "-pix_fmt",
+            "yuvj420p",
+            "-q:v",
+            HOMEKIT_SNAPSHOT_JPEG_QSCALE,
+            "pipe:1",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

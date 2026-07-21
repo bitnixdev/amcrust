@@ -290,7 +290,7 @@ impl HsvState {
             .await
         {
             warn!(
-                "[{}] failed to restore maximum-quality snapshot profile: {e}",
+                "[{}] failed to restore preview-optimized snapshot profile: {e}",
                 self.camera_name
             );
         }
