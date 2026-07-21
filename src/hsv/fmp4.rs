@@ -34,8 +34,16 @@ struct RecorderState {
 pub struct RecorderConfig {
     pub rtsp_url: String,
     pub audio: bool,
+    pub fps: u8,
     pub fragment_ms: u32,
     pub prebuffer_ms: u32,
+}
+
+fn timestamp_bitstream_filter(fps: u8) -> String {
+    // Preserve camera timestamps when present and synthesize only missing
+    // values. `setts` edits encoded-packet metadata; it does not decode or
+    // transcode video.
+    format!("setts=ts=if(eq(TS\\,NOPTS)\\,N/({}*TB)\\,TS)", fps.max(1))
 }
 
 #[derive(Clone)]
@@ -85,6 +93,7 @@ impl Recorder {
         } else {
             cmd.arg("-an").args(["-c:v", "copy"]);
         }
+        cmd.args(["-bsf:v", &timestamp_bitstream_filter(config.fps)]);
         cmd.args(["-f", "mp4"])
             .args(["-movflags", "frag_keyframe+empty_moov+default_base_moof"])
             // `reset_timestamps` belongs to FFmpeg's segment muxer, not MP4.
@@ -250,5 +259,19 @@ impl Recorder {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::timestamp_bitstream_filter;
+
+    #[test]
+    fn timestamp_filter_preserves_present_values_and_fills_missing_ones() {
+        assert_eq!(
+            timestamp_bitstream_filter(15),
+            "setts=ts=if(eq(TS\\,NOPTS)\\,N/(15*TB)\\,TS)"
+        );
+        assert!(timestamp_bitstream_filter(0).contains("N/(1*TB)"));
     }
 }

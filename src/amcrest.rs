@@ -88,6 +88,26 @@ fn unapplied_rpc_settings(name: &str, table: &Value, desired: &[(String, String)
         .collect()
 }
 
+fn apply_rpc_settings(name: &str, table: &mut Value, desired: &[(String, String)]) -> usize {
+    let mut updates = 0;
+    for (key, desired_value) in desired {
+        let Some(pointer) = config_key_pointer(name, key) else {
+            continue;
+        };
+        let Some(current) = table.pointer_mut(&pointer) else {
+            continue;
+        };
+        let Some(value) = config_value_like(current, desired_value) else {
+            continue;
+        };
+        if *current != value {
+            *current = value;
+            updates += 1;
+        }
+    }
+    updates
+}
+
 fn config_name(key: &str) -> Option<&str> {
     let end = key.find(['[', '.']).unwrap_or(key.len());
     (end > 0).then(|| &key[..end])
@@ -576,37 +596,50 @@ impl AmcrestClient {
         name: &str,
         desired: &[(String, String)],
     ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-        let mut table = self.rpc_get_config(session, name, 3).await?;
-        let mut updates = 0;
-        for (key, desired_value) in desired {
-            let Some(pointer) = config_key_pointer(name, key) else {
-                continue;
-            };
-            let Some(current) = table.pointer_mut(&pointer) else {
-                continue;
-            };
-            let Some(value) = config_value_like(current, desired_value) else {
-                continue;
-            };
-            if *current != value {
-                *current = value;
-                updates += 1;
+        let mut last_error = None;
+        let mut total_updates = 0;
+        for attempt in 1..=RPC_CONFIG_ATTEMPTS {
+            // Always fetch a new table. Some camera firmware invalidates a
+            // previously-read table after rejecting or partially applying it.
+            let result = async {
+                let mut table = self.rpc_get_config(session, name, 3).await?;
+                let updates = apply_rpc_settings(name, &mut table, desired);
+                total_updates = total_updates.max(updates);
+                if updates == 0 {
+                    return Ok(());
+                }
+
+                self.rpc_set_config(session, name, &table, 4).await?;
+                let verified = self.rpc_get_config(session, name, 5).await?;
+                let refused = unapplied_rpc_settings(name, &verified, desired);
+                if refused.is_empty() {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "camera did not retain {} {name} settings after RPC2 setConfig: {}",
+                        refused.len(),
+                        refused.join(", ")
+                    )
+                    .into())
+                }
+            }
+            .await;
+
+            match result {
+                Ok(()) => return Ok(total_updates),
+                Err(error) => {
+                    last_error = Some(error);
+                    if attempt < RPC_CONFIG_ATTEMPTS {
+                        debug!(
+                            "[{}] RPC2 read/write/read {name} attempt {attempt} failed; retrying with a fresh table",
+                            self.host
+                        );
+                        sleep(RPC_CONFIG_RETRY_DELAY * u32::from(attempt)).await;
+                    }
+                }
             }
         }
-        if updates > 0 {
-            self.rpc_set_config(session, name, &table, 4).await?;
-            let verified = self.rpc_get_config(session, name, 5).await?;
-            let refused = unapplied_rpc_settings(name, &verified, desired);
-            if !refused.is_empty() {
-                return Err(format!(
-                    "camera did not retain {} {name} settings after RPC2 setConfig: {}",
-                    refused.len(),
-                    refused.join(", ")
-                )
-                .into());
-            }
-        }
-        Ok(updates)
+        Err(last_error.expect("RPC config attempts is nonzero"))
     }
 
     pub async fn ensure_recording_encoder(
@@ -2022,6 +2055,25 @@ mod tests {
             unapplied_rpc_settings("Encode", &table, &desired),
             vec!["Encode[0].Video.FPS"]
         );
+    }
+
+    #[test]
+    fn applies_only_supported_rpc_settings_using_existing_types() {
+        let mut table = json!([{
+            "Video": {"FPS": 30, "Enable": true, "Profile": "Baseline"}
+        }]);
+        let desired = settings([
+            ("Encode[0].Video.FPS", "15"),
+            ("Encode[0].Video.Enable", "false"),
+            ("Encode[0].Video.Profile", "Main"),
+            ("Encode[0].Video.Unsupported", "ignored"),
+        ]);
+
+        assert_eq!(apply_rpc_settings("Encode", &mut table, &desired), 3);
+        assert_eq!(table[0]["Video"]["FPS"], 15);
+        assert_eq!(table[0]["Video"]["Enable"], false);
+        assert_eq!(table[0]["Video"]["Profile"], "Main");
+        assert!(table[0]["Video"].get("Unsupported").is_none());
     }
 
     #[test]

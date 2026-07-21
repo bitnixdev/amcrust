@@ -313,6 +313,7 @@ impl HsvState {
                     .start(RecorderConfig {
                         rtsp_url: self.camera.rtsp_url(0),
                         audio: self.audio_active.load(Ordering::SeqCst),
+                        fps: config.fps,
                         fragment_ms: config.fragment_ms,
                         prebuffer_ms: config.prebuffer_ms,
                     })
