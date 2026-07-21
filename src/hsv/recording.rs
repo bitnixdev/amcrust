@@ -189,7 +189,8 @@ impl HsvState {
             .is_none_or(|selected| !same_encoder_settings(selected, &config))
         {
             self.apply_camera_settings(&config).await;
-            self.restore_dependent_camera_profiles().await;
+            self.restore_dependent_camera_profiles(Some((config.width, config.height)))
+                .await;
         }
         *self.selected.lock().await = Some(config);
         self.persist().await;
@@ -199,10 +200,16 @@ impl HsvState {
     /// Restores persisted camera encoder settings before resuming recording.
     pub async fn resume_recorder(self: &Arc<Self>) {
         let _configuration_guard = self.configuration_lock.lock().await;
-        if let Some(config) = self.selected.lock().await.clone() {
-            self.apply_camera_settings(&config).await;
+        let selected = self.selected.lock().await.clone();
+        if let Some(config) = &selected {
+            self.apply_camera_settings(config).await;
         }
-        self.restore_dependent_camera_profiles().await;
+        self.restore_dependent_camera_profiles(
+            selected
+                .as_ref()
+                .map(|config| (config.width, config.height)),
+        )
+        .await;
         self.sync_recorder().await;
     }
 
@@ -257,10 +264,10 @@ impl HsvState {
 
     /// Restores camera profiles that an encoder write may reset. Motion must
     /// remain last because some firmware resets it when other profiles change.
-    async fn restore_dependent_camera_profiles(&self) {
+    async fn restore_dependent_camera_profiles(&self, main_resolution: Option<(u16, u16)>) {
         if let Err(e) = self
             .camera
-            .ensure_snapshot_profile(&self.capabilities)
+            .ensure_snapshot_profile(&self.capabilities, main_resolution)
             .await
         {
             warn!(

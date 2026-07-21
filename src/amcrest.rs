@@ -263,6 +263,7 @@ pub struct EncoderCapabilities {
     pub extra_bitrate_range: Option<(u32, u32)>,
     pub main_fps_max: Option<u8>,
     pub extra_fps_max: Option<u8>,
+    pub snapshot_independent_resolution: bool,
 }
 
 impl EncoderCapabilities {
@@ -623,6 +624,10 @@ impl AmcrestClient {
                 "Encode[0].MainFormat[0].Video.Compression",
                 "H.264".to_string(),
             ),
+            (
+                "Encode[0].MainFormat[0].Video.resolution",
+                format!("{width}x{height}"),
+            ),
             ("Encode[0].MainFormat[0].Video.Width", width.to_string()),
             ("Encode[0].MainFormat[0].Video.Height", height.to_string()),
             ("Encode[0].MainFormat[0].Video.FPS", fps.to_string()),
@@ -964,7 +969,7 @@ impl AmcrestClient {
                 "[{}] trying live substream {subtype} at {}x{}@{} {}kbps",
                 self.host, candidate.width, candidate.height, candidate.fps, candidate.bitrate_kbps,
             );
-            if let Err(error) = self.apply_live_profile(idx, candidate).await {
+            if let Err(error) = self.apply_live_profile(idx, candidate, &initial).await {
                 warn!(
                     "[{}] live substream {subtype} rejected {}x{}: {error}",
                     self.host, candidate.width, candidate.height
@@ -1007,41 +1012,31 @@ impl AmcrestClient {
         &self,
         idx: u8,
         profile: VideoProfile,
+        reported: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let resolution = format!("{}x{}", profile.width, profile.height);
-        let params = format!(
-            "Encode%5B0%5D.ExtraFormat%5B{idx}%5D.VideoEnable=true\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Compression=H.264\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.resolution={resolution}\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Width={}\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Height={}\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.FPS={}\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.GOP={}\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.BitRate={}\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.BitRateControl=VBR\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Profile=High\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Quality=6\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Pack=DHAV\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.Priority=0\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.SVCTLayer=1\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.AudioEnable=true\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Audio.Compression=AAC\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Audio.Bitrate=64\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Audio.Depth=16\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Audio.Channels%5B0%5D=0\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Audio.Pack=DHAV\
-             &Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Audio.Frequency=16000",
-            profile.width, profile.height, profile.fps, profile.fps, profile.bitrate_kbps,
-        );
+        let mut desired = live_profile_settings(idx, profile);
+        let ai_gop_key = format!("Encode[0].ExtraFormat[{idx}].Video.AiGOP");
+        if config_field(reported, &ai_gop_key).is_some() {
+            desired.push((ai_gop_key, profile.fps.to_string()));
+        }
+        let params = desired
+            .iter()
+            .map(|(key, value)| {
+                let encoded = key.replace('[', "%5B").replace(']', "%5D");
+                format!("{encoded}={value}")
+            })
+            .collect::<Vec<_>>()
+            .join("&");
         self.set_config(&params).await?;
-        let body = self.encode_config().await?;
-        let ai_gop_key = format!("table.Encode[0].ExtraFormat[{idx}].Video.AiGOP=");
-        if body.lines().any(|line| line.starts_with(&ai_gop_key)) {
-            self.set_config(&format!(
-                "Encode%5B0%5D.ExtraFormat%5B{idx}%5D.Video.AiGOP={}",
-                profile.fps
-            ))
-            .await?;
+        let verified = self.encode_config().await?;
+        let refused = Self::unapplied_reported_settings(reported, &verified, &desired);
+        if !refused.is_empty() {
+            return Err(format!(
+                "camera did not retain {} live encoder settings: {}",
+                refused.len(),
+                refused.join(", ")
+            )
+            .into());
         }
         Ok(())
     }
@@ -1210,17 +1205,75 @@ impl AmcrestClient {
                 .await?;
             }
         }
+        let verified = self
+            .get("/cgi-bin/configManager.cgi?action=getConfig&name=VideoWidget")
+            .await?
+            .text()
+            .await?;
+        let mut refused = Vec::new();
+        for (key, value) in core_settings {
+            let supported = body
+                .lines()
+                .any(|line| line.starts_with(&format!("table.{key}=")));
+            let applied = if key == "VideoWidget[0].FontSizeScale" {
+                config_field(&verified, key).and_then(|current| current.parse::<f64>().ok())
+                    == Some(1.0)
+            } else {
+                config_field(&verified, key).as_deref() == Some(value)
+            };
+            if supported && !applied {
+                refused.push(key.to_string());
+            }
+        }
+        for name in disabled_overlays {
+            for field in ["EncodeBlend", "PreviewBlend"] {
+                let key = format!("VideoWidget[0].{name}.{field}");
+                if config_field(&body, &key).is_some()
+                    && config_field(&verified, &key).as_deref() != Some("false")
+                {
+                    refused.push(key);
+                }
+            }
+        }
+        for suffix in ["Extra1", "Extra2"] {
+            let key = format!("VideoWidget[0].PTZOSDMenuViaApp.EncodeBlend{suffix}");
+            if config_field(&body, &key).is_some()
+                && config_field(&verified, &key).as_deref() != Some("false")
+            {
+                refused.push(key);
+            }
+        }
+        if !refused.is_empty() {
+            return Err(format!(
+                "camera did not retain {} overlay settings: {}",
+                refused.len(),
+                refused.join(", ")
+            )
+            .into());
+        }
         Ok(())
     }
 
-    /// Configures regular snapshots for maximum JPEG quality. Amcrest firmware
-    /// commonly reports snapshot Width/Height fields but treats them as
-    /// read-only, so source resolution remains camera-managed.
+    /// Configures and verifies the snapshot encoder, including the dimensions
+    /// of an actual JPEG. Models without an independent snapshot resolution
+    /// link SnapFormat to the explicitly configured main-stream selector.
     pub async fn ensure_snapshot_profile(
         &self,
         capabilities: &EncoderCapabilities,
+        linked_main_resolution: Option<(u16, u16)>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let desired = vec![
+        let before = self.encode_config().await?;
+        let main_resolution = linked_main_resolution
+            .or_else(|| config_dimensions(&before, "Encode[0].MainFormat[0].Video"))
+            .ok_or("camera main-stream resolution is unavailable")?;
+        let target = if capabilities.snapshot_independent_resolution {
+            capabilities
+                .best_snapshot_resolution()
+                .unwrap_or(main_resolution)
+        } else {
+            main_resolution
+        };
+        let mut desired = vec![
             ("Encode[0].SnapFormat[0].VideoEnable".into(), "true".into()),
             (
                 "Encode[0].SnapFormat[0].Video.Compression".into(),
@@ -1228,20 +1281,56 @@ impl AmcrestClient {
             ),
             ("Encode[0].SnapFormat[0].Video.Quality".into(), "6".into()),
         ];
+        if capabilities.snapshot_independent_resolution {
+            desired.push((
+                "Encode[0].SnapFormat[0].Video.resolution".into(),
+                format!("{}x{}", target.0, target.1),
+            ));
+            desired.push((
+                "Encode[0].SnapFormat[0].Video.CustomResolutionName".into(),
+                format!("{}x{}", target.0, target.1),
+            ));
+        }
         let session = self.rpc_login().await?;
         self.apply_supported_settings_rpc(&session, "Encode", &desired)
             .await?;
-        if let Some((width, height)) = capabilities.best_snapshot_resolution() {
-            info!(
-                "[{}] snapshot profile verified: MJPEG quality 6, camera-managed resolution (reports up to {}x{})",
-                self.host, width, height
-            );
-        } else {
-            info!(
-                "[{}] snapshot profile verified: MJPEG quality 6, camera-managed resolution",
-                self.host
-            );
+
+        let verified = self.encode_config().await?;
+        let verified_main = config_dimensions(&verified, "Encode[0].MainFormat[0].Video");
+        let verified_snapshot = config_dimensions(&verified, "Encode[0].SnapFormat[0].Video");
+        if linked_main_resolution.is_some() && verified_main != Some(main_resolution) {
+            return Err(format!(
+                "main-stream resolution readback was {:?}, expected {}x{}",
+                verified_main, main_resolution.0, main_resolution.1
+            )
+            .into());
         }
+        if verified_snapshot != Some(target) {
+            return Err(format!(
+                "snapshot resolution readback was {:?}, expected {}x{}",
+                verified_snapshot, target.0, target.1
+            )
+            .into());
+        }
+
+        let jpeg = self.snapshot().await?;
+        let actual = jpeg_dimensions(&jpeg).ok_or("snapshot JPEG dimensions are unavailable")?;
+        if actual != target {
+            return Err(format!(
+                "snapshot JPEG is {}x{}, expected {}x{}",
+                actual.0, actual.1, target.0, target.1
+            )
+            .into());
+        }
+        let linkage = if capabilities.snapshot_independent_resolution {
+            "independent snapshot selector"
+        } else {
+            "main-stream-linked selector"
+        };
+        info!(
+            "[{}] snapshot profile verified: {}x{} MJPEG quality 6 ({linkage})",
+            self.host, target.0, target.1
+        );
         Ok(())
     }
 
@@ -1543,7 +1632,9 @@ async fn scale_jpeg_inner(
         .args(["-hide_banner", "-loglevel", "info"])
         .args(["-f", "image2pipe", "-i", "pipe:0"])
         .args(["-frames:v", "1", "-vf", &filter])
-        .args(["-f", "image2", "-c:v", "mjpeg", "-q:v", "4", "pipe:1"])
+        // Home receives a resized derivative, so use FFmpeg's highest
+        // practical MJPEG quality to avoid compounding the camera's JPEG loss.
+        .args(["-f", "image2", "-c:v", "mjpeg", "-q:v", "2", "pipe:1"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1655,6 +1746,12 @@ fn parse_encoder_capabilities(body: &str) -> EncoderCapabilities {
             ".ExtraFormat[1].Video.FPSMax",
         )
         .and_then(|v| v.split(',').next()?.parse().ok()),
+        snapshot_independent_resolution: capability_values(
+            body,
+            "headSnap.SupportIndividualResolution",
+            ".SnapFormat[0].SupportIndividualResolution",
+        )
+        .is_some_and(|value| value.eq_ignore_ascii_case("true")),
     }
 }
 
@@ -1680,6 +1777,26 @@ fn live_config_field(body: &str, idx: u8, name: &str) -> Option<String> {
     })
 }
 
+fn config_field(body: &str, key: &str) -> Option<String> {
+    let prefix = format!("table.{key}=");
+    body.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix(&prefix)
+            .map(|value| value.trim().to_string())
+    })
+}
+
+fn config_dimensions(body: &str, video_key: &str) -> Option<(u16, u16)> {
+    Some((
+        config_field(body, &format!("{video_key}.Width"))?
+            .parse()
+            .ok()?,
+        config_field(body, &format!("{video_key}.Height"))?
+            .parse()
+            .ok()?,
+    ))
+}
+
 fn live_profile_from_config(body: &str, idx: u8) -> Option<VideoProfile> {
     Some(VideoProfile {
         width: live_config_field(body, idx, "Video.Width")?.parse().ok()?,
@@ -1691,6 +1808,39 @@ fn live_profile_from_config(body: &str, idx: u8) -> Option<VideoProfile> {
     })
 }
 
+fn live_profile_settings(idx: u8, profile: VideoProfile) -> Vec<(String, String)> {
+    let prefix = format!("Encode[0].ExtraFormat[{idx}]");
+    [
+        ("VideoEnable", "true".to_string()),
+        ("Video.Compression", "H.264".to_string()),
+        (
+            "Video.resolution",
+            format!("{}x{}", profile.width, profile.height),
+        ),
+        ("Video.Width", profile.width.to_string()),
+        ("Video.Height", profile.height.to_string()),
+        ("Video.FPS", profile.fps.to_string()),
+        ("Video.GOP", profile.fps.to_string()),
+        ("Video.BitRate", profile.bitrate_kbps.to_string()),
+        ("Video.BitRateControl", "VBR".to_string()),
+        ("Video.Profile", "High".to_string()),
+        ("Video.Quality", "6".to_string()),
+        ("Video.Pack", "DHAV".to_string()),
+        ("Video.Priority", "0".to_string()),
+        ("Video.SVCTLayer", "1".to_string()),
+        ("AudioEnable", "true".to_string()),
+        ("Audio.Compression", "AAC".to_string()),
+        ("Audio.Bitrate", "64".to_string()),
+        ("Audio.Depth", "16".to_string()),
+        ("Audio.Channels[0]", "0".to_string()),
+        ("Audio.Pack", "DHAV".to_string()),
+        ("Audio.Frequency", "16000".to_string()),
+    ]
+    .into_iter()
+    .map(|(suffix, value)| (format!("{prefix}.{suffix}"), value))
+    .collect()
+}
+
 fn live_config_matches(body: &str, idx: u8, expected: VideoProfile) -> bool {
     live_profile_from_config(body, idx) == Some(expected)
         && live_config_field(body, idx, "VideoEnable").as_deref() == Some("true")
@@ -1700,6 +1850,8 @@ fn live_config_matches(body: &str, idx: u8, expected: VideoProfile) -> bool {
         && live_config_field(body, idx, "Video.BitRateControl").as_deref() == Some("VBR")
         && live_config_field(body, idx, "Video.Profile").as_deref() == Some("High")
         && live_config_field(body, idx, "Video.Quality").as_deref() == Some("6")
+        && AmcrestClient::unapplied_supported_settings(body, &live_profile_settings(idx, expected))
+            .is_empty()
 }
 
 fn parse_bitrate_range(value: &str) -> Option<(u32, u32)> {
@@ -1734,6 +1886,55 @@ fn parse_resolutions(value: &str) -> Vec<(u16, u16)> {
         }
     }
     resolutions
+}
+
+fn jpeg_dimensions(bytes: &[u8]) -> Option<(u16, u16)> {
+    if !bytes.starts_with(&[0xff, 0xd8]) {
+        return None;
+    }
+    let mut offset = 2;
+    while offset + 3 < bytes.len() {
+        if bytes[offset] != 0xff {
+            offset += 1;
+            continue;
+        }
+        while offset < bytes.len() && bytes[offset] == 0xff {
+            offset += 1;
+        }
+        let marker = *bytes.get(offset)?;
+        offset += 1;
+        if marker == 0xd9 || marker == 0xda {
+            return None;
+        }
+        if marker == 0x01 || (0xd0..=0xd7).contains(&marker) {
+            continue;
+        }
+        let length = u16::from_be_bytes([*bytes.get(offset)?, *bytes.get(offset + 1)?]) as usize;
+        if length < 2 || offset + length > bytes.len() {
+            return None;
+        }
+        if matches!(
+            marker,
+            0xc0 | 0xc1
+                | 0xc2
+                | 0xc3
+                | 0xc5
+                | 0xc6
+                | 0xc7
+                | 0xc9
+                | 0xca
+                | 0xcb
+                | 0xcd
+                | 0xce
+                | 0xcf
+        ) {
+            let height = u16::from_be_bytes([*bytes.get(offset + 3)?, *bytes.get(offset + 4)?]);
+            let width = u16::from_be_bytes([*bytes.get(offset + 5)?, *bytes.get(offset + 6)?]);
+            return Some((width, height));
+        }
+        offset += length;
+    }
+    None
 }
 
 fn parse_event_line(line: &str) -> Option<CameraEvent> {
@@ -1903,6 +2104,7 @@ mod tests {
              headExtra.Video.BitRateOptions=768,4352\n\
              headExtra.Video.FPSMax=15\n\
              headExtra.Video.ResolutionTypes=720P,1080P\n\
+             headSnap.SupportIndividualResolution=true\n\
              headSnap.Video.ResolutionTypes=1080P,3840*2160(3840x2160)",
         );
         assert_eq!(capabilities.main_bitrate_range, Some((3, 8192)));
@@ -1917,6 +2119,7 @@ mod tests {
             ]
         );
         assert_eq!(capabilities.best_snapshot_resolution(), Some((3840, 2160)));
+        assert!(capabilities.snapshot_independent_resolution);
     }
 
     #[test]
@@ -1926,12 +2129,27 @@ mod tests {
              caps[0].MainFormat[0].Video.ResolutionTypes[1]=1920x1080\n\
              caps[0].ExtraFormat[1].Video.ResolutionTypes[0]=1920x1080\n\
              caps[0].ExtraFormat[1].Video.ResolutionTypes[1]=1280x720\n\
+             caps[0].SnapFormat[0].SupportIndividualResolution=false\n\
              caps[0].SnapFormat[0].Video.ResolutionTypes=3840x2160",
         );
         assert_eq!(capabilities.main_resolutions[0], (3840, 2160));
         assert_eq!(capabilities.main_resolutions[1], (1920, 1080));
         assert_eq!(capabilities.extra_resolutions[0], (1920, 1080));
         assert_eq!(capabilities.snapshot_resolutions[0], (3840, 2160));
+        assert!(!capabilities.snapshot_independent_resolution);
+    }
+
+    #[test]
+    fn reads_dimensions_from_a_jpeg_start_of_frame() {
+        let jpeg = [
+            0xff, 0xd8, // SOI
+            0xff, 0xe0, 0x00, 0x04, 0x00, 0x00, // APP0
+            0xff, 0xc0, 0x00, 0x0b, 0x08, 0x08, 0x70, 0x0f, 0x00, 0x01, 0x01, 0x11,
+            0x00, // SOF0: 2160 x 3840
+            0xff, 0xd9,
+        ];
+        assert_eq!(jpeg_dimensions(&jpeg), Some((3840, 2160)));
+        assert_eq!(jpeg_dimensions(b"not a jpeg"), None);
     }
 
     #[test]

@@ -15,9 +15,12 @@ Supported/tested cameras: Amcrest `IP8M-2696E-AI` and `IP8M-2796E-AI`.
   transcoding) through an RTP/RTCP-multiplexing SRTP proxy. Cameras that reject
   1080p automatically fall back to a retained 720p profile.
 - **Snapshots**: Home app tile images served from the camera's `snapshot.cgi`
-  via the HAP `POST /resource` endpoint. The camera's highest reported snapshot
-  resolution and JPEG quality are selected automatically; malformed or black
-  refreshes retain the last good tile. For transport debugging,
+  via the HAP `POST /resource` endpoint. Snapshot resolution is explicitly
+  configured and verified against both encoder readback and the dimensions of
+  a real JPEG. On models that report `SupportIndividualResolution=false`, it
+  follows the selected main/HSV recording resolution. JPEG quality is set to
+  the camera maximum; malformed or black refreshes retain the last good tile.
+  For transport debugging,
   `--save-snapshots` writes the most recently served JPEG to
   `<camera-name>.jpg` (disabled by default).
 - **AI detection events**: the camera's `eventManager.cgi` stream
