@@ -179,8 +179,6 @@ fn standard_media_profile(ir_lighting: bool) -> Vec<Vec<(String, String)>> {
             ("EncodeCrop[0].Extra2.Enable", "false"),
         ]),
         settings([
-            ("VideoInMode[0].Mode", "0"),
-            ("VideoInMode[0].Config[0]", "0"),
             ("VideoInOptions[0].ExposureMode", "0"),
             ("VideoInOptions[0].ExposureSpeed", "0"),
             ("VideoInOptions[0].GainMin", "0"),
@@ -662,7 +660,17 @@ impl AmcrestClient {
         desired: &[(String, String)],
     ) -> Result<(usize, usize), Box<dyn std::error::Error + Send + Sync>> {
         let path = format!("/cgi-bin/configManager.cgi?action=getConfig&name={name}");
-        let mut current = self.get(&path).await?.text().await?;
+        let mut current = match self.get(&path).await {
+            Ok(response) => response.text().await?,
+            Err(error) if error.to_string().contains("400 Bad Request") => {
+                debug!(
+                    "[{}] media configuration table {name} is unsupported; skipping it",
+                    self.host
+                );
+                return Ok((0, 0));
+            }
+            Err(error) => return Err(error),
+        };
         let mut supported = 0;
         let mut updates = 0;
 
@@ -2185,7 +2193,6 @@ mod tests {
         let expected = [
             ("AudioInDenoise[0].enable", "false"),
             ("SmartEncode[0].Enable", "false"),
-            ("VideoInMode[0].Mode", "0"),
             ("VideoInOptions[0].ExposureMode", "0"),
             ("VideoEncodeROI[0].Main", "false"),
             ("VideoInDenoise[0][2].3DType", "Auto"),
@@ -2199,6 +2206,12 @@ mod tests {
                 "missing {key}={value}"
             );
         }
+        assert!(
+            entries
+                .iter()
+                .all(|entry| !entry.0.starts_with("VideoInMode")),
+            "VideoInMode is a model-specific profile selector, not a safe image-quality control"
+        );
     }
 
     #[test]
