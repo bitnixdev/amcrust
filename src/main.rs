@@ -7,7 +7,7 @@ mod srtp;
 mod stream;
 mod tlv8;
 
-use clap::Parser;
+use clap::{Args as ClapArgs, Parser, Subcommand};
 use futures::FutureExt;
 use log::{debug, info, warn};
 use rand::Rng;
@@ -22,6 +22,7 @@ use hap::{
 
 use accessory::CameraAccessory;
 use amcrest::{AmcrestClient, CameraEvent, EncoderCapabilities, SnapshotCache, VideoProfile};
+use hsv::fmp4::{RecorderConfig, probe_recording_pipeline};
 use hsv::hds::HdsServer;
 use hsv::recording::HsvState;
 use metrics::{ErrorSubsystem, Metrics};
@@ -34,6 +35,9 @@ use stream::{StreamManager, VideoSource};
 /// Run one instance per camera.
 #[derive(Parser)]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Camera name (also the HomeKit accessory name)
     #[arg(long, env = "CAMERA_NAME")]
     name: String,
@@ -43,11 +47,11 @@ struct Args {
     host: String,
 
     /// Camera API username
-    #[arg(long, env = "AMCREST_USERNAME")]
+    #[arg(long, env = "AMCREST_USERNAME", hide_env_values = true)]
     username: String,
 
     /// Camera API password
-    #[arg(long, env = "AMCREST_PASSWORD")]
+    #[arg(long, env = "AMCREST_PASSWORD", hide_env_values = true)]
     password: String,
 
     /// HAP server port. Defaults to a free port chosen on first run and kept
@@ -95,6 +99,42 @@ struct Args {
     save_snapshots: bool,
 }
 
+#[derive(Subcommand)]
+enum Command {
+    /// Apply and verify every camera setting without starting HomeKit.
+    ApplySettings(ApplySettingsArgs),
+}
+
+#[derive(ClapArgs)]
+struct ApplySettingsArgs {
+    /// Perform writes. Without this flag, only connectivity, model, and
+    /// capabilities are inspected and the intended profile is printed.
+    #[arg(long)]
+    write: bool,
+
+    #[arg(long, default_value = "1920")]
+    recording_width: u16,
+
+    #[arg(long, default_value = "1080")]
+    recording_height: u16,
+
+    #[arg(long, default_value = "15")]
+    recording_fps: u8,
+
+    #[arg(long, default_value = "4096")]
+    recording_bitrate_kbps: u32,
+
+    #[arg(long, default_value = "60")]
+    recording_gop: u32,
+
+    #[arg(long, default_value = "48000")]
+    audio_sample_rate_hz: u32,
+
+    /// Duration of the real-camera H.264/AAC packet-copy probe.
+    #[arg(long, default_value = "5")]
+    probe_seconds: u16,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
@@ -104,8 +144,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .init();
 
     let args = Args::parse();
-    let metrics = Metrics::new();
-
     let camera = AmcrestClient::new(
         args.host.clone(),
         args.username.clone(),
@@ -129,6 +167,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             EncoderCapabilities::default()
         }
     };
+    if let Some(Command::ApplySettings(command)) = &args.command {
+        return run_apply_settings(&args, command, &camera, &capabilities).await;
+    }
+
+    let metrics = Metrics::new();
     // Allocate native camera encoders without transcoding: main for HSV/1080p
     // live and sub stream 2 for 720p live. Disable the unused D1 sub stream 1.
     if args.rtsp_subtype != 2 {
@@ -425,6 +468,126 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+async fn run_apply_settings(
+    args: &Args,
+    command: &ApplySettingsArgs,
+    camera: &AmcrestClient,
+    capabilities: &EncoderCapabilities,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!(
+        "camera {} at {}: main resolutions {:?}, substream resolutions {:?}",
+        args.name, args.host, capabilities.main_resolutions, capabilities.extra_resolutions
+    );
+    println!(
+        "target: main {}x{}@{} GOP {} {}kbps; substream 2 1280x720@15 2048kbps; substream 1 disabled; audio {}Hz",
+        command.recording_width,
+        command.recording_height,
+        command.recording_fps,
+        command.recording_gop,
+        command.recording_bitrate_kbps,
+        command.audio_sample_rate_hz,
+    );
+    if !command.write {
+        println!("dry run: no settings were written; repeat with --write to apply and verify");
+        return Ok(());
+    }
+
+    let mut failures = Vec::new();
+    report_apply_result(
+        "media profile",
+        camera.ensure_media_profile(args.ir_lighting).await,
+        &mut failures,
+    );
+    report_apply_result(
+        "overlay profile",
+        camera.ensure_overlay_profile().await,
+        &mut failures,
+    );
+    report_apply_result(
+        "native 720p live substream 2",
+        camera
+            .ensure_live_substream(2, VideoProfile::LIVE_720P)
+            .await,
+        &mut failures,
+    );
+    report_apply_result(
+        "disabled D1 substream 1",
+        camera.disable_live_substream(1).await,
+        &mut failures,
+    );
+    report_apply_result(
+        "main recording encoder",
+        camera
+            .ensure_recording_encoder(
+                command.recording_width,
+                command.recording_height,
+                command.recording_fps,
+                command.recording_gop,
+                command.recording_bitrate_kbps,
+                command.audio_sample_rate_hz,
+            )
+            .await,
+        &mut failures,
+    );
+    report_apply_result(
+        "snapshot profile and actual JPEG dimensions",
+        camera
+            .ensure_snapshot_profile(
+                capabilities,
+                Some((command.recording_width, command.recording_height)),
+            )
+            .await,
+        &mut failures,
+    );
+    report_apply_result(
+        "motion and AI profile",
+        camera.ensure_smart_motion().await,
+        &mut failures,
+    );
+    report_apply_result(
+        "real-camera H.264/AAC packet-copy recording probe",
+        probe_recording_pipeline(
+            &RecorderConfig {
+                rtsp_url: camera.rtsp_url(0),
+                audio: true,
+                fps: command.recording_fps,
+                audio_sample_rate_hz: command.audio_sample_rate_hz,
+                fragment_ms: 4000,
+                prebuffer_ms: 4000,
+            },
+            command.probe_seconds,
+        )
+        .await,
+        &mut failures,
+    );
+
+    if failures.is_empty() {
+        println!("PASS: every supported camera setting was applied and read back successfully");
+        Ok(())
+    } else {
+        Err(format!(
+            "{} settings categories failed: {}",
+            failures.len(),
+            failures.join("; ")
+        )
+        .into())
+    }
+}
+
+fn report_apply_result<T, E: std::fmt::Display>(
+    label: &str,
+    result: Result<T, E>,
+    failures: &mut Vec<String>,
+) {
+    match result {
+        Ok(_) => println!("PASS: {label}"),
+        Err(error) => {
+            println!("FAIL: {label}: {error}");
+            failures.push(format!("{label}: {error}"));
+        }
+    }
+}
+
 fn snapshot_filename(camera_name: &str) -> String {
     let basename: String = camera_name
         .chars()
@@ -500,6 +663,65 @@ fn format_setup_code(pin: &Pin) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
+
+    fn connection_args() -> [&'static str; 8] {
+        [
+            "--name",
+            "test-camera",
+            "--host",
+            "192.0.2.1",
+            "--username",
+            "admin",
+            "--password",
+            "secret",
+        ]
+    }
+
+    #[test]
+    fn legacy_server_invocation_has_no_subcommand() {
+        let args =
+            Args::try_parse_from(std::iter::once("amcrust").chain(connection_args())).unwrap();
+        assert!(args.command.is_none());
+    }
+
+    #[test]
+    fn apply_settings_requires_an_explicit_write_flag_to_mutate() {
+        let dry_run = Args::try_parse_from(
+            std::iter::once("amcrust")
+                .chain(connection_args())
+                .chain(["apply-settings"]),
+        )
+        .unwrap();
+        assert!(matches!(
+            dry_run.command,
+            Some(Command::ApplySettings(ApplySettingsArgs {
+                write: false,
+                ..
+            }))
+        ));
+
+        let write = Args::try_parse_from(
+            std::iter::once("amcrust")
+                .chain(connection_args())
+                .chain(["apply-settings", "--write"]),
+        )
+        .unwrap();
+        assert!(matches!(
+            write.command,
+            Some(Command::ApplySettings(ApplySettingsArgs {
+                write: true,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn help_hides_environment_variable_values() {
+        let help = Args::command().render_long_help().to_string();
+        assert!(help.contains("[env: AMCREST_PASSWORD]"));
+        assert!(!help.contains("[env: AMCREST_PASSWORD="));
+    }
 
     #[test]
     fn setup_pin_accepts_dashed_or_undashed_input_and_displays_four_four() {

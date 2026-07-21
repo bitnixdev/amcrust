@@ -66,6 +66,26 @@ AMCREST_USERNAME=admin AMCREST_PASSWORD=... \
 amcrust --name frontyard --host 192.168.1.50
 ```
 
+### Verify camera settings directly
+
+`apply-settings` connects to one camera and exits without starting HomeKit,
+recording, event listeners, or health servers. It is read-only unless
+`--write` is explicitly supplied:
+
+```sh
+amcrust --name frontyard --host 192.168.1.50 apply-settings
+amcrust --name frontyard --host 192.168.1.50 apply-settings --write
+```
+
+Credentials use `AMCREST_USERNAME` and `AMCREST_PASSWORD`, as with the normal
+server. The write form applies and reads back the media, overlay, native live
+streams, recording encoder, snapshot/JPEG, and motion profiles. It then runs a
+five-second real-camera H.264/AAC packet-copy probe through the exact production
+fMP4 command without retaining a recording. It continues after individual
+failures, prints `PASS`/`FAIL` for every category, and exits nonzero if anything
+failed. Stop the camera's normal amcrust instance first so the two processes do
+not change settings concurrently.
+
 Credentials can also live in a `.env` file. Options (all settable via env vars):
 
 | flag               | env                | default            |                                                                 |

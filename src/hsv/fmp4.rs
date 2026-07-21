@@ -57,6 +57,66 @@ fn audio_timestamp_bitstream_filter(sample_rate_hz: u32) -> String {
     format!("setts=ts=N*1024/({sample_rate_hz}*TB):duration=1024/({sample_rate_hz}*TB)")
 }
 
+fn recording_ffmpeg_command(config: &RecorderConfig) -> Command {
+    let mut cmd = Command::new("ffmpeg");
+    cmd.arg("-hide_banner")
+        .args(["-loglevel", "warning"])
+        .args(["-fflags", "+genpts"])
+        .args(["-rtsp_transport", "tcp"])
+        .args(["-i", &config.rtsp_url])
+        // Keep the MP4 track layout deterministic even if a camera lists
+        // audio first in its RTSP session description.
+        .args(["-map", "0:v:0"]);
+    if config.audio {
+        cmd.args(["-map", "0:a:0?"])
+            .args(["-c:v", "copy"])
+            .args(["-c:a", "copy"])
+            .args([
+                "-bsf:a",
+                &audio_timestamp_bitstream_filter(config.audio_sample_rate_hz),
+            ]);
+    } else {
+        cmd.arg("-an").args(["-c:v", "copy"]);
+    }
+    cmd.args(["-bsf:v", &video_timestamp_bitstream_filter(config.fps)])
+        .args(["-f", "mp4"])
+        .args(["-movflags", "frag_keyframe+empty_moov+default_base_moof"])
+        .args(["-avoid_negative_ts", "make_zero"]);
+    cmd
+}
+
+/// Exercises the exact production packet-copy recorder against a bounded
+/// amount of real camera media without retaining the resulting fMP4.
+pub async fn probe_recording_pipeline(
+    config: &RecorderConfig,
+    seconds: u16,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut cmd = recording_ffmpeg_command(config);
+    let output = cmd
+        .args(["-t", &seconds.max(1).to_string()])
+        .arg("pipe:1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .await?;
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        return Err(format!(
+            "ffmpeg packet-copy probe failed ({}): {}",
+            output.status,
+            diagnostics.trim()
+        )
+        .into());
+    }
+    for diagnostic in ["Timestamps are unset", "Non-monotonic DTS"] {
+        if diagnostics.contains(diagnostic) {
+            return Err(format!("ffmpeg packet-copy probe reported: {diagnostic}").into());
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct Recorder {
     state: Arc<Mutex<RecorderState>>,
@@ -90,34 +150,8 @@ impl Recorder {
         state.init_segment = None;
         state.prebuffer.clear();
 
-        let mut cmd = Command::new("ffmpeg");
-        cmd.arg("-hide_banner")
-            .args(["-loglevel", "warning"])
-            .args(["-fflags", "+genpts"])
-            .args(["-rtsp_transport", "tcp"])
-            .args(["-i", &config.rtsp_url])
-            // Keep the MP4 track layout deterministic even if a camera lists
-            // audio first in its RTSP session description.
-            .args(["-map", "0:v:0"]);
-        if config.audio {
-            cmd.args(["-map", "0:a:0?"])
-                .args(["-c:v", "copy"])
-                .args(["-c:a", "copy"])
-                .args([
-                    "-bsf:a",
-                    &audio_timestamp_bitstream_filter(config.audio_sample_rate_hz),
-                ]);
-        } else {
-            cmd.arg("-an").args(["-c:v", "copy"]);
-        }
-        cmd.args(["-bsf:v", &video_timestamp_bitstream_filter(config.fps)]);
-        cmd.args(["-f", "mp4"])
-            .args(["-movflags", "frag_keyframe+empty_moov+default_base_moof"])
-            // `reset_timestamps` belongs to FFmpeg's segment muxer, not MP4.
-            // Keep generated wall-clock timestamps and shift the whole output
-            // timeline to zero without destroying packet timestamps.
-            .args(["-avoid_negative_ts", "make_zero"])
-            .arg("pipe:1")
+        let mut cmd = recording_ffmpeg_command(&config);
+        cmd.arg("pipe:1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
