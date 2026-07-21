@@ -120,6 +120,20 @@ fn settings<const N: usize>(values: [(&str, &str); N]) -> Vec<(String, String)> 
         .collect()
 }
 
+fn query_component(value: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            write!(&mut encoded, "%{byte:02X}").expect("writing to a String cannot fail");
+        }
+    }
+    encoded
+}
+
 /// The deterministic media profile applied to every supported camera. Missing
 /// model-specific fields are intentionally skipped by the RPC2 config helper.
 fn standard_media_profile(ir_lighting: bool) -> Vec<Vec<(String, String)>> {
@@ -642,6 +656,77 @@ impl AmcrestClient {
         Err(last_error.expect("RPC config attempts is nonzero"))
     }
 
+    async fn apply_supported_settings_cgi(
+        &self,
+        name: &str,
+        desired: &[(String, String)],
+    ) -> Result<(usize, usize), Box<dyn std::error::Error + Send + Sync>> {
+        let path = format!("/cgi-bin/configManager.cgi?action=getConfig&name={name}");
+        let mut current = self.get(&path).await?.text().await?;
+        let mut supported = 0;
+        let mut updates = 0;
+
+        for (key, desired_value) in desired {
+            let Some(value) = config_field(&current, key) else {
+                continue;
+            };
+            supported += 1;
+            if value == *desired_value {
+                continue;
+            }
+
+            let encoded_key = query_component(key);
+            let encoded_value = query_component(desired_value);
+            let mut last_error: Option<Box<dyn std::error::Error + Send + Sync>> = None;
+            for attempt in 1..=RPC_CONFIG_ATTEMPTS {
+                let result = async {
+                    self.set_config(&format!("{encoded_key}={encoded_value}"))
+                        .await?;
+                    let verified = self.get(&path).await?.text().await?;
+                    match config_field(&verified, key) {
+                        Some(value) if value == *desired_value => Ok(verified),
+                        Some(value) => Err(format!(
+                            "camera retained {key}={value} instead of {desired_value}"
+                        )
+                        .into()),
+                        None => Err(format!("camera stopped reporting {key} after write").into()),
+                    }
+                }
+                .await;
+
+                match result {
+                    Ok(verified) => {
+                        current = verified;
+                        updates += 1;
+                        last_error = None;
+                        break;
+                    }
+                    Err(error) => {
+                        last_error = Some(error);
+                        if attempt < RPC_CONFIG_ATTEMPTS {
+                            debug!(
+                                "[{}] CGI read/write/read {key} attempt {attempt} failed; retrying",
+                                self.host
+                            );
+                            sleep(RPC_CONFIG_RETRY_DELAY * u32::from(attempt)).await;
+                            current = self.get(&path).await?.text().await?;
+                            if config_field(&current, key).as_deref() == Some(desired_value) {
+                                updates += 1;
+                                last_error = None;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(error) = last_error {
+                return Err(format!("failed to apply media setting {key}: {error}").into());
+            }
+        }
+
+        Ok((supported, updates))
+    }
+
     pub async fn ensure_recording_encoder(
         &self,
         width: u16,
@@ -1095,16 +1180,18 @@ impl AmcrestClient {
             configs.entry(name.to_string()).or_default().push(setting);
         }
 
-        let session = self.rpc_login().await?;
+        let mut supported = 0;
         let mut updates = 0;
         for (name, desired) in configs {
-            updates += self
-                .apply_supported_settings_rpc(&session, &name, &desired)
-                .await?;
+            let (table_supported, table_updates) =
+                self.apply_supported_settings_cgi(&name, &desired).await?;
+            supported += table_supported;
+            updates += table_updates;
         }
-        if updates > 0 {
-            info!("[{}] normalized {updates} media settings", self.host);
-        }
+        info!(
+            "[{}] media profile verified: {supported} supported settings, {updates} updated",
+            self.host
+        );
         Ok(())
     }
 
@@ -2038,6 +2125,18 @@ mod tests {
             Some(json!("High"))
         );
         assert_eq!(config_value_like(&json!([]), "false"), None);
+    }
+
+    #[test]
+    fn percent_encodes_camera_query_components() {
+        assert_eq!(
+            query_component("VideoColor[0][2].TimeSection"),
+            "VideoColor%5B0%5D%5B2%5D.TimeSection"
+        );
+        assert_eq!(
+            query_component("0 00:00:00-24:00:00"),
+            "0%2000%3A00%3A00-24%3A00%3A00"
+        );
     }
 
     #[test]

@@ -35,15 +35,26 @@ pub struct RecorderConfig {
     pub rtsp_url: String,
     pub audio: bool,
     pub fps: u8,
+    pub audio_sample_rate_hz: u32,
     pub fragment_ms: u32,
     pub prebuffer_ms: u32,
 }
 
-fn timestamp_bitstream_filter(fps: u8) -> String {
-    // Preserve camera timestamps when present and synthesize only missing
-    // values. `setts` edits encoded-packet metadata; it does not decode or
-    // transcode video.
-    format!("setts=ts=if(eq(TS\\,NOPTS)\\,N/({}*TB)\\,TS)", fps.max(1))
+fn video_timestamp_bitstream_filter(fps: u8) -> String {
+    // Build a monotonic decode clock from packet order. Preserve a valid
+    // PTS-DTS composition offset so B-frames still display in presentation
+    // order. `setts` edits encoded-packet metadata without transcoding.
+    let fps = fps.max(1);
+    format!(
+        "setts=pts=N/({fps}*TB)+if(eq(PTS\\,NOPTS)\\,0\\,if(eq(DTS\\,NOPTS)\\,0\\,PTS-DTS)):dts=N/({fps}*TB):duration=1/({fps}*TB)"
+    )
+}
+
+fn audio_timestamp_bitstream_filter(sample_rate_hz: u32) -> String {
+    // AAC-LC packets contain 1024 samples, so packet order supplies an exact
+    // monotonic clock even when camera timestamps are absent or duplicated.
+    let sample_rate_hz = sample_rate_hz.max(1);
+    format!("setts=ts=N*1024/({sample_rate_hz}*TB):duration=1024/({sample_rate_hz}*TB)")
 }
 
 #[derive(Clone)]
@@ -83,17 +94,23 @@ impl Recorder {
         cmd.arg("-hide_banner")
             .args(["-loglevel", "warning"])
             .args(["-fflags", "+genpts"])
-            // See stream.rs: the camera's timestamps wobble; arrival time is
-            // the reliable clock.
-            .args(["-use_wallclock_as_timestamps", "1"])
             .args(["-rtsp_transport", "tcp"])
-            .args(["-i", &config.rtsp_url]);
+            .args(["-i", &config.rtsp_url])
+            // Keep the MP4 track layout deterministic even if a camera lists
+            // audio first in its RTSP session description.
+            .args(["-map", "0:v:0"]);
         if config.audio {
-            cmd.args(["-c:v", "copy"]).args(["-c:a", "copy"]);
+            cmd.args(["-map", "0:a:0?"])
+                .args(["-c:v", "copy"])
+                .args(["-c:a", "copy"])
+                .args([
+                    "-bsf:a",
+                    &audio_timestamp_bitstream_filter(config.audio_sample_rate_hz),
+                ]);
         } else {
             cmd.arg("-an").args(["-c:v", "copy"]);
         }
-        cmd.args(["-bsf:v", &timestamp_bitstream_filter(config.fps)]);
+        cmd.args(["-bsf:v", &video_timestamp_bitstream_filter(config.fps)]);
         cmd.args(["-f", "mp4"])
             .args(["-movflags", "frag_keyframe+empty_moov+default_base_moof"])
             // `reset_timestamps` belongs to FFmpeg's segment muxer, not MP4.
@@ -264,14 +281,18 @@ impl Recorder {
 
 #[cfg(test)]
 mod tests {
-    use super::timestamp_bitstream_filter;
+    use super::{audio_timestamp_bitstream_filter, video_timestamp_bitstream_filter};
 
     #[test]
-    fn timestamp_filter_preserves_present_values_and_fills_missing_ones() {
+    fn timestamp_filters_build_monotonic_native_packet_clocks() {
         assert_eq!(
-            timestamp_bitstream_filter(15),
-            "setts=ts=if(eq(TS\\,NOPTS)\\,N/(15*TB)\\,TS)"
+            video_timestamp_bitstream_filter(15),
+            "setts=pts=N/(15*TB)+if(eq(PTS\\,NOPTS)\\,0\\,if(eq(DTS\\,NOPTS)\\,0\\,PTS-DTS)):dts=N/(15*TB):duration=1/(15*TB)"
         );
-        assert!(timestamp_bitstream_filter(0).contains("N/(1*TB)"));
+        assert!(video_timestamp_bitstream_filter(0).contains("N/(1*TB)"));
+        assert_eq!(
+            audio_timestamp_bitstream_filter(48_000),
+            "setts=ts=N*1024/(48000*TB):duration=1024/(48000*TB)"
+        );
     }
 }

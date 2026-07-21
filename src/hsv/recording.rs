@@ -309,11 +309,20 @@ impl HsvState {
         let selected = self.selected.lock().await.clone();
         match (active, selected) {
             (true, Some(config)) => {
+                let audio_sample_rate_hz = match config.audio_sample_rate {
+                    0 => 8000,
+                    1 => 16000,
+                    2 => 24000,
+                    3 => 32000,
+                    4 => 44100,
+                    _ => 48000,
+                };
                 self.recorder
                     .start(RecorderConfig {
                         rtsp_url: self.camera.rtsp_url(0),
                         audio: self.audio_active.load(Ordering::SeqCst),
                         fps: config.fps,
+                        audio_sample_rate_hz,
                         fragment_ms: config.fragment_ms,
                         prebuffer_ms: config.prebuffer_ms,
                     })
