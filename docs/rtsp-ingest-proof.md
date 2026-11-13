@@ -113,7 +113,7 @@ writer. This changes only the research harnesses, not production process handlin
 
 1. [Finite-file A/V output reconstruction](av-output-proof.md) now preserves tested
    packet timing/payloads and prevents mixed init/fragments. Terminal AAC padding
-   remains explicit. [Clocked Baseline RTSP output](rtsp-clock-proof.md) now succeeds
+   remains explicit. [Clocked non-reordering RTSP output](rtsp-clock-proof.md) now succeeds
    using early sender reports and bounded startup repair. Unclocked or ambiguous
    reordered timestamp input is still rejected.
 2. Replace the inspectable hex-JSON prototype with bounded binary IPC and implement

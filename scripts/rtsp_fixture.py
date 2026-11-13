@@ -74,12 +74,15 @@ def authorized(header, method, uri):
     return fields.get("response") == expected
 
 
-async def make_media(directory, width, height):
+async def make_media(directory, width, height, profile=None):
+    if profile not in (None, "main", "high"):
+        raise ValueError("unsupported fixture profile")
     video = Path(directory) / f"{width}.h264"
     audio = Path(directory) / f"{width}.aac"
     await command("ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i",
                   f"testsrc2=size={width}x{height}:rate=15", "-t", "4", "-c:v", "libx264",
-                  "-preset", "ultrafast", "-tune", "zerolatency", "-g", "15", "-bf", "0",
+                  "-preset", "veryfast" if profile else "ultrafast", "-tune", "zerolatency", "-g", "15", "-bf", "0",
+                  *(["-profile:v", profile] if profile else []),
                   "-x264-params", "aud=1:repeat-headers=1:scenecut=0", "-f", "h264", str(video))
     await command("ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i",
                   "sine=frequency=1000:sample_rate=48000", "-t", "4", "-c:a", "aac",
@@ -101,11 +104,18 @@ def sender_report(track, origin, elapsed, packets, octets):
 
 
 class CameraFixture:
-    def __init__(self, media, mode="disconnect", *, clocked=False, audio_offset=0, staggered_reports=False):
+    def __init__(self, media, mode="disconnect", *, clocked=False, audio_offset=0,
+                 staggered_reports=False, replacement_sps=None):
         self.video, self.audio = media
-        if mode not in ("disconnect", "stall", "silent", "rollback", "reject") + CLOCK_FAULTS:
+        if mode not in ("disconnect", "stall", "silent", "rollback", "reject", "parameter-change") + CLOCK_FAULTS:
             raise ValueError("unknown fixture mode")
         self.mode = mode
+        if (mode == "parameter-change") != (replacement_sps is not None):
+            raise ValueError("parameter-change mode requires replacement SPS")
+        if replacement_sps is not None and (not isinstance(replacement_sps, bytes) or
+                not 1 <= len(replacement_sps) <= 4096 or replacement_sps[0] & 31 != 7):
+            raise ValueError("invalid replacement SPS")
+        self.replacement_sps = replacement_sps
         if audio_offset < 0 or audio_offset > 0.5 or (audio_offset and not clocked):
             raise ValueError("unsupported fixture audio offset")
         if mode in CLOCK_FAULTS and not clocked:
@@ -267,6 +277,8 @@ class CameraFixture:
                 timestamp = self.origins[0] + index * 6000
                 if self.mode == "rollback" and index >= 20:
                     timestamp -= 60000
+                if self.mode == "parameter-change" and index >= 15:
+                    au = [self.replacement_sps if nal[0] & 31 == 7 else nal for nal in au]
                 payloads = [part for nal in au for part in fragments(nal)]
             else:
                 timestamp = self.origins[1] + int(self.audio_offset * 48000) + index * 1024

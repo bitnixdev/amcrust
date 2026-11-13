@@ -9,6 +9,7 @@ import math
 import time
 
 from packet_ingest_probe import Protocol, integer
+from h264_reorder import evidence_for
 
 NTP_UNIX_OFFSET = 2208988800
 
@@ -81,7 +82,8 @@ class ClockNormalizer:
             self.epoch = integer(frame.get("start_time_realtime"), 0)
         elif kind == "stream":
             self.state[frame["index"]] = dict(report=None, missing=[], pts_seen=False,
-                dts_seen=False, missing_dts=0, media=Fraction(0), last=None)
+                dts_seen=False, missing_dts=0, media=Fraction(0), last=None,
+                reorder_evidence=evidence_for(frame) if frame["codec"] == "h264" and frame["profile"] in (77, 100) else None)
         elif kind == "packet":
             self._packet(frame)
         elif kind == "end" and not self.ready:
@@ -136,10 +138,13 @@ class ClockNormalizer:
             raise ValueError("first packet lacks sender-clock evidence")
         if "rtcp_sr" in packet:
             self._report(packet["rtcp_sr"], stream, state)
-        baseline = (stream["codec"] == "h264" and stream["profile"] in (66, 578)
-                    and stream.get("video_delay") == 0)
+        evidence = state["reorder_evidence"]
+        if evidence is not None:
+            evidence.check_packet(bytes.fromhex(packet["data"]))
+        non_reordering = (stream["codec"] == "h264" and stream.get("video_delay") == 0 and
+                          (stream["profile"] in (66, 578) or evidence is not None))
         if packet["pts"] is None or packet["dts"] is None:
-            if not baseline:
+            if not non_reordering:
                 raise ValueError("missing timestamp on unsupported/reordered track")
         if packet["dts"] is None:
             state["missing_dts"] += 1
@@ -175,14 +180,15 @@ class ClockNormalizer:
         pts, dts = packet["pts"], packet["dts"]
         integer(pts, -(1 << 63) + 1)
         integer(dts, -(1 << 63) + 1)
-        baseline = stream["codec"] == "h264" and stream["profile"] in (66, 578)
-        if baseline and pts != dts:
-            raise ValueError("baseline video has composition reordering")
+        non_reordering = stream["codec"] == "h264" and (stream["profile"] in (66, 578) or
+                                                          state["reorder_evidence"] is not None)
+        if non_reordering and pts != dts:
+            raise ValueError("non-reordering video has a nonzero composition offset")
         last = state["last"]
         if last is not None:
             if dts <= last[1]:
                 raise ValueError("nonmonotonic decode clock")
-            if (baseline or stream["codec"] == "aac") and pts != last[0] + last[2]:
+            if (non_reordering or stream["codec"] == "aac") and pts != last[0] + last[2]:
                 raise ValueError("non-reordering track has a timestamp gap/rollback")
         end = (pts + packet["duration"]) * Fraction(*stream["time_base"])
         horizon = end if self.horizon is None else max(self.horizon, end)

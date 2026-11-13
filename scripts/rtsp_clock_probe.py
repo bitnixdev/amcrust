@@ -10,18 +10,19 @@ import tempfile
 import time
 
 from av_output_probe import assemble, decoded, decoded_audio, decoded_video, mux, pack_wire, split_recording
-from ingest_probe import inspect, stop_process
+from ingest_probe import command, inspect, stop_process
+from h264_reorder import evidence_for, parse_sps
 from packet_ingest_probe import read_frame
 from rtsp_clock import ClockNormalizer
-from rtsp_fixture import CameraFixture, make_media
+from rtsp_fixture import CameraFixture, make_media, nals
 
 
-async def capture(worker, media, generation, offset, mode="stall", staggered=False):
+async def capture(worker, media, generation, offset, mode="stall", staggered=False, replacement_sps=None):
     # Fixture SR period is 0.5s: tolerate one lost report, not indefinite loss.
     normalizer = ClockNormalizer(generation, report_timeout=Fraction(5, 4))
     original, normalized, counts = [], [], [0, 0]
     async with CameraFixture(media, mode, clocked=True, audio_offset=offset,
-                             staggered_reports=staggered) as camera:
+                             staggered_reports=staggered, replacement_sps=replacement_sps) as camera:
         process = await asyncio.create_subprocess_exec(
             str(worker), "--rtsp-fixture", str(camera.port), str(generation),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
@@ -77,9 +78,13 @@ def check_repair(original, normalized, offset):
     return counts
 
 
-async def output_case(worker, sink, directory, media, generation, offset, staggered, mode="stall"):
+async def output_case(worker, sink, directory, media, generation, offset, staggered, mode="stall", profile=None):
     original, frames, clock = await capture(worker, media, generation, offset, mode, staggered)
     counts = check_repair(original, frames, offset)
+    video_stream = next(f for f in frames if f["type"] == "stream" and f["media"] == "video")
+    if profile is not None and (video_stream["profile"] != profile or
+                               clock.state[video_stream["index"]]["reorder_evidence"] is None):
+        raise ValueError("fixture did not exercise explicit Main/High reorder evidence")
     path = directory / f"clock-{generation}.mp4"
     await mux(sink, path, pack_wire(frames))
     info = await inspect(path)
@@ -107,7 +112,7 @@ async def output_case(worker, sink, directory, media, generation, offset, stagge
     if await decoded(rebuilt) != (video, audio):
         raise ValueError("fragment assembly changed media")
     return {"generation": generation, "audio_offset_seconds": offset, "staggered_first_reports": staggered,
-            "report_mode": mode,
+            "report_mode": mode, "video_profile": video_stream["profile"],
             "video_frames": counts[0], "audio_packets": counts[1], "fragments": len(fragments),
             "repaired_video_pts": clock.repaired_pts, "repaired_video_dts": clock.repaired_dts,
             "source_clock_and_output_timing_exact": True, "decoded_av_exact": True}
@@ -137,9 +142,43 @@ async def run(worker, sink):
                 expired.append(mode)
             else:
                 raise ValueError("stale sender clock accepted")
+        profiles = {}
+        for generation, name, profile in ((9, "main", 77), (10, "high", 100)):
+            profile_dir = directory / name
+            profile_dir.mkdir()
+            profile_media = await make_media(profile_dir, 320, 180, profile=name)
+            profiles[name] = profile_media
+            results.append(await output_case(worker, sink, profile_dir, profile_media,
+                                             generation, 0.25, True, profile=profile))
+        replacement = next(nal for au in profiles["high"][0] for nal in au if nal[0] & 31 == 7)
+        try:
+            await capture(worker, profiles["main"], 11, 0, "parameter-change", replacement_sps=replacement)
+        except ValueError as error:
+            if "parameter sets changed within clock generation" not in str(error):
+                raise
+        else:
+            raise ValueError("in-session SPS replacement retained old reorder evidence")
+        # Inspect a real reordered encoder configuration without feeding it to the
+        # fixture's no-B RTP schedule. A deliberately false video_delay=0 must not
+        # override the SPS evidence.
+        reordered = directory / "reordered.h264"
+        await command("ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i",
+                      "testsrc2=size=320x180:rate=15", "-t", "2", "-c:v", "libx264",
+                      "-preset", "veryfast", "-profile:v", "high", "-bf", "2", "-g", "15",
+                      "-x264-params", "aud=1:repeat-headers=1:scenecut=0", "-f", "h264", str(reordered))
+        units = nals(reordered.read_bytes())
+        sps = next(n for n in units if n[0] & 31 == 7)
+        pps = next(n for n in units if n[0] & 31 == 8)
+        candidate = {"profile": 100, "video_delay": 0, "width": 320, "height": 180,
+                     "extradata": (b"\x00\x00\x00\x01" + sps + b"\x00\x00\x00\x01" + pps).hex()}
+        if ((await inspect(reordered))["streams"][0]["has_b_frames"] <= 0 or
+                parse_sps(sps).reorder in (None, 0) or evidence_for(candidate) is not None):
+            raise ValueError("real reordered SPS did not deny timestamp repair")
         return {"cases": results, "rtcp_clock_jump_rejected": True,
+                "b_frame_sps_denies_repair": True,
+                "in_session_sps_change_rejected": True,
                 "freshness_faults_rejected": expired,
-                "scope": "early common-epoch SRs, baseline H264; not general RTSP or HomeKit acceptance"}
+                "scope": "early SRs; Baseline or explicit zero-reorder Main/High; not general RTSP/HomeKit acceptance"}
 
 
 if __name__ == "__main__":

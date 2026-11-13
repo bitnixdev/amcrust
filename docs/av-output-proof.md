@@ -3,7 +3,7 @@
 Status: **finite-file A/V reconstruction is proven for the fixtures below, with a
 terminal-AAC-padding limitation. Raw unclocked RTSP-to-mux is deliberately blocked.**
 The follow-up [shared-epoch clock proof](rtsp-clock-proof.md) now admits clocked
-Baseline RTSP through bounded timestamp repair. Production acquisition is unchanged.
+Baseline and explicitly non-reordering Main/High RTSP through bounded timestamp repair. Production acquisition is unchanged.
 
 ## Reproduce
 
@@ -146,9 +146,9 @@ establishes a correct real-camera synchronization policy.
 
 ## Next work
 
-1. **Early-SR/Baseline subset complete:** [clocked RTSP → IPC → fragmented MP4](rtsp-clock-proof.md)
+1. **Early-SR/non-reordering subset complete:** [clocked RTSP → IPC → fragmented MP4](rtsp-clock-proof.md)
    preserves sender-schedule timing and decoded A/V, including bounded report loss.
-   Broader profiles, late reports, production freshness budgets and reordered RTSP
+   Broader configurations, late reports, production freshness budgets and reordered RTSP
    decode-clock recovery remain open.
 2. Define finite AAC clip-end semantics and verify the chosen behavior in HomeKit;
    retain the direct-copy control and explicit padding assertion.

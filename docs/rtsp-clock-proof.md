@@ -60,7 +60,8 @@ clock normalizer:
    track and a four-second startup deadline**. The capture driver applies read
    deadlines too; a silent worker cannot hold admission indefinitely.
 3. Repair only an initial missing-timestamp prefix of H.264 Baseline/Constrained
-   Baseline with declared `video_delay == 0`. Infer missing leading PTS backwards
+   Baseline, or the explicit zero-reorder Main/High subset described below, with
+   declared `video_delay == 0`. Infer missing leading PTS backwards
    from the next known PTS using supplied positive durations. For this explicitly
    non-reordering profile, missing initial DTS can equal PTS. Each missing prefix
    has an eight-packet cap; known timestamps are never overwritten.
@@ -83,6 +84,51 @@ a production supervisor/subscriber terminal-notification implementation.
 The probe captures a deliberately finite clip while the source is still active,
 then supplies an explicit matching end count. Source disconnection is never turned
 into successful finite-media completion.
+
+## Main/High reorder evidence
+
+`scripts/h264_reorder.py` extends repair eligibility using the bitstream's declared
+constraints, **not** an observed absence of B-frames or `video_delay == 0` alone.
+It requires all of the following:
+
+- Exactly one SPS/PPS pair in Annex-B codec extradata, profile ID 77 (Main) or 100
+  (High), matching the worker's profile and dimensions.
+- Progressive 8-bit 4:2:0 with POC type 0 or 2, and a well-formed SPS ending.
+- Present VUI bitstream restrictions with **`num_reorder_frames == 0`** and consistent
+  reference/decoded-picture-buffer bounds. Missing restrictions are unknown, never
+  silently interpreted as zero or inferred from the level.
+- Integer `video_delay == 0`, plus known packet PTS/DTS equality and contiguous timing
+  under the existing no-reordering policy. A known nonzero composition offset is
+  rejected rather than overwritten.
+
+The evidence reader bounds configuration size to 16 KiB, SPS/PPS size to 4 KiB each,
+NAL count to 256, Exp-Golomb code length, dimensions, HRD counts and scaling-list
+loops. It handles VUI optional fields, HRD, High-profile scaling lists, and emulation
+prevention before reading the restriction field. It is **not a full AVC validator**:
+PPS and slice parsing covers only the identifier/type prefixes needed for this policy;
+compressed picture decoding remains libavcodec's responsibility. The syntax's
+[FFmpeg parameter-set implementation](https://github.com/FFmpeg/FFmpeg/blob/master/libavcodec/h264_ps.c)
+is a useful reference, but this probe does not access private FFmpeg structures.
+
+For admitted Main/High evidence, every packet must remain consistent: any announced
+SPS/PPS must match the original bytes, slices must reference the admitted PPS, and
+B/SP/SI slices or unsupported NAL types are rejected. A changed parameter set closes
+the generation instead of inheriting its earlier no-reordering permission. The
+normalizer clears this evidence along with its other state on failure.
+
+Unsupported formats (including AVCDecoderConfigurationRecord/length-prefixed packet
+inputs), multiple parameter sets, interlaced/other chroma or bit-depth variants,
+POC type 1, absent bounds and positive reorder bounds **grant no new repair permission**.
+Existing fully timed reordered input can still pass unchanged through the earlier
+policy; this is not a new reordered-RTSP decode-clock recovery algorithm.
+
+Real x264 Main and High no-B fixtures each preserve sender-schedule timing and decoded
+A/V through RTSP and fMP4, with delayed audio and staggered initial sender reports.
+A real x264 B-frame configuration reports reordering both through ffprobe and this
+SPS reader, and denies repair even with a deliberately false `video_delay=0` candidate.
+That negative case inspects configuration only; the fixture's RTP schedule still
+assumes non-reordered access units. An actual in-session Main→High SPS replacement
+over RTSP is separately rejected before output finalization.
 
 ## Report freshness and bounded loss
 
@@ -131,8 +177,10 @@ macOS arm64, repository FFmpeg 9.0.2:
 | Audio starts 250 ms later | Both at shared epoch | 30 / 83 | 1 / 6 | 2 |
 | Audio starts 250 ms later | Audio SR also starts 250 ms later | 30 / 83 | 1 / 6 | 2 |
 | Aligned A/V, one scheduled SR lost per track | Both at shared epoch | 30 / 94 | 1 / 3 | 2 |
+| Main, audio starts 250 ms later | Audio SR also starts 250 ms later | 30 / 83 | 1 / 6 | 2 |
+| High, audio starts 250 ms later | Audio SR also starts 250 ms later | 30 / 83 | 1 / 6 | 2 |
 
-For all four cases:
+For all six cases:
 
 - Every normalized timestamp matches an **independent sender-schedule oracle**:
   video advances by 6000/90000 seconds; audio by 1024/48000 seconds plus its offset.
@@ -159,9 +207,9 @@ expiry, zero-wall-time media bursts, late renewal attempts and invalid timer inp
   drift. Bounded report loss/freshness now has synthetic coverage, but suitable
   production budgets remain unmeasured. The current policy intentionally rejects some
   otherwise usable cameras rather than silently constructing an uncertain epoch.
-- Non-B guarantees for Main/High profiles (e.g. reliable SPS restrictions), and
-  reordered RTSP decode-clock recovery. `video_delay == 0` alone is not treated as
-  sufficient proof to replace DTS with PTS for those profiles.
+- Broader H.264 configuration representations and reordered RTSP decode-clock
+  recovery. Main/High now has the explicit SPS/VUI subset above; `video_delay == 0`
+  alone still never authorizes its timestamp repair.
 - The [finite-file terminal AAC padding limitation](av-output-proof.md) is unchanged.
   These clips end before the continuously sent AAC stream's encoder finalization;
   their exact PCM result does not solve finite-file tail-discard signaling.
