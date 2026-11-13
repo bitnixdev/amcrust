@@ -1,9 +1,10 @@
 # Shared ingest: baseline and first backend experiment
 
 Status: **milestone 0 partially complete**. Production acquisition is unchanged.
-The synthetic CLI experiment is complete; native-worker and real-camera gates
-below remain open. This document records reproducible evidence, not a performance
-claim about deployed cameras. The local living plan is intentionally not tracked.
+The synthetic CLI and [packet-aware native-worker experiment](packet-ingest-proof.md)
+are complete for local files; RTSP, output-playback and real-camera gates remain
+open. This document records reproducible evidence, not a performance claim about
+deployed cameras. The local living plan is intentionally not tracked.
 
 ## Production baseline instrumentation
 
@@ -106,12 +107,13 @@ specific round trip preserves encoded payloads but not all packet timing metadat
 Container subscribers also cannot safely join at an arbitrary byte offset, recover
 after overflow, or receive a codec-generation change without a demux/admission layer.
 
-Prefer a supervised **libavformat packet worker with explicit framed IPC**, still
-subject to a proof. Export codec parameters, time bases, packet PTS/DTS/duration,
-keyframe flags and relevant side data explicitly; distinguish missing timestamps
-from zero. Add bounded packet lengths and generation markers. A native worker can
-also fail to preserve information, so this experiment is not evidence that an
-unimplemented alternative already works.
+Prefer a supervised **libavformat packet worker with explicit framed IPC**. The
+subsequent [local-file proof](packet-ingest-proof.md) preserves the tested packet
+metadata exactly; RTSP and output-playback coverage remain required. Export codec
+parameters, time bases, packet PTS/DTS/duration, keyframe flags and relevant side
+data explicitly; distinguish missing timestamps from zero. Add bounded packet
+lengths and generation markers. The native result covers its tested fixtures,
+not every source format or a production-ready acquisition pipeline.
 
 Keep FFmpeg output muxing/encoding initially. Do not implement RTSP or an MP4 muxer
 from scratch merely to remove a subprocess. Do not use completed HSV fragments as
@@ -119,9 +121,10 @@ live-view input: that introduces fragment-duration latency.
 
 ## Remaining milestone-0 gates
 
-1. **Native-worker proof:** same fixtures and comparisons, preserving timestamp
-   availability/composition offsets and relevant AAC side data. Two consumers,
-   bounded slow-consumer isolation, cancellation, malformed frame limits.
+1. **Native-worker local-file proof complete:** exact packet/timestamp/AAC-side-data
+   preservation with two consumers, bounded slow-consumer isolation, cancellation
+   and malformed-frame limits. See [results and scope](packet-ingest-proof.md).
+   Output muxing/playback and broader codec-parameter coverage remain open.
 2. **RTSP fixture:** authentication, interleaved RTP, missing/backward timestamps,
    silent socket stall, reconnect with changed SPS/PPS and late IDR admission.
 3. **Both camera models:** IP8M-2696E-AI and IP8M-2796E-AI, actual RTSP acquisition
