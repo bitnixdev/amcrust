@@ -1,10 +1,11 @@
 # Shared ingest: baseline and first backend experiment
 
 Status: **milestone 0 partially complete**. Production acquisition is unchanged.
-The synthetic CLI and [packet-aware native-worker experiment](packet-ingest-proof.md)
-are complete for local files; RTSP, output-playback and real-camera gates remain
-open. This document records reproducible evidence, not a performance claim about
-deployed cameras. The local living plan is intentionally not tracked.
+The synthetic CLI, [packet-aware native-worker experiment](packet-ingest-proof.md)
+and [loopback RTSP experiment](rtsp-ingest-proof.md) are complete within their stated
+scope. Full A/V output-playback, broader RTSP and real-camera gates remain open.
+This document records reproducible evidence, not a performance claim about deployed
+cameras. The local living plan is intentionally not tracked.
 
 ## Production baseline instrumentation
 
@@ -109,8 +110,9 @@ after overflow, or receive a codec-generation change without a demux/admission l
 
 Prefer a supervised **libavformat packet worker with explicit framed IPC**. The
 subsequent [local-file proof](packet-ingest-proof.md) preserves the tested packet
-metadata exactly; RTSP and output-playback coverage remain required. Export codec
-parameters, time bases, packet PTS/DTS/duration, keyframe flags and relevant side
+metadata exactly; synthetic RTSP acquisition also passes, while full A/V output
+and broader source coverage remain required. Export codec parameters, time bases,
+packet PTS/DTS/duration, keyframe flags and relevant side
 data explicitly; distinguish missing timestamps from zero. Add bounded packet
 lengths and generation markers. The native result covers its tested fixtures,
 not every source format or a production-ready acquisition pipeline.
@@ -125,8 +127,10 @@ live-view input: that introduces fragment-duration latency.
    preservation with two consumers, bounded slow-consumer isolation, cancellation
    and malformed-frame limits. See [results and scope](packet-ingest-proof.md).
    Output muxing/playback and broader codec-parameter coverage remain open.
-2. **RTSP fixture:** authentication, interleaved RTP, missing/backward timestamps,
-   silent socket stall, reconnect with changed SPS/PPS and late IDR admission.
+2. **Synthetic RTSP fixture complete:** authentication, interleaved H.264/AAC,
+   backward timestamps, silent socket stall, reconnect with changed SPS/PPS and late
+   IDR video decoding. See [coverage and remaining cases](rtsp-ingest-proof.md),
+   including RTCP clocks, in-session codec changes and B-frame discontinuities.
 3. **Both camera models:** IP8M-2696E-AI and IP8M-2796E-AI, actual RTSP acquisition
    and encoder-reset behavior. No `apply-settings --write` against an active bridge.
 4. **Deployment baseline:** idle recording, cold live start, repeated warm start,

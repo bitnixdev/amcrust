@@ -55,6 +55,21 @@ class Subscriber:
         return chunk
 
 
+async def stop_process(process):
+    """Kill/reap while draining pipes, even if a cancelled reader paused stdout.
+
+    wait() alone can hang with asyncio's pipe transport when its StreamReader is
+    above the high-water mark. After killing, remaining pipe output is finite.
+    """
+    if process.returncode is None:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+    await process.communicate()
+    await process.wait()
+
+
 async def command(*args, timeout=30):
     # Temporary stderr files cannot fill an unread subprocess pipe.
     with tempfile.TemporaryFile() as errors:
@@ -68,9 +83,7 @@ async def command(*args, timeout=30):
                 raise RuntimeError(errors.read(8192).decode(errors="replace"))
             return output
         finally:
-            if process.returncode is None:
-                process.kill()
-            await process.wait()
+            await stop_process(process)
 
 
 async def inspect(path):
@@ -177,9 +190,7 @@ async def fanout(source, directory):
             await asyncio.wait_for(asyncio.gather(*writers), 5)
         finally:
             if process is not None:
-                if process.returncode is None:
-                    process.kill()
-                await process.wait()
+                await stop_process(process)
             for writer in writers:
                 writer.cancel()
             await asyncio.gather(*writers, return_exceptions=True)

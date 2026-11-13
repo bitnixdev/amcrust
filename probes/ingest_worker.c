@@ -1,4 +1,4 @@
-/* Local-file-only packet IPC experiment. Not a production RTSP worker.
+/* Local-file / loopback-fixture packet IPC experiment. Not production ingest.
  * Each frame: big-endian u32 JSON byte length, followed by UTF-8 JSON.
  * Integers retain their native precision; AV_NOPTS_VALUE is JSON null.
  * Payload/codec/side-data bytes use hex for an inspectable proof, not efficiency.
@@ -19,6 +19,7 @@
 #define MAX_STREAMS 8
 static char *frame;
 static size_t used;
+static unsigned generation = 1;
 
 static void fail(const char *message) {
     fprintf(stderr, "packet worker: %s\n", message);
@@ -76,33 +77,57 @@ static void side_data(const AVPacketSideData *data, int count) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 2) fail("usage: ingest-worker-probe LOCAL_FILE");
+    int rtsp_fixture = argc == 4 && !strcmp(argv[1], "--rtsp-fixture");
+    if (argc != 2 && !rtsp_fixture)
+        fail("usage: ingest-worker-probe LOCAL_FILE | --rtsp-fixture PORT GENERATION");
+    char fixture_url[128];
+    const char *source = argv[1];
+    if (rtsp_fixture) {
+        char *end;
+        unsigned long port = strtoul(argv[2], &end, 10);
+        if (!*argv[2] || *end || port < 1 || port > 65535) fail("invalid fixture port");
+        unsigned long epoch = strtoul(argv[3], &end, 10);
+        if (!*argv[3] || *end || epoch < 1 || epoch > 0x7fffffffUL) fail("invalid generation");
+        generation = (unsigned)epoch;
+        /* Only synthetic fixture credentials and a numeric loopback port. */
+        snprintf(fixture_url, sizeof(fixture_url),
+                 "rtsp://fixture:fixture@127.0.0.1:%lu/camera", port);
+        source = fixture_url;
+    }
     av_log_set_level(AV_LOG_QUIET);
     frame = av_malloc(MAX_FRAME + 1);
     if (!frame) fail("allocation failed");
     AVFormatContext *input = NULL;
     AVDictionary *options = NULL;
-    /* Deliberately refuse network protocols during the proof. */
-    av_dict_set(&options, "protocol_whitelist", "file", 0);
-    int result = avformat_open_input(&input, argv[1], NULL, &options);
+    /* Network acquisition is opt-in and restricted to our loopback fixture URL. */
+    av_dict_set(&options, "protocol_whitelist", rtsp_fixture ? "tcp,rtp" : "file", 0);
+    if (rtsp_fixture) {
+        av_dict_set(&options, "rtsp_transport", "tcp", 0);
+        av_dict_set(&options, "timeout", "2000000", 0);
+        av_dict_set(&options, "analyzeduration", "200000", 0);
+        av_dict_set(&options, "probesize", "65536", 0);
+        av_dict_set(&options, "fpsprobesize", "2", 0);
+    }
+    int result = avformat_open_input(&input, source,
+                                    rtsp_fixture ? av_find_input_format("rtsp") : NULL, &options);
     av_dict_free(&options);
     if (result < 0) fail("cannot open local input");
     if (avformat_find_stream_info(input, NULL) < 0) fail("cannot read stream info");
     if (!input->nb_streams || input->nb_streams > MAX_STREAMS) fail("unsupported stream count");
 
-    append("{\"type\":\"hello\",\"version\":1,\"generation\":1,\"streams\":%u,\"avcodec_version\":%u,\"skip_samples_type\":%d}",
-           input->nb_streams, avcodec_version(), AV_PKT_DATA_SKIP_SAMPLES);
+    append("{\"type\":\"hello\",\"version\":1,\"generation\":%u,\"streams\":%u,\"avcodec_version\":%u,\"skip_samples_type\":%d}",
+           generation, input->nb_streams, avcodec_version(), AV_PKT_DATA_SKIP_SAMPLES);
     emit();
     for (unsigned i = 0; i < input->nb_streams; i++) {
         AVStream *stream = input->streams[i];
         AVCodecParameters *p = stream->codecpar;
         if (p->codec_type != AVMEDIA_TYPE_VIDEO && p->codec_type != AVMEDIA_TYPE_AUDIO)
             fail("only audio/video supported");
-        append("{\"type\":\"stream\",\"generation\":1,\"index\":%u,\"codec\":\"%s\","
+        append("{\"type\":\"stream\",\"generation\":%u,\"index\":%u,\"codec\":\"%s\","
                "\"media\":\"%s\",\"time_base\":[%d,%d],\"profile\":%d,\"level\":%d,"
                "\"width\":%d,\"height\":%d,\"sample_rate\":%d,\"channels\":%d,"
                "\"initial_padding\":%d,\"trailing_padding\":%d,\"seek_preroll\":%d,\"extradata\":",
-               i, avcodec_get_name(p->codec_id), av_get_media_type_string(p->codec_type),
+               generation, i, avcodec_get_name(p->codec_id), av_get_media_type_string(p->codec_type),
                stream->time_base.num, stream->time_base.den, p->profile, p->level,
                p->width, p->height, p->sample_rate, p->ch_layout.nb_channels,
                p->initial_padding, p->trailing_padding, p->seek_preroll);
@@ -119,8 +144,8 @@ int main(int argc, char **argv) {
     while ((result = av_read_frame(input, packet)) >= 0) {
         if (packet->size < 0 || packet->size > (int)MAX_PAYLOAD)
             fail("packet limit exceeded");
-        append("{\"type\":\"packet\",\"generation\":1,\"sequence\":%llu,\"stream\":%d,\"pts\":",
-               (unsigned long long)sequence++, packet->stream_index);
+        append("{\"type\":\"packet\",\"generation\":%u,\"sequence\":%llu,\"stream\":%d,\"pts\":",
+               generation, (unsigned long long)sequence++, packet->stream_index);
         timestamp(packet->pts);
         append(",\"dts\":");
         timestamp(packet->dts);
@@ -133,8 +158,9 @@ int main(int argc, char **argv) {
         emit();
         av_packet_unref(packet);
     }
-    if (result != AVERROR_EOF) fail("input read failed");
-    append("{\"type\":\"end\",\"generation\":1,\"packets\":%llu}", (unsigned long long)sequence);
+    /* A live source ending is a discontinuity, never successful finite media. */
+    if (rtsp_fixture || result != AVERROR_EOF) fail("input read failed");
+    append("{\"type\":\"end\",\"generation\":%u,\"packets\":%llu}", generation, (unsigned long long)sequence);
     emit();
     av_packet_free(&packet);
     avformat_close_input(&input);

@@ -18,9 +18,10 @@ repository's locked Nix inputs. Nothing is installed system-wide. Build results
 may be cached; the package's check phase is part of its build.
 
 The probe generates/deletes its own H.264/AAC files. It does not read `.env`, access
-cameras, change camera settings, or retain media. The worker only allows FFmpeg's
-`file` protocol. It can block on local input/output; the supervisor owns timeouts
-and kill/wait cleanup. Do not use this experimental executable as a network service.
+cameras, change camera settings, or retain media. The default worker invocation
+allows only FFmpeg's `file` protocol; a later opt-in mode supports the generated
+[loopback RTSP fixture](rtsp-ingest-proof.md). It can block on input/output; the
+supervisor owns timeouts and cleanup. Do not use it as a production network service.
 
 ## Result
 
@@ -59,8 +60,9 @@ not an efficient production serialization or a stable public protocol.
 
 Order:
 
-1. `hello`: version, generation (fixed at 1 for this single-open experiment), stream
-   count, libavcodec version and the build's `AV_PKT_DATA_SKIP_SAMPLES` enum value.
+1. `hello`: version, generation (1 for local files; supervisor-assigned for the
+   loopback RTSP mode), stream count, libavcodec version and the build's
+   `AV_PKT_DATA_SKIP_SAMPLES` enum value.
 2. One `stream` per index: codec/media names, time-base numerator/denominator,
    profile/level, dimensions, sample rate/channel count, initial/trailing padding,
    seek preroll, codec extradata and coded side data.
@@ -98,17 +100,19 @@ and rejects trailing frames. Tests cover fragmented/coalesced reads, oversized a
 truncated bodies, malformed schemas, invalid byte fields, signed/missing/large
 integer timestamps and independent byte/count queue bounds.
 
-## Next gate: RTSP and source generations
+## Follow-up gates
 
 The preservation result supports proceeding with the packet-aware worker direction.
-It does **not** make this worker production-ready. Next:
+It does **not** make this worker production-ready.
 
-1. Add a deterministic local RTSP fixture, including authentication, TCP-interleaved
-   media, silence/stall, disconnect and a reconnect with changed SPS/PPS.
-2. Introduce supervisor-owned generations and configuration events. A reconnect must
-   invalidate the old decoder state; do not reuse the fixed generation in this proof.
-3. Prove late subscribers start at a valid IDR with matching parameter sets, and a
-   slow viewer cannot stall recording or another viewer. Add time-based budgets.
+1. **Synthetic RTSP fixture complete:** authentication, TCP-interleaved H.264/AAC,
+   silence/stall, disconnect and reconnect with changed SPS/PPS. See the
+   [RTSP proof and limitations](rtsp-ingest-proof.md).
+2. **Generation/admission prototype complete:** supervisor-assigned generations,
+   invalidation on failure, and late-viewer IDR admission with decoded-video checks.
+   Production retry/backoff and subscriber terminal notifications remain open.
+3. Concurrent recording/live load and time-based buffer budgets remain open.
+   Slow-subscriber isolation currently has synthetic fanout/queue coverage.
 4. Exercise output muxing/decoding with the exported metadata and AAC side data,
    then camera-model/HomeKit acceptance. CPU/RSS and startup improvements remain
    unmeasured on actual cameras.

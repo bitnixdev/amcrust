@@ -13,7 +13,7 @@ from pathlib import Path
 import struct
 import tempfile
 
-from ingest_probe import command, inspect
+from ingest_probe import command, inspect, stop_process
 
 MAX_FRAME = 16 * 1024 * 1024
 MAX_PAYLOAD = 4 * 1024 * 1024
@@ -46,7 +46,8 @@ def side_data(value):
 
 class Protocol:
     """Strict lifecycle validation: one generation, all configs before packets."""
-    def __init__(self):
+    def __init__(self, generation=1):
+        self.generation = integer(generation, 1, (1 << 31) - 1)
         self.hello = None
         self.streams = {}
         self.sequence = 0
@@ -57,7 +58,7 @@ class Protocol:
             raise ValueError("invalid frame/lifecycle")
         try:
             obj = json.loads(raw)
-            if not isinstance(obj, dict) or integer(obj["generation"]) != 1:
+            if not isinstance(obj, dict) or integer(obj["generation"]) != self.generation:
                 raise ValueError("invalid generation")
             kind = obj["type"]
             if self.hello is None:
@@ -142,14 +143,17 @@ class PacketQueue:
         if self.detached:
             return
         if self.bytes + len(frame) > self.max_bytes or self.queue.full():
-            self.detached = True
-            while not self.queue.empty():
-                self.queue.get_nowait()
-            self.bytes = 0
+            self.detach()
             return
         self.queue.put_nowait(frame)
         self.bytes += len(frame)
         self.peak = max(self.peak, self.bytes)
+
+    def detach(self):
+        self.detached = True
+        while not self.queue.empty():
+            self.queue.get_nowait()
+        self.bytes = 0
 
     async def receive(self):
         frame = await self.queue.get()
@@ -213,9 +217,7 @@ async def acquire(worker, source, *, started=None):
             return protocol, copies[0], [s.peak for s in healthy + [stalled]]
         finally:
             if process is not None:
-                if process.returncode is None:
-                    process.kill()
-                await process.wait()
+                await stop_process(process)
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)

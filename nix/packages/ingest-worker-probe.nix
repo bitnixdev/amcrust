@@ -17,6 +17,7 @@
     export PYTHONDONTWRITEBYTECODE=1
     python3 -m unittest discover -s scripts -p 'test_*.py' -v
     python3 scripts/packet_ingest_probe.py --worker ./ingest-worker-probe
+    python3 scripts/rtsp_ingest_probe.py --worker ./ingest-worker-probe
     runHook postCheck
   '';
   installPhase = ''
