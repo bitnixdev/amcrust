@@ -12,7 +12,7 @@ import time
 from av_output_probe import assemble, decoded, decoded_audio, decoded_video, mux, pack_wire, split_recording
 from ingest_probe import command, inspect, stop_process
 from h264_reorder import evidence_for, parse_sps
-from packet_ingest_probe import Protocol, read_frame
+from packet_ingest_probe import MAX_FRAME, MediaQueue, Protocol, read_frame
 from rtsp_clock import ClockNormalizer
 from rtsp_fixture import CameraFixture, make_media, nals
 
@@ -137,6 +137,26 @@ async def output_case(worker, sink, directory, media, generation, offset, stagge
     if profile is not None and (video_stream["profile"] != profile or
                                clock.state[video_stream["index"]]["reorder_evidence"] is None):
         raise ValueError("fixture did not exercise explicit Main/High reorder evidence")
+    # Only feed duration queues after common-epoch clock admission, never raw RTSP.
+    healthy = MediaQueue(MAX_FRAME * 2, Fraction(1, 2), generation=generation)
+    stalled = MediaQueue(MAX_FRAME * 2, Fraction(1, 2), generation=generation)
+    terminal = "source_failed"
+    try:
+        for frame in frames:
+            raw = json.dumps(frame).encode()
+            if not healthy.offer(raw) or await healthy.receive() != raw:
+                raise ValueError("clock-admitted queue changed or refused healthy media")
+            stalled.offer(raw)
+        if stalled.overflow_limit != "media" or not healthy.protocol.ended:
+            raise ValueError("clock-admitted media budget isolation failed")
+        queue_peak = str(healthy.peak_duration)
+        terminal = "source_complete"
+    except asyncio.CancelledError:
+        terminal = "cancelled"
+        raise
+    finally:
+        healthy.detach(terminal)
+        stalled.detach(terminal)
     path = directory / f"clock-{generation}.mp4"
     await mux(sink, path, pack_wire(frames))
     info = await inspect(path)
@@ -167,7 +187,9 @@ async def output_case(worker, sink, directory, media, generation, offset, stagge
             "report_mode": mode, "video_profile": video_stream["profile"],
             "video_frames": counts[0], "audio_packets": counts[1], "fragments": len(fragments),
             "repaired_video_pts": clock.repaired_pts, "repaired_video_dts": clock.repaired_dts,
-            "source_clock_and_output_timing_exact": True, "decoded_av_exact": True}
+            "source_clock_and_output_timing_exact": True, "decoded_av_exact": True,
+            "media_budget_seconds": 0.5, "healthy_peak_media_seconds": queue_peak,
+            "media_stalled_consumer_detached": True}
 
 
 async def run(worker, sink):

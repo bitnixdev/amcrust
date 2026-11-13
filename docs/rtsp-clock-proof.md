@@ -228,6 +228,17 @@ repair, buffer/deadline limits, stale generations and unambiguous B-frame timest
 Freshness regressions cover independent per-track renewal, silent startup/active
 expiry, zero-wall-time media bursts, late renewal attempts and invalid timer inputs.
 
+## Post-admission subscriber budgets
+
+Successful normalized captures now also pass through a byte/count/media-duration
+queue with unchanged wire bytes. A healthy consumer drains each frame; a separate
+stalled consumer detaches on the synthetic 0.5 s media-span limit. This covers the
+aligned and delayed-audio cases, one lost report, and the non-reordering Main/High
+cases. The existing mux, timing, payload and decode comparisons remain in place.
+Raw uncertain clocks are not admitted to this queue. See the
+[duration-budget contract and limits](packet-ingest-proof.md#media-duration-budgets-after-clock-admission).
+This replay check is not a concurrent live load or latency measurement.
+
 ## Remaining gates
 
 - Real-camera sender-report cadence, NTP quality, late-initial-report recovery and

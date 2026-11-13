@@ -6,6 +6,8 @@ packet metadata/payload preservation, not HomeKit playback or RTSP acquisition.
 """
 import argparse
 import asyncio
+from collections import deque
+from fractions import Fraction
 import hashlib
 import json
 import os
@@ -190,14 +192,98 @@ class PacketQueue:
             await self.available.wait()
 
 
+class MediaQueue(PacketQueue):
+    """Duration bound for already clock-admitted media, not a clock normalizer.
+
+    Count the retained decode/presentation envelope against generation-wide media
+    progress, in exact seconds across tracks. Delivered/in-flight data and receiver
+    wall time are outside this queue's budget. Metadata still costs bytes/count.
+    """
+    def __init__(self, max_bytes, max_duration, max_frames=256, generation=1):
+        integer(max_bytes, 1)
+        integer(max_frames, 1)
+        if type(max_duration) not in (int, Fraction) or max_duration <= 0:
+            raise ValueError("media budget must be positive exact seconds")
+        super().__init__(max_bytes, max_frames)
+        self.max_duration = Fraction(max_duration)
+        self.protocol = Protocol(generation)
+        self.spans = deque()
+        self.last_dts = {}
+        self.watermark = None
+        self.peak_duration = Fraction(0)
+        self.overflow_limit = None
+
+    @property
+    def media_duration(self):
+        starts = [span[0] for span in self.spans if span is not None]
+        return self.watermark - min(starts) if starts else Fraction(0)
+
+    def offer(self, raw):
+        if self.detached:
+            return False
+        try:
+            if not isinstance(raw, bytes):
+                raise ValueError("media queue requires immutable wire bytes")
+            frame = self.protocol.accept(raw)
+            span = None
+            if frame["type"] == "packet":
+                pts = integer(frame["pts"], -(1 << 63) + 1)
+                dts = integer(frame["dts"], -(1 << 63) + 1)
+                duration = integer(frame["duration"], 1)
+                track = frame["stream"]
+                if track in self.last_dts and dts <= self.last_dts[track]:
+                    raise ValueError("media queue requires increasing decode timestamps")
+                tb = Fraction(*self.protocol.streams[track]["time_base"])
+                span = (min(pts, dts) * tb, (max(pts, dts) + duration) * tb)
+                self.last_dts[track] = dts
+        except ValueError:
+            self.detach("source_failed")
+            raise
+        watermark = self.watermark
+        if span is not None:
+            watermark = span[1] if watermark is None else max(watermark, span[1])
+        starts = [item[0] for item in self.spans if item is not None]
+        if span is not None:
+            starts.append(span[0])
+        duration = watermark - min(starts) if starts else Fraction(0)
+        if duration > self.max_duration:
+            self.overflow_limit = "media"
+            self.detach("overflow")
+            return False
+        if self.bytes + len(raw) > self.max_bytes:
+            self.overflow_limit = "bytes"
+        elif self.queue.full():
+            self.overflow_limit = "frames"
+        if not super().offer(raw):
+            return False
+        # No suspension between the wire enqueue and its accounting entry.
+        self.spans.append(span)
+        self.watermark = watermark
+        self.peak_duration = max(self.peak_duration, duration)
+        return True
+
+    async def receive(self):
+        raw = await super().receive()
+        self.spans.popleft()  # atomic with the base dequeue on the owning event loop
+        return raw
+
+    def detach(self, reason="cancelled"):
+        super().detach(reason)
+        self.spans.clear()
+        self.last_dts.clear()
+        self.watermark = None
+        self.protocol = None
+
+
 def summarize(packet):
     return {**{key: packet[key] for key in ("stream", "pts", "dts", "duration", "flags", "side_data")},
             "hash": "SHA256:" + hashlib.sha256(bytes.fromhex(packet["data"])).hexdigest()}
 
 
 async def acquire(worker, source, *, started=None):
-    healthy = [PacketQueue(MAX_FRAME * 2), PacketQueue(MAX_FRAME * 2)]
+    healthy = [MediaQueue(MAX_FRAME * 2, Fraction(1, 2)) for _ in range(2)]
     stalled = PacketQueue(MAX_FRAME, max_frames=1)
+    media_stalled = MediaQueue(MAX_FRAME * 2, Fraction(1, 2))
     protocol = Protocol()
     terminal = "source_failed"
 
@@ -226,7 +312,7 @@ async def acquire(worker, source, *, started=None):
                 if raw is None:
                     break
                 obj = protocol.accept(raw)
-                for subscriber in healthy:
+                for subscriber in healthy + [media_stalled]:
                     subscriber.offer(raw)
                 # Model a subscriber that stops consuming media after setup.
                 if obj["type"] == "packet":
@@ -239,13 +325,15 @@ async def acquire(worker, source, *, started=None):
             copies = await asyncio.wait_for(asyncio.gather(*tasks), 5)
             if any(s.detached for s in healthy) or not stalled.detached or copies[0] != copies[1]:
                 raise ValueError("fanout isolation/equality failed")
+            if not media_stalled.detached or media_stalled.overflow_limit != "media":
+                raise ValueError("media-duration isolation failed")
             terminal = "source_complete"
-            return protocol, copies[0], [s.peak for s in healthy + [stalled]]
+            return protocol, copies[0], [s.peak for s in healthy + [stalled, media_stalled]]
         except asyncio.CancelledError:
             terminal = "cancelled"
             raise
         finally:
-            for subscriber in healthy + [stalled]:
+            for subscriber in healthy + [stalled, media_stalled]:
                 subscriber.detach(terminal)
             if process is not None:
                 await stop_process(process)
@@ -316,6 +404,7 @@ async def experiment(worker, bframes):
         return {"bframes": bframes, "packets": len(packets), "aac_side_data_packets": skips,
                 "exact_packet_comparison": True, "healthy_consumers": 2,
                 "stalled_consumer_detached": True, "peak_queue_bytes": peaks,
+                "media_stalled_consumer_detached": True, "media_budget_seconds": 0.5,
                 "scope": "local file packet preservation; no remux/playback/RTSP proof"}
 
 

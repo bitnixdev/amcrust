@@ -128,6 +128,54 @@ Regression cases cover multiple blocked receivers, offer/close races, cancellati
 first-cause preservation, peer isolation, and generation/source-failure wakeups.
 No timer polling or sentinel media frame is needed to deliver closure.
 
+## Media-duration budgets after clock admission
+
+`MediaQueue` adds a third independent limit to the byte/count queue. It accepts
+only immutable, generation-validated wire frames with known PTS/DTS, positive
+packet durations and increasing per-track DTS. Reordered **PTS** is allowed;
+timestamps and packet contents are never rewritten. Invalid clocks/schema close
+the queue with `source_failed`; exceeding any queue budget closes only that
+subscriber with `overflow`, clears retained media and wakes its receivers.
+
+The caller must first establish a common A/V timeline (file demuxing or the
+[RTSP clock admission stage](rtsp-clock-proof.md)). This queue does not establish
+clock synchronization and is not attached to the earlier raw-RTSP admission probe.
+
+For each packet, in exact rational seconds:
+
+- Start = `min(PTS, DTS) * time_base`.
+- End = `(max(PTS, DTS) + duration) * time_base`.
+- Progress = greatest end admitted in this generation, including consumed packets.
+- Retained media span = progress minus the earliest start still queued; zero when
+  no media packets remain. Reject an offer if its prospective span exceeds budget.
+
+This counts timestamp gaps and cross-track offsets rather than summing durations
+or independently zeroing tracks. Retaining generation-wide progress also prevents
+a late track from escaping the limit after the leading track's data was consumed.
+Decode/presentation lead counts toward the budget, so a configured limit must be
+large enough for the codec's reorder depth as well as the desired subscriber lag.
+Exact boundary equality is accepted; negative origins and unequal time bases work.
+
+The file fanout now has two healthy duration-bounded consumers and separate stalled
+count-limited and duration-limited consumers. Both no-B and B-frame native fixtures
+retain exact packet equality while the duration-stalled peer detaches at a **0.5 s
+synthetic budget**, before its byte/count caps. Clock-admitted RTSP fixtures also
+pass an unchanged-byte queue check, including delayed audio and Main/High profiles,
+while a stalled peer exceeds the same media budget.
+
+Unit coverage includes gaps, cross-track progress, reordered PTS/decode lead,
+fractional boundaries, dequeue accounting, cancellation, terminal wakeups, generation
+mismatch, unknown/invalid clocks, and byte/count backstops. Repeated draining keeps
+per-packet accounting empty rather than accumulating it.
+
+**Limits:** this is not a wall-clock residence deadline, decoder/in-flight memory
+limit, throughput measurement, or production latency recommendation. Source idle
+expiry remains a separate supervisor/clock responsibility. Retained descriptor
+state has the protocol's own stream/configuration caps and is not included in queued
+wire-byte counts. Accounting scans at most the bounded queued frame count; JSON
+parsing per subscriber is proof scaffolding, not a performance-ready fanout design.
+Binary IPC and sustained load/memory measurements remain open.
+
 ## Follow-up gates
 
 The preservation result supports proceeding with the packet-aware worker direction.
@@ -140,8 +188,9 @@ It does **not** make this worker production-ready.
    invalidation on failure, and late-viewer IDR admission with decoded-video checks.
    Experimental subscriber terminal signals now exist; production retry/backoff
    and terminal-event integration remain open.
-3. Concurrent recording/live load and time-based buffer budgets remain open.
-   Slow-subscriber isolation currently has synthetic fanout/queue coverage.
+3. Media-duration budgets now have synthetic file and clock-admitted RTSP coverage.
+   Concurrent recording/live load, in-flight budgets and residence deadlines remain
+   open; this does not establish sustained performance or end-to-end latency.
 4. **Finite-file output proof complete with a limitation:** [A/V reconstruction](av-output-proof.md)
    preserves packet timing/payloads, video and the PCM prefix, but one fixture retains
    terminal AAC padding. The [clocked RTSP proof](rtsp-clock-proof.md) now repairs
