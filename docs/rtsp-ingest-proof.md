@@ -113,8 +113,9 @@ writer. This changes only the research harnesses, not production process handlin
 
 1. [Finite-file A/V output reconstruction](av-output-proof.md) now preserves tested
    packet timing/payloads and prevents mixed init/fragments. Terminal AAC padding
-   remains explicit. Actual RTSP output is blocked by initially missing PTS/DTS;
-   a common-epoch normalization policy is the next priority.
+   remains explicit. [Clocked Baseline RTSP output](rtsp-clock-proof.md) now succeeds
+   using early sender reports and bounded startup repair. Unclocked or ambiguous
+   reordered timestamp input is still rejected.
 2. Replace the inspectable hex-JSON prototype with bounded binary IPC and implement
    media-duration queue budgets before making performance claims.
 3. Broader RTSP interoperability: qop variants, RTCP sender-report clock mapping,

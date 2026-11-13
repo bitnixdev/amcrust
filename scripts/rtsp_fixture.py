@@ -86,12 +86,35 @@ async def make_media(directory, width, height):
     return access_units(video.read_bytes()), aac_frames(audio.read_bytes())
 
 
+def sender_report(track, origin, elapsed, packets, octets):
+    """Compound SR + SDES, with a shared synthetic NTP epoch and CNAME."""
+    rate = (90000, 48000)[track]
+    ssrc = 0x10203040 + track
+    ntp = (3900000000 << 32) + int(elapsed * (1 << 32))
+    timestamp = (origin + int(elapsed * rate)) & 0xFFFFFFFF
+    sr = struct.pack("!BBHIQIII", 0x80, 200, 6, ssrc, ntp, timestamp, packets, octets)
+    cname = b"shared-fixture-clock"
+    chunk = struct.pack("!I", ssrc) + bytes([1, len(cname)]) + cname + b"\0"
+    chunk += bytes((-len(chunk)) % 4)
+    return sr + struct.pack("!BBH", 0x81, 202, len(chunk) // 4) + chunk
+
+
 class CameraFixture:
-    def __init__(self, media, mode="disconnect"):
+    def __init__(self, media, mode="disconnect", *, clocked=False, audio_offset=0, staggered_reports=False):
         self.video, self.audio = media
-        if mode not in ("disconnect", "stall", "silent", "rollback", "reject"):
+        if mode not in ("disconnect", "stall", "silent", "rollback", "reject", "clock-jump"):
             raise ValueError("unknown fixture mode")
         self.mode = mode
+        if audio_offset < 0 or audio_offset > 0.5 or (audio_offset and not clocked):
+            raise ValueError("unsupported fixture audio offset")
+        if mode == "clock-jump" and not clocked:
+            raise ValueError("clock fault requires sender reports")
+        if staggered_reports and (not clocked or not audio_offset):
+            raise ValueError("staggered reports require delayed clocked audio")
+        self.staggered_reports = staggered_reports
+        self.clocked = clocked
+        self.audio_offset = audio_offset
+        self.origins = (0xFFFF0000, 0xABCDEF00) if clocked else (0, 0)
         self.connections = 0
         self.challenges = 0
         self.authenticated = 0
@@ -209,21 +232,39 @@ class CameraFixture:
         if self.mode == "silent":
             return
         events = [(i / 15, 0, i, au) for i, au in enumerate(self.video)]
-        events += [(i * 1024 / 48000, 1, i, au) for i, au in enumerate(self.audio)]
+        events += [(self.audio_offset + i * 1024 / 48000, 1, i, au) for i, au in enumerate(self.audio)]
+        if self.clocked:
+            events += [(at / 2, 2, at, None) for at in range(5)]
+            if self.staggered_reports:
+                events.append((self.audio_offset, 3, 0, None))
+        octets = [0, 0]
         sequence = [65000, 65000]
         started = asyncio.get_running_loop().time()
-        for at, track, index, au in sorted(events):
+        # SR precedes media at the same instant, including both initial reports.
+        for at, track, index, au in sorted(events, key=lambda event: (event[0], -1 if event[1] >= 2 else event[1])):
             # Enough media to discover both tracks, join late, and reach a new IDR.
             if at >= 2.2:
                 break
             await asyncio.sleep(max(0, started + at - asyncio.get_running_loop().time()))
+            if track >= 2:
+                for report_track in ((1,) if track == 3 else (0, 1)):
+                    if self.staggered_reports and report_track == 1 and at < self.audio_offset:
+                        continue
+                    origin = self.origins[report_track]
+                    if self.mode == "clock-jump" and report_track == 0 and at >= 1:
+                        origin += 18000
+                    report = sender_report(report_track, origin, at,
+                                           self.sent[report_track], octets[report_track])
+                    writer.write(b"$" + bytes([channels[report_track] + 1]) + struct.pack("!H", len(report)) + report)
+                await writer.drain()
+                continue
             if track == 0:
-                timestamp = index * 6000
+                timestamp = self.origins[0] + index * 6000
                 if self.mode == "rollback" and index >= 20:
                     timestamp -= 60000
                 payloads = [part for nal in au for part in fragments(nal)]
             else:
-                timestamp = index * 1024
+                timestamp = self.origins[1] + int(self.audio_offset * 48000) + index * 1024
                 payloads = [struct.pack("!HH", 16, len(au) << 3) + au]
             for i, payload in enumerate(payloads):
                 rtp = struct.pack("!BBHII", 0x80, (0x80 if i == len(payloads) - 1 else 0) | (96 + track),
@@ -231,6 +272,7 @@ class CameraFixture:
                 sequence[track] = (sequence[track] + 1) & 0xFFFF
                 writer.write(b"$" + bytes([channels[track]]) + struct.pack("!H", len(rtp)) + rtp)
                 self.sent[track] += 1
+                octets[track] += len(payload)
             await writer.drain()
         if self.mode in ("disconnect", "rollback"):
             writer.close()

@@ -116,8 +116,9 @@ It does **not** make this worker production-ready.
    Slow-subscriber isolation currently has synthetic fanout/queue coverage.
 4. **Finite-file output proof complete with a limitation:** [A/V reconstruction](av-output-proof.md)
    preserves packet timing/payloads, video and the PCM prefix, but one fixture retains
-   terminal AAC padding. Actual RTSP packets expose missing PTS/DTS and are rejected
-   until clock normalization is proven. Real-camera/HomeKit acceptance remains open.
+   terminal AAC padding. The [clocked RTSP proof](rtsp-clock-proof.md) now repairs
+   bounded Baseline startup timestamps with shared-epoch evidence. Unclocked/ambiguous
+   input is still rejected; real-camera/HomeKit acceptance remains open.
 5. Replace hex JSON with a bounded, versioned binary packet representation before
    treating this as a performance design. Export additional codec/layout/color
    metadata as required by supported consumers.

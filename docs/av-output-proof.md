@@ -1,8 +1,9 @@
 # Packet IPC to fragmented-MP4 A/V output
 
 Status: **finite-file A/V reconstruction is proven for the fixtures below, with a
-terminal-AAC-padding limitation. Raw RTSP-to-mux is deliberately blocked until an
-explicit timestamp policy is implemented.** Production acquisition is unchanged.
+terminal-AAC-padding limitation. Raw unclocked RTSP-to-mux is deliberately blocked.**
+The follow-up [shared-epoch clock proof](rtsp-clock-proof.md) now admits clocked
+Baseline RTSP through bounded timestamp repair. Production acquisition is unchanged.
 
 ## Reproduce
 
@@ -138,16 +139,16 @@ With the pinned FFmpeg build:
   end-to-end RTSP A/V playback.
 
 Filling each track from zero independently could alter relative A/V timing, and
-using PTS as DTS is unsafe for reordered video. The next gate is an explicit clock
-policy with a shared A/V epoch, bounded lookahead where needed, and RTCP clock
-fixtures. The current fixture has no RTCP sender reports; file timestamps alone do
-not establish a correct real-camera synchronization policy.
+using PTS as DTS is unsafe for reordered video. The [follow-up clock proof](rtsp-clock-proof.md)
+adds shared-epoch RTCP fixtures and bounded Baseline startup repair. The original
+unclocked case remains a rejection test; neither it nor file timestamps alone
+establishes a correct real-camera synchronization policy.
 
 ## Next work
 
-1. **Priority:** missing-PTS/DTS normalization and common A/V epoch/RTCP tests, then
-   successful RTSP → IPC → fragmented-MP4 A/V output. Preserve valid B-frame offsets
-   and fail rather than conceal unresolvable discontinuities.
+1. **Early-SR/Baseline subset complete:** [clocked RTSP → IPC → fragmented MP4](rtsp-clock-proof.md)
+   preserves sender-schedule timing and decoded A/V. Broader profiles, late/freshness
+   report policies and reordered RTSP decode-clock recovery remain open.
 2. Define finite AAC clip-end semantics and verify the chosen behavior in HomeKit;
    retain the direct-copy control and explicit padding assertion.
 3. Binary IPC, time-based buffering, production supervision/leases and Rust

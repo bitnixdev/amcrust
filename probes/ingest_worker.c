@@ -124,8 +124,10 @@ int main(int argc, char **argv) {
     if (avformat_find_stream_info(input, NULL) < 0) fail("cannot read stream info");
     if (!input->nb_streams || input->nb_streams > MAX_STREAMS) fail("unsupported stream count");
 
-    append("{\"type\":\"hello\",\"version\":1,\"generation\":%u,\"streams\":%u,\"avcodec_version\":%u,\"skip_samples_type\":%d}",
+    append("{\"type\":\"hello\",\"version\":1,\"generation\":%u,\"streams\":%u,\"avcodec_version\":%u,\"skip_samples_type\":%d,\"start_time_realtime\":",
            generation, input->nb_streams, avcodec_version(), AV_PKT_DATA_SKIP_SAMPLES);
+    timestamp(input->start_time_realtime);
+    append("}");
     emit();
     for (unsigned i = 0; i < input->nb_streams; i++) {
         AVStream *stream = input->streams[i];
@@ -151,10 +153,10 @@ int main(int argc, char **argv) {
          * unexpected custom names instead of emitting an ambiguous descriptor. */
         for (const char *c = layout; *c; c++)
             if ((unsigned char)*c < 32 || *c == '"' || *c == '\\') fail("unsupported layout name");
-        append(",\"format\":%d,\"frame_size\":%d,\"channel_layout\":\"%s\","
+        append(",\"format\":%d,\"frame_size\":%d,\"channel_layout\":\"%s\",\"video_delay\":%d,"
                "\"sample_aspect_ratio\":[%d,%d],\"color_range\":%d,\"color_primaries\":%d,"
                "\"color_trc\":%d,\"color_space\":%d,\"chroma_location\":%d,\"side_data\":",
-               p->format, p->frame_size, layout, p->sample_aspect_ratio.num, p->sample_aspect_ratio.den,
+               p->format, p->frame_size, layout, p->video_delay, p->sample_aspect_ratio.num, p->sample_aspect_ratio.den,
                p->color_range, p->color_primaries, p->color_trc, p->color_space, p->chroma_location);
         side_data(p->coded_side_data, p->nb_coded_side_data);
         append("}");
@@ -176,6 +178,15 @@ int main(int argc, char **argv) {
         hex(packet->data, packet->size);
         append(",\"side_data\":");
         side_data(packet->side_data, packet->side_data_elems);
+        size_t sr_size = 0;
+        const uint8_t *sr_data = av_packet_get_side_data(packet, AV_PKT_DATA_RTCP_SR, &sr_size);
+        if (sr_data) {
+            if (sr_size != sizeof(AVRTCPSenderReport)) fail("invalid sender report side data");
+            AVRTCPSenderReport sr;
+            memcpy(&sr, sr_data, sizeof(sr));
+            append(",\"rtcp_sr\":{\"ssrc\":%u,\"ntp\":%llu,\"rtp\":%u}",
+                   sr.ssrc, (unsigned long long)sr.ntp_timestamp, sr.rtp_timestamp);
+        }
         append("}");
         emit();
         av_packet_unref(packet);

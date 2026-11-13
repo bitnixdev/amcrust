@@ -21,6 +21,7 @@
     python3 scripts/packet_ingest_probe.py --worker ./ingest-worker-probe
     python3 scripts/rtsp_ingest_probe.py --worker ./ingest-worker-probe
     python3 scripts/av_output_probe.py --worker ./ingest-worker-probe --sink ./mux-worker-probe
+    python3 scripts/rtsp_clock_probe.py --worker ./ingest-worker-probe --sink ./mux-worker-probe
     runHook postCheck
   '';
   installPhase = ''
