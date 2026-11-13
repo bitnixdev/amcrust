@@ -78,12 +78,39 @@ clock normalizer:
    bound how long previously accepted reports may support output.
 
 On failure the normalizer clears held packets/configuration and cannot be resumed;
-a fresh generation needs a new instance. This is local rejection behavior, not yet
-a production supervisor/subscriber terminal-notification implementation.
+a fresh generation needs a new instance. This is local rejection behavior. The
+packet/RTSP probes now have [subscriber terminal signals](packet-ingest-proof.md#subscriber-terminal-signals),
+but these are not yet integrated into a production supervisor.
 
 The probe captures a deliberately finite clip while the source is still active,
 then supplies an explicit matching end count. Source disconnection is never turned
 into successful finite-media completion.
+
+## Late first reports: explicit refusal, not guessed synchronization
+
+The probe now exercises actual reports arriving **after** media in two loopback
+cases: both tracks defer their first SR until one second, or only audio does so
+while video reports from startup. Audio media starts at 250 ms in both cases.
+
+Observed with the pinned worker:
+
+| Case | Packets before each track's first SR (video / audio) | Admission result |
+| --- | --- | --- |
+| Both first reports late | 14 / 36 | Missing shared source epoch |
+| Only audio's first report late | 0 / 36 | First packet lacks sender-clock evidence |
+
+In both cases, the first AAC packet initially has **PTS 0**, while the independent
+sender schedule places it at **12000/48000 = 250 ms**. Before clock mapping is
+established, a valid numeric timestamp may be track-local rather than share an A/V
+origin. A video-derived global epoch alone does not establish the audio mapping.
+
+The harness keeps reading the source after admission refusal until both actual SRs
+have been observed. It asserts that no startup frames were released, retained state
+was cleared, and attempting to feed a later report cannot revive the same instance.
+This proves the conservative refusal policy; it does **not** recover late-report
+camera playback. Recovery would need a separately proven admission boundary and
+clock mapping, not retroactive zeroing or silent rewriting of previously known PTS.
+The source epoch diagnostic is explicit rather than a generic integer-schema error.
 
 ## Main/High reorder evidence
 
@@ -203,8 +230,9 @@ expiry, zero-wall-time media bursts, late renewal attempts and invalid timer inp
 
 ## Remaining gates
 
-- Real-camera sender-report cadence, NTP quality, late initial reports and source
-  drift. Bounded report loss/freshness now has synthetic coverage, but suitable
+- Real-camera sender-report cadence, NTP quality, late-initial-report recovery and
+  source drift. Late reports are explicitly refused rather than guessed. Bounded
+  report loss/freshness now has synthetic coverage, but suitable
   production budgets remain unmeasured. The current policy intentionally rejects some
   otherwise usable cameras rather than silently constructing an uncertain epoch.
 - Broader H.264 configuration representations and reordered RTSP decode-clock

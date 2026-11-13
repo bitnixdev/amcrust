@@ -4,7 +4,7 @@ import json
 import struct
 import unittest
 
-from packet_ingest_probe import MAX_FRAME, MAX_SIDE, PacketQueue, Protocol, read_frame
+from packet_ingest_probe import MAX_FRAME, MAX_SIDE, PacketQueue, Protocol, QueueClosed, read_frame
 
 
 def encode(value):
@@ -110,6 +110,59 @@ class FramingTests(unittest.IsolatedAsyncioTestCase):
         reader.feed_data(struct.pack("!I", MAX_FRAME + 1))
         with self.assertRaises(ValueError):
             await asyncio.wait_for(read_frame(reader), 0.1)
+
+    async def test_detach_wakes_all_waiters_and_never_delivers_discarded_frames(self):
+        queue = PacketQueue(100)
+        waiters = [asyncio.create_task(queue.receive()) for _ in range(3)]
+        await asyncio.sleep(0)
+        queue.offer(b"discard me")
+        queue.detach("source_failed")  # before awakened receivers can run
+        results = await asyncio.wait_for(asyncio.gather(*waiters, return_exceptions=True), 0.5)
+        self.assertTrue(all(isinstance(result, QueueClosed) and result.reason == "source_failed" for result in results))
+        self.assertEqual(queue.bytes, 0)
+        self.assertTrue(queue.queue.empty())
+        self.assertFalse(queue.offer(b"too late"))
+        with self.assertRaises(QueueClosed) as closed:
+            await queue.receive()
+        self.assertEqual(closed.exception.reason, "source_failed")
+
+    async def test_terminal_cause_is_stable_and_peer_is_independent(self):
+        slow, fast = PacketQueue(1), PacketQueue(100)
+        for data in (b"a", b"b"):
+            slow.offer(data)
+            fast.offer(data)
+        self.assertEqual(slow.reason, "overflow")
+        slow.detach("generation_changed")
+        with self.assertRaises(QueueClosed) as closed:
+            await slow.receive()
+        self.assertEqual(closed.exception.reason, "overflow")
+        self.assertEqual(await fast.receive(), b"a")
+        self.assertEqual(await fast.receive(), b"b")
+        self.assertFalse(fast.detached)
+
+    async def test_cancelled_waiter_does_not_steal_packet_or_readiness(self):
+        queue = PacketQueue(100)
+        cancelled = asyncio.create_task(queue.receive())
+        healthy = asyncio.create_task(queue.receive())
+        await asyncio.sleep(0)
+        queue.offer(b"first")
+        cancelled.cancel()
+        await asyncio.gather(cancelled, return_exceptions=True)
+        self.assertEqual(await asyncio.wait_for(healthy, 0.5), b"first")
+        next_read = asyncio.create_task(queue.receive())
+        await asyncio.sleep(0)
+        self.assertFalse(next_read.done())
+        queue.offer(b"second")
+        self.assertEqual(await asyncio.wait_for(next_read, 0.5), b"second")
+        self.assertEqual(queue.bytes, 0)
+
+    async def test_invalid_close_reason_does_not_mutate_queue(self):
+        queue = PacketQueue(100)
+        queue.offer(b"kept")
+        with self.assertRaises(ValueError):
+            queue.detach("typo")
+        self.assertFalse(queue.detached)
+        self.assertEqual(await queue.receive(), b"kept")
 
     async def test_byte_and_count_bounds_detach_only_slow_subscriber(self):
         fast = PacketQueue(10, 2)

@@ -109,6 +109,15 @@ transport when stdout has reached the reader's high-water mark. A regression tes
 fills/pauses a small stdout buffer and checks cleanup completes after killing the
 writer. This changes only the research harnesses, not production process handling.
 
+## Subscriber closure follow-up
+
+Generation reset now wakes receivers attached to the retired queue with
+`generation_changed`; source failure and cancellation close active queues with
+corresponding terminal reasons. Buffered data is discarded before worker cleanup,
+and the first close cause is preserved. These are experimental queue/lifecycle
+signals, not production supervisor integration. See the
+[packet queue contract](packet-ingest-proof.md#subscriber-terminal-signals).
+
 ## Still open
 
 1. [Finite-file A/V output reconstruction](av-output-proof.md) now preserves tested

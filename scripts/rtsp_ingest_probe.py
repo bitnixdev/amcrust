@@ -30,7 +30,7 @@ class LiveAdmission:
         self.skipped = 0
 
     def reset(self, generation, streams):
-        self.invalidate()
+        self.invalidate("generation_changed")
         integer(generation, 1, (1 << 31) - 1)
         if not streams or any(s["generation"] != generation for s in streams.values()):
             raise ValueError("stale stream descriptors")
@@ -46,8 +46,8 @@ class LiveAdmission:
         self.ready = False
         self.skipped = 0
 
-    def invalidate(self):
-        self.queue.detach()
+    def invalidate(self, reason="cancelled"):
+        self.queue.detach(reason)
         self.active = False
         self.ready = False
         self.parameters = set()
@@ -113,7 +113,8 @@ class SourceSupervisor:
         process = None
         started = time.monotonic()
         descriptor = None
-        self.admission.invalidate()
+        close_reason = "source_failed"
+        self.admission.invalidate("generation_changed")
         try:
             with tempfile.TemporaryFile() as errors:
                 process = await asyncio.create_subprocess_exec(
@@ -168,9 +169,12 @@ class SourceSupervisor:
                         "audio_packets": audio_count, "audio_hashes": audio_hashes, "elapsed": time.monotonic() - started,
                         "descriptor": descriptor, "admitted": admitted, "first_admitted": first_admitted,
                         "skipped_before_idr": self.admission.skipped, "stale_sample": stale_sample}
+        except asyncio.CancelledError:
+            close_reason = "cancelled"
+            raise
         finally:
-            # Do not leave cached packets available while waiting on process cleanup.
-            self.admission.invalidate()
+            # Wake old consumers and clear media before waiting on worker cleanup.
+            self.admission.invalidate(close_reason)
             if process is not None:
                 await stop_process(process)
             self.running = False

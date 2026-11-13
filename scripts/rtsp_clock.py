@@ -79,7 +79,9 @@ class ClockNormalizer:
         frame = self.protocol.accept(raw)
         kind = frame["type"]
         if kind == "hello":
-            self.epoch = integer(frame.get("start_time_realtime"), 0)
+            if frame.get("start_time_realtime") is None:
+                raise ValueError("missing shared source epoch")
+            self.epoch = integer(frame["start_time_realtime"], 0)
         elif kind == "stream":
             self.state[frame["index"]] = dict(report=None, missing=[], pts_seen=False,
                 dts_seen=False, missing_dts=0, media=Fraction(0), last=None,

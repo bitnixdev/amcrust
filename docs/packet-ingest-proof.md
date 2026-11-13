@@ -101,6 +101,33 @@ and rejects trailing frames. Tests cover fragmented/coalesced reads, oversized a
 truncated bodies, malformed schemas, invalid byte fields, signed/missing/large
 integer timestamps and independent byte/count queue bounds.
 
+## Subscriber terminal signals
+
+The original `PacketQueue.detach()` cleared data but left an already waiting
+`receive()` blocked. The experimental queue now closes permanently with a stable
+reason and wakes **all** waiting receivers. `receive()` raises `QueueClosed` with
+one of `overflow`, `generation_changed`, `source_failed`, `source_complete` or
+`cancelled`. Repeated closure preserves the first cause; later offers are refused.
+
+This is abort/discard behavior, not a graceful drain operation. Buffered packets
+are cleared immediately and cannot leak through a receiver awakened just before
+closure. Cancelling one waiting receiver does not reserve/lose a packet or consume
+another receiver's readiness notification. The queue remains single-event-loop,
+byte/count bounded and nonblocking for the producer; a stalled peer does not close
+a healthy subscriber.
+
+Finite-file consumers now read until the explicit IPC `end` frame rather than
+polling a separate completion flag. Source failure/cancellation closes their queues
+before worker cleanup. `source_complete` is used only after finite input and consumer
+end counts have succeeded and buffers have drained; it is **not** recording delivery
+or iCloud acceptance. Live RTSP EOF remains failure. Generation reset and source
+failure close old live-admission queues with distinct terminal reasons before
+replacing state or waiting for worker cleanup.
+
+Regression cases cover multiple blocked receivers, offer/close races, cancellation,
+first-cause preservation, peer isolation, and generation/source-failure wakeups.
+No timer polling or sentinel media frame is needed to deliver closure.
+
 ## Follow-up gates
 
 The preservation result supports proceeding with the packet-aware worker direction.
@@ -111,7 +138,8 @@ It does **not** make this worker production-ready.
    [RTSP proof and limitations](rtsp-ingest-proof.md).
 2. **Generation/admission prototype complete:** supervisor-assigned generations,
    invalidation on failure, and late-viewer IDR admission with decoded-video checks.
-   Production retry/backoff and subscriber terminal notifications remain open.
+   Experimental subscriber terminal signals now exist; production retry/backoff
+   and terminal-event integration remain open.
 3. Concurrent recording/live load and time-based buffer budgets remain open.
    Slow-subscriber isolation currently has synthetic fanout/queue coverage.
 4. **Finite-file output proof complete with a limitation:** [A/V reconstruction](av-output-proof.md)

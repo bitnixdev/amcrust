@@ -12,7 +12,7 @@ import time
 from av_output_probe import assemble, decoded, decoded_audio, decoded_video, mux, pack_wire, split_recording
 from ingest_probe import command, inspect, stop_process
 from h264_reorder import evidence_for, parse_sps
-from packet_ingest_probe import read_frame
+from packet_ingest_probe import Protocol, read_frame
 from rtsp_clock import ClockNormalizer
 from rtsp_fixture import CameraFixture, make_media, nals
 
@@ -52,6 +52,58 @@ async def capture(worker, media, generation, offset, mode="stall", staggered=Fal
                 normalizer._abort()
             await stop_process(process)
     return original, normalized, normalizer
+
+
+async def late_report_gate(worker, media, generation, mode, expected_error, late_tracks):
+    """Observe the actual late SRs after refusal; never re-admit ambiguous packets."""
+    clock, protocol = ClockNormalizer(generation), Protocol(generation)
+    reports, before = set(), [0, 0]
+    failure, first_audio_pts = None, None
+    async with CameraFixture(media, mode, clocked=True, audio_offset=0.25) as camera:
+        process = await asyncio.create_subprocess_exec(
+            str(worker), "--rtsp-fixture", str(camera.port), str(generation),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        try:
+            while len(reports) < 2:
+                raw = await asyncio.wait_for(read_frame(process.stdout), 4)
+                if raw is None:
+                    raise ValueError("source ended before late sender reports")
+                frame = protocol.accept(raw)
+                if failure is None:
+                    try:
+                        released = clock.feed(raw)
+                    except ValueError as error:
+                        if expected_error not in str(error):
+                            raise
+                        failure = expected_error
+                    else:
+                        if released:
+                            raise ValueError("ambiguous startup media escaped admission")
+                if frame["type"] == "packet":
+                    track = frame["stream"]
+                    if track == 1 and before[1] == 0 and 1 not in reports:
+                        first_audio_pts = frame["pts"]
+                    if "rtcp_sr" in frame:
+                        reports.add(track)
+                    elif track not in reports:
+                        before[track] += 1
+            if failure is None or not all(before[t] > 0 for t in late_tracks):
+                raise ValueError("fixture did not exercise refused media before SR")
+            if first_audio_pts == 12000:
+                raise ValueError("fixture no longer exposes the pre-SR audio-origin ambiguity")
+            try:
+                clock.feed(raw)
+            except ValueError:
+                if not clock.failed or clock.pending or clock.state:
+                    raise ValueError("late reports left clock admission state alive")
+            else:
+                raise ValueError("late SR revived rejected clock generation")
+            return {"mode": mode, "reason": failure, "packets_before_first_sr": before,
+                    "first_audio_pts": first_audio_pts, "sender_first_audio_pts": 12000,
+                    "late_reports_observed_and_refused": True}
+        finally:
+            clock._abort()
+            await stop_process(process)
 
 
 def check_repair(original, normalized, offset):
@@ -174,7 +226,12 @@ async def run(worker, sink):
         if ((await inspect(reordered))["streams"][0]["has_b_frames"] <= 0 or
                 parse_sps(sps).reorder in (None, 0) or evidence_for(candidate) is not None):
             raise ValueError("real reordered SPS did not deny timestamp repair")
-        return {"cases": results, "rtcp_clock_jump_rejected": True,
+        late = []
+        for generation, mode, reason, tracks in (
+                (12, "late-reports", "missing shared source epoch", (0, 1)),
+                (13, "audio-report-late", "first packet lacks sender-clock evidence", (1,))):
+            late.append(await late_report_gate(worker, media, generation, mode, reason, tracks))
+        return {"cases": results, "late_report_gates": late, "rtcp_clock_jump_rejected": True,
                 "b_frame_sps_denies_repair": True,
                 "in_session_sps_change_rejected": True,
                 "freshness_faults_rejected": expired,

@@ -6,7 +6,7 @@ import sys
 import unittest
 
 from ingest_probe import stop_process
-from packet_ingest_probe import Protocol
+from packet_ingest_probe import Protocol, QueueClosed
 from rtsp_fixture import NONCE, REALM, access_units, authorized, fragments
 from rtsp_ingest_probe import LiveAdmission, SourceSupervisor, nal_types
 from test_packet_probe import hello, packet, stream
@@ -67,6 +67,25 @@ class AdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(gate.streams)
         self.assertFalse(gate.parameters)
         self.assertFalse(gate.offer(frame(generation=2)))
+
+    async def test_generation_and_source_failure_wake_retired_receivers(self):
+        gate = LiveAdmission()
+        gate.reset(1, {0: config()})
+        old = gate.queue
+        reader = asyncio.create_task(old.receive())
+        await asyncio.sleep(0)
+        gate.reset(2, {0: config(2)})
+        with self.assertRaises(QueueClosed) as closed:
+            await asyncio.wait_for(reader, 0.5)
+        self.assertEqual(closed.exception.reason, "generation_changed")
+        self.assertFalse(gate.queue.detached)
+        reader = asyncio.create_task(gate.queue.receive())
+        await asyncio.sleep(0)
+        gate.invalidate("source_failed")
+        with self.assertRaises(QueueClosed) as closed:
+            await asyncio.wait_for(reader, 0.5)
+        self.assertEqual(closed.exception.reason, "source_failed")
+        self.assertFalse(gate.ready)
 
     async def test_reject_stale_config_and_unknown_stream(self):
         gate = LiveAdmission()

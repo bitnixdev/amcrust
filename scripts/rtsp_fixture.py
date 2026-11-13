@@ -15,7 +15,8 @@ from ingest_probe import command
 
 REALM = "amcrust-fixture"
 NONCE = "synthetic-fixed-nonce"
-CLOCK_FAULTS = ("clock-jump", "reports-lost", "video-reports-lost", "clock-silent", "report-once-lost")
+CLOCK_FAULTS = ("clock-jump", "reports-lost", "video-reports-lost", "clock-silent", "report-once-lost",
+                "late-reports", "audio-report-late")
 
 
 def nals(data):
@@ -259,7 +260,9 @@ class CameraFixture:
             await asyncio.sleep(max(0, started + at - asyncio.get_running_loop().time()))
             if track >= 2:
                 for report_track in ((1,) if track == 3 else (0, 1)):
-                    if ((self.mode == "reports-lost" and at > 0) or
+                    if ((self.mode == "late-reports" and at < 1) or
+                            (self.mode == "audio-report-late" and report_track == 1 and at < 1) or
+                            (self.mode == "reports-lost" and at > 0) or
                             (self.mode == "video-reports-lost" and report_track == 0 and at > 0) or
                             (self.mode == "report-once-lost" and at == 0.5)):
                         continue

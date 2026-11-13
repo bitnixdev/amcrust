@@ -128,8 +128,17 @@ async def read_frame(reader):
         raise ValueError("truncated frame body") from error
 
 
+class QueueClosed(RuntimeError):
+    """Terminal subscriber outcome, distinct from finite-input end frames."""
+    def __init__(self, reason):
+        self.reason = reason
+        super().__init__(f"packet subscriber closed: {reason}")
+
+
 class PacketQueue:
-    """Byte/count bounded whole-frame fanout; overflow detaches, never drops silently."""
+    """Single-event-loop bounded fanout; abort clears data and wakes all receivers."""
+    CLOSE_REASONS = frozenset(("overflow", "generation_changed", "source_failed",
+                               "source_complete", "cancelled"))
     def __init__(self, max_bytes, max_frames=256):
         if max_bytes <= 0 or max_frames <= 0:
             raise ValueError("queue limits must be positive")
@@ -138,27 +147,47 @@ class PacketQueue:
         self.bytes = 0
         self.peak = 0
         self.detached = False
+        self.reason = None
+        self.available = asyncio.Event()
 
     def offer(self, frame):
         if self.detached:
-            return
+            return False
         if self.bytes + len(frame) > self.max_bytes or self.queue.full():
-            self.detach()
-            return
+            self.detach("overflow")
+            return False
         self.queue.put_nowait(frame)
         self.bytes += len(frame)
         self.peak = max(self.peak, self.bytes)
+        self.available.set()
+        return True
 
-    def detach(self):
+    def detach(self, reason="cancelled"):
+        if reason not in self.CLOSE_REASONS:
+            raise ValueError("unknown subscriber close reason")
+        if self.detached:
+            return  # preserve the first terminal cause
         self.detached = True
+        self.reason = reason
         while not self.queue.empty():
             self.queue.get_nowait()
         self.bytes = 0
+        self.available.set()
 
     async def receive(self):
-        frame = await self.queue.get()
-        self.bytes -= len(frame)
-        return frame
+        while True:
+            if self.detached:
+                raise QueueClosed(self.reason)
+            if not self.queue.empty():
+                frame = self.queue.get_nowait()
+                self.bytes -= len(frame)
+                if self.queue.empty():
+                    self.available.clear()
+                return frame
+            # No await between checking/clearing readiness and entering wait:
+            # offer/detach cannot interleave here on the owning event loop.
+            self.available.clear()
+            await self.available.wait()
 
 
 def summarize(packet):
@@ -170,16 +199,13 @@ async def acquire(worker, source, *, started=None):
     healthy = [PacketQueue(MAX_FRAME * 2), PacketQueue(MAX_FRAME * 2)]
     stalled = PacketQueue(MAX_FRAME, max_frames=1)
     protocol = Protocol()
-    done = asyncio.Event()
+    terminal = "source_failed"
 
     async def consume(subscriber):
         state = Protocol()
         packets = []
-        while not (done.is_set() and subscriber.queue.empty()):
-            try:
-                raw = await asyncio.wait_for(subscriber.receive(), 0.1)
-            except asyncio.TimeoutError:
-                continue
+        while not state.ended:
+            raw = await subscriber.receive()
             obj = state.accept(raw)
             if obj["type"] == "packet":
                 packets.append(summarize(obj))
@@ -210,12 +236,17 @@ async def acquire(worker, source, *, started=None):
             await asyncio.wait_for(process.wait(), 5)
             if process.returncode or not protocol.ended:
                 raise RuntimeError("worker failed or omitted end frame")
-            done.set()
             copies = await asyncio.wait_for(asyncio.gather(*tasks), 5)
             if any(s.detached for s in healthy) or not stalled.detached or copies[0] != copies[1]:
                 raise ValueError("fanout isolation/equality failed")
+            terminal = "source_complete"
             return protocol, copies[0], [s.peak for s in healthy + [stalled]]
+        except asyncio.CancelledError:
+            terminal = "cancelled"
+            raise
         finally:
+            for subscriber in healthy + [stalled]:
+                subscriber.detach(terminal)
             if process is not None:
                 await stop_process(process)
             for task in tasks:
