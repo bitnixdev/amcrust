@@ -111,9 +111,10 @@ writer. This changes only the research harnesses, not production process handlin
 
 ## Still open
 
-1. Reconstruct full audio/video output from packet IPC: mux, decode, preserve AAC
-   side data and relative A/V timing, and prove generation transitions cannot mix
-   incompatible MP4 init segments/fragments.
+1. [Finite-file A/V output reconstruction](av-output-proof.md) now preserves tested
+   packet timing/payloads and prevents mixed init/fragments. Terminal AAC padding
+   remains explicit. Actual RTSP output is blocked by initially missing PTS/DTS;
+   a common-epoch normalization policy is the next priority.
 2. Replace the inspectable hex-JSON prototype with bounded binary IPC and implement
    media-duration queue budgets before making performance claims.
 3. Broader RTSP interoperability: qop variants, RTCP sender-report clock mapping,

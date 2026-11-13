@@ -3,7 +3,9 @@
 Status: **milestone 0 partially complete**. Production acquisition is unchanged.
 The synthetic CLI, [packet-aware native-worker experiment](packet-ingest-proof.md)
 and [loopback RTSP experiment](rtsp-ingest-proof.md) are complete within their stated
-scope. Full A/V output-playback, broader RTSP and real-camera gates remain open.
+scope. The [finite-file A/V output proof](av-output-proof.md) now passes with an
+explicit terminal-AAC-padding limitation. RTSP timestamp normalization, broader
+source coverage and real-camera gates remain open.
 This document records reproducible evidence, not a performance claim about deployed
 cameras. The local living plan is intentionally not tracked.
 
@@ -126,7 +128,9 @@ live-view input: that introduces fragment-duration latency.
 1. **Native-worker local-file proof complete:** exact packet/timestamp/AAC-side-data
    preservation with two consumers, bounded slow-consumer isolation, cancellation
    and malformed-frame limits. See [results and scope](packet-ingest-proof.md).
-   Output muxing/playback and broader codec-parameter coverage remain open.
+   Finite-file output muxing/playback is now covered by the [A/V proof](av-output-proof.md).
+   Raw RTSP output still needs timestamp normalization; broader codec coverage and
+   finite AAC end-trimming remain open.
 2. **Synthetic RTSP fixture complete:** authentication, interleaved H.264/AAC,
    backward timestamps, silent socket stall, reconnect with changed SPS/PPS and late
    IDR video decoding. See [coverage and remaining cases](rtsp-ingest-proof.md),

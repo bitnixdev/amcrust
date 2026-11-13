@@ -65,7 +65,8 @@ Order:
    `AV_PKT_DATA_SKIP_SAMPLES` enum value.
 2. One `stream` per index: codec/media names, time-base numerator/denominator,
    profile/level, dimensions, sample rate/channel count, initial/trailing padding,
-   seek preroll, codec extradata and coded side data.
+   seek preroll, codec extradata and coded side data. The output proof additionally
+   exports channel layout, frame size, format, sample aspect ratio and color metadata.
 3. `packet`: generation, contiguous global sequence, stream index, PTS, DTS,
    duration, raw AVPacket flags, encoded data, and every packet-side-data type/data.
 4. `end`: generation and exact final packet count. EOF without this is failure.
@@ -113,9 +114,10 @@ It does **not** make this worker production-ready.
    Production retry/backoff and subscriber terminal notifications remain open.
 3. Concurrent recording/live load and time-based buffer budgets remain open.
    Slow-subscriber isolation currently has synthetic fanout/queue coverage.
-4. Exercise output muxing/decoding with the exported metadata and AAC side data,
-   then camera-model/HomeKit acceptance. CPU/RSS and startup improvements remain
-   unmeasured on actual cameras.
+4. **Finite-file output proof complete with a limitation:** [A/V reconstruction](av-output-proof.md)
+   preserves packet timing/payloads, video and the PCM prefix, but one fixture retains
+   terminal AAC padding. Actual RTSP packets expose missing PTS/DTS and are rejected
+   until clock normalization is proven. Real-camera/HomeKit acceptance remains open.
 5. Replace hex JSON with a bounded, versioned binary packet representation before
    treating this as a performance design. Export additional codec/layout/color
    metadata as required by supported consumers.

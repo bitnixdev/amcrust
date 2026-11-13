@@ -76,23 +76,32 @@ static void side_data(const AVPacketSideData *data, int count) {
     append("]");
 }
 
+static unsigned parse_generation(const char *value) {
+    char *end;
+    unsigned long epoch = strtoul(value, &end, 10);
+    if (!*value || *end || epoch < 1 || epoch > 0x7fffffffUL) fail("invalid generation");
+    return (unsigned)epoch;
+}
+
 int main(int argc, char **argv) {
+    int file_generation = argc == 4 && !strcmp(argv[1], "--file-generation");
     int rtsp_fixture = argc == 4 && !strcmp(argv[1], "--rtsp-fixture");
-    if (argc != 2 && !rtsp_fixture)
-        fail("usage: ingest-worker-probe LOCAL_FILE | --rtsp-fixture PORT GENERATION");
+    if (argc != 2 && !rtsp_fixture && !file_generation)
+        fail("usage: ingest-worker-probe LOCAL_FILE | --rtsp-fixture PORT GENERATION | --file-generation GENERATION LOCAL_FILE");
     char fixture_url[128];
     const char *source = argv[1];
     if (rtsp_fixture) {
         char *end;
         unsigned long port = strtoul(argv[2], &end, 10);
         if (!*argv[2] || *end || port < 1 || port > 65535) fail("invalid fixture port");
-        unsigned long epoch = strtoul(argv[3], &end, 10);
-        if (!*argv[3] || *end || epoch < 1 || epoch > 0x7fffffffUL) fail("invalid generation");
-        generation = (unsigned)epoch;
+        generation = parse_generation(argv[3]);
         /* Only synthetic fixture credentials and a numeric loopback port. */
         snprintf(fixture_url, sizeof(fixture_url),
                  "rtsp://fixture:fixture@127.0.0.1:%lu/camera", port);
         source = fixture_url;
+    } else if (file_generation) {
+        generation = parse_generation(argv[2]);
+        source = argv[3];
     }
     av_log_set_level(AV_LOG_QUIET);
     frame = av_malloc(MAX_FRAME + 1);
@@ -133,7 +142,20 @@ int main(int argc, char **argv) {
                p->initial_padding, p->trailing_padding, p->seek_preroll);
         if (p->extradata_size < 0) fail("invalid codec configuration");
         hex(p->extradata, p->extradata_size);
-        append(",\"side_data\":");
+        char layout[256];
+        if (p->codec_type == AVMEDIA_TYPE_AUDIO) {
+            int length = av_channel_layout_describe(&p->ch_layout, layout, sizeof(layout));
+            if (length < 0 || length >= (int)sizeof(layout)) fail("unsupported channel layout");
+        } else layout[0] = 0;
+        /* FFmpeg's named layouts contain no JSON control/quote characters. Refuse
+         * unexpected custom names instead of emitting an ambiguous descriptor. */
+        for (const char *c = layout; *c; c++)
+            if ((unsigned char)*c < 32 || *c == '"' || *c == '\\') fail("unsupported layout name");
+        append(",\"format\":%d,\"frame_size\":%d,\"channel_layout\":\"%s\","
+               "\"sample_aspect_ratio\":[%d,%d],\"color_range\":%d,\"color_primaries\":%d,"
+               "\"color_trc\":%d,\"color_space\":%d,\"chroma_location\":%d,\"side_data\":",
+               p->format, p->frame_size, layout, p->sample_aspect_ratio.num, p->sample_aspect_ratio.den,
+               p->color_range, p->color_primaries, p->color_trc, p->color_space, p->chroma_location);
         side_data(p->coded_side_data, p->nb_coded_side_data);
         append("}");
         emit();
