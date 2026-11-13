@@ -51,12 +51,32 @@ not rendered frames. Missing/null timestamp behavior is covered by protocol test
 these generated MP4 fixtures have valid timestamps. Stream-side-data cases beyond
 these fixtures deliberately fail the comparison rather than silently claim coverage.
 
-## Experimental wire contract (version 1)
+## Experimental wire contract (AMC2)
 
-A frame is a four-byte big-endian unsigned JSON-body length, then that many UTF-8
-bytes. JSON integers retain signed 64-bit timestamp precision; timestamps are
-never floating-point seconds. Bytes use lowercase hex for inspectability. This is
-not an efficient production serialization or a stable public protocol.
+Both native workers now use a **versioned binary envelope**. The old hex-JSON wire
+format has no fallback. The body is:
+
+```
+u32 body_length                 # outer transport prefix, excluded from body
+"AMC2"                          # envelope version/magic, four bytes
+u32 metadata_length
+u32 blob_length
+metadata_length bytes           # UTF-8 JSON, logical metadata schema version 1
+blob_length bytes               # raw encoded data / extradata / side data
+```
+
+All length words are unsigned big-endian. Metadata byte fields are objects of
+exactly `{offset, length}` into the blob. The primary payload/extradata comes first,
+then side data in array order. References must be contiguous and consume the entire
+blob: no gaps, overlaps, extra bytes or out-of-range references. Empty byte fields
+are representable; consumers may still reject them where codec data is required.
+The total body length must exactly match its two bounded sections.
+
+JSON integers retain signed 64-bit timestamp precision; timestamps are never
+floating-point seconds. The payload is no longer encoded as hex on the wire or
+inside subscriber queue bodies. Python proof objects still expose hex for existing
+bitstream/ffprobe comparisons, through explicit encode/decode adapters. This is not
+a stable public ABI, a zero-copy design, or a throughput claim.
 
 Order:
 
@@ -81,7 +101,9 @@ Both boundaries enforce limits:
 
 | Resource | Limit |
 | --- | --- |
-| JSON frame body | 16 MiB |
+| Metadata | 64 KiB, bounded nesting |
+| Binary blob | 5 MiB |
+| Envelope body | 12 bytes + metadata + blob; at most 5 MiB + 64 KiB + 12 bytes |
 | Packet payload / codec extradata | 4 MiB |
 | Aggregate side data per packet/descriptor | 1 MiB, at most 64 entries |
 | Streams | 8 |
@@ -89,17 +111,35 @@ Both boundaries enforce limits:
 | Stalled media subscriber | 16 MiB and 1 frame |
 
 Queue budgets exclude interpreter object overhead, the in-flight frame and pipe
-buffers; they are not a total RSS promise. The C worker has a reusable 16 MiB frame
-buffer; hex doubles payload size. Subscribers share immutable raw frame objects.
+buffers; they are not a total RSS promise. The C worker has a reusable 64 KiB
+metadata buffer and writes bounded raw blob slices before releasing the packet.
+Subscribers share immutable binary frame bodies. The sink copies byte fields into
+FFmpeg-owned buffers with decoder padding, not native-struct serialization.
 On overflow, clear and detach the subscriber rather than drop arbitrary encoded
-samples and pretend continuity. A production live consumer will additionally need
-media-duration budgets and IDR admission before it can recover.
+samples and pretend continuity. The experimental media-duration bound is described
+below; production recovery still needs duration policy and fresh IDR admission.
+Clock startup also budgets the expanded serialized proof objects it retains, so
+smaller wire frames do not silently weaken that existing retention bound.
 
-The receiver validates framing before allocating a body, requires configuration
+The receiver validates the outer length before allocating a body, requires configuration
 before packets, rejects unknown versions/generations, checks exact sequence/count,
 and rejects trailing frames. Tests cover fragmented/coalesced reads, oversized and
 truncated bodies, malformed schemas, invalid byte fields, signed/missing/large
-integer timestamps and independent byte/count queue bounds.
+integer timestamps and independent byte/count queue bounds. Twenty shared malformed
+binary vectors are rejected by both the Python decoder and native mux sink, including
+unknown magic/legacy JSON, section lengths, gaps/overlaps, unused bytes, invalid
+reference integers, byte/count limits and excessive metadata nesting. Native cases
+corrupt a packet after output creation and also check partial-output removal.
+
+Observed wire sizes for the same 187-packet fixtures, including outer prefixes:
+
+| Fixture | AMC2 bytes | Equivalent compact hex-JSON bytes |
+| --- | ---: | ---: |
+| No B-frames | 503,014 | 965,900 |
+| Two B-frames | 488,059 | 935,973 |
+
+This is about **48% fewer serialized bytes**, measured against equivalent metadata
+and payloads, not a CPU/RSS/latency benchmark or a comparison across FFmpeg versions.
 
 ## Subscriber terminal signals
 
@@ -172,9 +212,10 @@ per-packet accounting empty rather than accumulating it.
 limit, throughput measurement, or production latency recommendation. Source idle
 expiry remains a separate supervisor/clock responsibility. Retained descriptor
 state has the protocol's own stream/configuration caps and is not included in queued
-wire-byte counts. Accounting scans at most the bounded queued frame count; JSON
-parsing per subscriber is proof scaffolding, not a performance-ready fanout design.
-Binary IPC and sustained load/memory measurements remain open.
+wire-byte counts. Accounting scans at most the bounded queued frame count; metadata
+parsing and hex inspection objects per subscriber are proof scaffolding, not a
+performance-ready fanout design. Binary worker/queue framing is now in place;
+removing inspection conversions and sustained load/memory measurements remain open.
 
 ## Follow-up gates
 
@@ -196,9 +237,9 @@ It does **not** make this worker production-ready.
    terminal AAC padding. The [clocked RTSP proof](rtsp-clock-proof.md) now repairs
    bounded non-reordering startup timestamps with shared-epoch and codec evidence. Unclocked/ambiguous
    input is still rejected; real-camera/HomeKit acceptance remains open.
-5. Replace hex JSON with a bounded, versioned binary packet representation before
-   treating this as a performance design. Export additional codec/layout/color
-   metadata as required by supported consumers.
+5. **Bounded binary worker/queue framing complete for the prototype.** Remove
+   per-consumer proof-object conversions before treating this as a performance design.
+   Export additional codec/layout/color metadata as required by supported consumers.
 
 Production still uses its original FFmpeg readers. The local living plan tracks
 these open gates, including the two real-camera models and deployment baseline.

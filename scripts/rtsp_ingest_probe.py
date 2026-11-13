@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+from packet_wire import encode_frame
 from pathlib import Path
 import tempfile
 import time
@@ -72,9 +73,9 @@ class LiveAdmission:
                 self.skipped += 1
                 return False
             for descriptor in self.streams.values():
-                self.queue.offer(json.dumps(descriptor).encode())
+                self.queue.offer(encode_frame(descriptor))
             self.ready = True
-        self.queue.offer(json.dumps(packet).encode())
+        self.queue.offer(encode_frame(packet))
         if self.queue.detached:
             self.active = False
             self.ready = False

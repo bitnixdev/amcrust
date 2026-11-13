@@ -1,7 +1,6 @@
 /* Local-file / loopback-fixture packet IPC experiment. Not production ingest.
- * Each frame: big-endian u32 JSON byte length, followed by UTF-8 JSON.
+ * AMC2 bounded metadata + raw byte envelope; see packet_wire.h.
  * Integers retain their native precision; AV_NOPTS_VALUE is JSON null.
- * Payload/codec/side-data bytes use hex for an inspectable proof, not efficiency.
  */
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
@@ -13,12 +12,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MAX_FRAME (16U * 1024U * 1024U)
+#include "packet_wire.h"
+#define MAX_FRAME WIRE_METADATA
 #define MAX_PAYLOAD (4U * 1024U * 1024U)
 #define MAX_SIDE_TOTAL (1U * 1024U * 1024U)
 #define MAX_STREAMS 8
 static char *frame;
-static size_t used;
+static size_t used, blob_used, blob_count;
+static const uint8_t *blob_parts[65];
+static size_t blob_sizes[65];
 static unsigned generation = 1;
 
 static void fail(const char *message) {
@@ -36,17 +38,17 @@ static void append(const char *format, ...) {
     used += (size_t)count;
 }
 
-static void hex(const uint8_t *data, size_t size) {
-    static const char digits[] = "0123456789abcdef";
-    if (size > MAX_PAYLOAD || size * 2 + 2 > MAX_FRAME - used)
+static void blob(const uint8_t *data, size_t size) {
+    if (size > MAX_PAYLOAD || blob_count >= 65 || size > WIRE_BLOB - blob_used)
         fail("byte field limit exceeded");
-    frame[used++] = '"';
-    for (size_t i = 0; i < size; i++) {
-        frame[used++] = digits[data[i] >> 4];
-        frame[used++] = digits[data[i] & 15];
-    }
-    frame[used++] = '"';
-    frame[used] = 0;
+    append("{\"offset\":%zu,\"length\":%zu}", blob_used, size);
+    blob_parts[blob_count] = data;
+    blob_sizes[blob_count++] = size;
+    blob_used += size;
+}
+
+static void put32(uint8_t *p, uint32_t n) {
+    p[0] = n >> 24; p[1] = n >> 16; p[2] = n >> 8; p[3] = n;
 }
 
 static void timestamp(int64_t value) {
@@ -55,11 +57,18 @@ static void timestamp(int64_t value) {
 }
 
 static void emit(void) {
-    uint8_t header[] = {used >> 24, used >> 16, used >> 8, used};
+    uint8_t header[4 + WIRE_HEADER];
+    put32(header, WIRE_HEADER + used + blob_used);
+    memcpy(header + 4, WIRE_MAGIC, 4);
+    put32(header + 8, used);
+    put32(header + 12, blob_used);
     if (fwrite(header, 1, sizeof(header), stdout) != sizeof(header) ||
-        fwrite(frame, 1, used, stdout) != used || fflush(stdout))
-        fail("output closed");
-    used = 0;
+        fwrite(frame, 1, used, stdout) != used) fail("output closed");
+    for (size_t i = 0; i < blob_count; i++)
+        if (blob_sizes[i] && fwrite(blob_parts[i], 1, blob_sizes[i], stdout) != blob_sizes[i])
+            fail("output closed");
+    if (fflush(stdout)) fail("output closed");
+    used = blob_used = blob_count = 0;
 }
 
 static void side_data(const AVPacketSideData *data, int count) {
@@ -70,7 +79,7 @@ static void side_data(const AVPacketSideData *data, int count) {
         if (data[i].size > MAX_SIDE_TOTAL - total) fail("side data limit exceeded");
         total += data[i].size;
         append("%s{\"type\":%d,\"data\":", i ? "," : "", data[i].type);
-        hex(data[i].data, data[i].size);
+        blob(data[i].data, data[i].size);
         append("}");
     }
     append("]");
@@ -143,7 +152,7 @@ int main(int argc, char **argv) {
                p->width, p->height, p->sample_rate, p->ch_layout.nb_channels,
                p->initial_padding, p->trailing_padding, p->seek_preroll);
         if (p->extradata_size < 0) fail("invalid codec configuration");
-        hex(p->extradata, p->extradata_size);
+        blob(p->extradata, p->extradata_size);
         char layout[256];
         if (p->codec_type == AVMEDIA_TYPE_AUDIO) {
             int length = av_channel_layout_describe(&p->ch_layout, layout, sizeof(layout));
@@ -175,7 +184,7 @@ int main(int argc, char **argv) {
         timestamp(packet->dts);
         append(",\"duration\":%lld,\"flags\":%d,\"data\":",
                (long long)packet->duration, packet->flags);
-        hex(packet->data, packet->size);
+        blob(packet->data, packet->size);
         append(",\"side_data\":");
         side_data(packet->side_data, packet->side_data_elems);
         size_t sr_size = 0;

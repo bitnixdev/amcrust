@@ -5,6 +5,7 @@ import asyncio
 from fractions import Fraction
 import hashlib
 import json
+from packet_wire import decode_frame, encode_frame
 from pathlib import Path
 import tempfile
 import time
@@ -37,7 +38,7 @@ async def capture(worker, media, generation, offset, mode="stall", staggered=Fal
                     raise ValueError("source read deadline exceeded")
                 if raw is None:
                     raise ValueError("source ended before intentional clip cut")
-                frame = json.loads(raw)
+                frame = decode_frame(raw)
                 original.append(frame)
                 normalized.extend(normalizer.feed(raw))
                 if frame["type"] == "packet":
@@ -45,7 +46,7 @@ async def capture(worker, media, generation, offset, mode="stall", staggered=Fal
             if process.returncode is not None:
                 raise ValueError("source failed before intentional clip cut")
             terminal = {"type": "end", "generation": generation, "packets": sum(counts)}
-            normalized.extend(normalizer.feed(json.dumps(terminal).encode()))
+            normalized.extend(normalizer.feed(encode_frame(terminal)))
             original.append(terminal)
         finally:
             if not normalizer.protocol.ended:
@@ -143,7 +144,7 @@ async def output_case(worker, sink, directory, media, generation, offset, stagge
     terminal = "source_failed"
     try:
         for frame in frames:
-            raw = json.dumps(frame).encode()
+            raw = encode_frame(frame)
             if not healthy.offer(raw) or await healthy.receive() != raw:
                 raise ValueError("clock-admitted queue changed or refused healthy media")
             stalled.offer(raw)

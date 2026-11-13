@@ -1,6 +1,6 @@
 """Packet IPC parser/fanout tests; no native libraries required."""
 import asyncio
-import json
+from packet_wire import HEADER, MAGIC, encode_frame
 import struct
 import unittest
 
@@ -8,7 +8,7 @@ from packet_ingest_probe import MAX_FRAME, MAX_SIDE, PacketQueue, Protocol, Queu
 
 
 def encode(value):
-    return json.dumps(value).encode()
+    return encode_frame(value)
 
 
 def hello():
@@ -71,7 +71,7 @@ class ProtocolTests(unittest.TestCase):
             state.accept(encode(packet()))
 
     def test_malformed_schema_and_byte_fields(self):
-        for raw in (b"{", b"[]", b"null", b"\xff", encode({"type": "packet"})):
+        for raw in (b"{", b"[]", b"null", b"\xff", HEADER.pack(MAGIC, 17, 0) + b'{"type":"packet"}'):
             with self.assertRaises(ValueError):
                 ready().accept(raw)
         for field, value in (("data", "ab cd"), ("data", "a"), ("pts", True),

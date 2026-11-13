@@ -19,7 +19,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define MAX_FRAME (16U * 1024U * 1024U)
+#include "packet_wire.h"
 #define MAX_BYTES (4U * 1024U * 1024U)
 #define MAX_SIDE (1U * 1024U * 1024U)
 #define MAX_STREAMS 8
@@ -28,6 +28,8 @@ static int created;
 static FILE *output_file;
 static AVFormatContext *output;
 static AVIOContext *io;
+static uint8_t *wire_body, *blob_data;
+static size_t blob_size, blob_used;
 
 static _Noreturn void fail(const char *message) {
     fprintf(stderr, "mux worker: %s\n", message);
@@ -67,21 +69,18 @@ static const char *text(json_object *object, const char *key) {
     return s;
 }
 
-static int nibble(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    fail("invalid hex byte field");
-    return 0;
-}
-
 static uint8_t *bytes(json_object *object, const char *key, size_t maximum, size_t *size) {
-    const char *s = text(object, key);
-    size_t length = strlen(s);
-    if (length % 2 || length / 2 > maximum) fail("byte field limit exceeded");
-    *size = length / 2;
+    json_object *ref = field(object, key);
+    if (!json_object_is_type(ref, json_type_object) || json_object_object_length(ref) != 2)
+        fail("invalid binary byte reference");
+    if ((size_t)num(ref, "offset", 0, WIRE_BLOB) != blob_used)
+        fail("noncontiguous binary byte reference");
+    *size = (size_t)num(ref, "length", 0, maximum);
+    if (*size > blob_size - blob_used) fail("binary byte reference out of bounds");
     uint8_t *data = av_mallocz(*size + AV_INPUT_BUFFER_PADDING_SIZE);
     if (!data) fail("allocation failed");
-    for (size_t i = 0; i < *size; i++) data[i] = (nibble(s[2*i]) << 4) | nibble(s[2*i+1]);
+    memcpy(data, blob_data + blob_used, *size);
+    blob_used += *size;
     return data;
 }
 
@@ -122,27 +121,40 @@ static void side_data(json_object *object, AVPacket *packet, AVCodecParameters *
     }
 }
 
+static uint32_t get32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
 static json_object *read_frame(void) {
+    if (blob_used != blob_size) fail("unreferenced binary bytes");
+    free(wire_body);
+    wire_body = blob_data = NULL;
+    blob_used = blob_size = 0;
     uint8_t header[4];
     size_t n = fread(header, 1, 4, stdin);
     if (!n && feof(stdin)) return NULL;
     if (n != 4) fail("truncated frame header");
-    uint32_t size = ((uint32_t)header[0] << 24) | ((uint32_t)header[1] << 16) |
-                    ((uint32_t)header[2] << 8) | header[3];
-    if (!size || size > MAX_FRAME) fail("frame limit exceeded");
-    char *body = malloc((size_t)size + 1);
-    if (!body) fail("allocation failed");
-    if (fread(body, 1, size, stdin) != size) fail("truncated frame body");
-    body[size] = 0;
+    uint32_t size = get32(header);
+    if (size <= WIRE_HEADER || size > WIRE_MAX) fail("frame limit exceeded");
+    wire_body = malloc((size_t)size + 1);
+    if (!wire_body) fail("allocation failed");
+    if (fread(wire_body, 1, size, stdin) != size) fail("truncated frame body");
+    if (memcmp(wire_body, WIRE_MAGIC, 4)) fail("unsupported binary envelope");
+    uint32_t metadata_size = get32(wire_body + 4);
+    blob_size = get32(wire_body + 8);
+    if (!metadata_size || metadata_size > WIRE_METADATA || blob_size > WIRE_BLOB ||
+        WIRE_HEADER + metadata_size + blob_size != size) fail("invalid binary envelope lengths");
+    blob_data = wire_body + WIRE_HEADER + metadata_size;
+    char *body = (char *)wire_body + WIRE_HEADER;
+    /* parse_ex gets an explicit metadata length; binary bytes are never JSON. */
     json_tokener *parser = json_tokener_new_ex(32);
     if (!parser) fail("parser allocation failed");
     json_tokener_set_flags(parser, JSON_TOKENER_STRICT | JSON_TOKENER_VALIDATE_UTF8);
-    json_object *object = json_tokener_parse_ex(parser, body, size);
+    json_object *object = json_tokener_parse_ex(parser, body, metadata_size);
     if (json_tokener_get_error(parser) != json_tokener_success ||
-        json_tokener_get_parse_end(parser) != size ||
+        json_tokener_get_parse_end(parser) != metadata_size ||
         !json_object_is_type(object, json_type_object)) fail("invalid JSON frame");
     json_tokener_free(parser);
-    free(body);
     return object;
 }
 

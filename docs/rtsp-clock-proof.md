@@ -252,8 +252,10 @@ This replay check is not a concurrent live load or latency measurement.
 - The [finite-file terminal AAC padding limitation](av-output-proof.md) is unchanged.
   These clips end before the continuously sent AAC stream's encoder finalization;
   their exact PCM result does not solve finite-file tail-discard signaling.
-- Binary IPC, duration-bounded subscriber queues, worker/supervisor integration and
-  end-to-end sustained memory/load measurements. This proof bounds clock-admission
-  retention, not all buffering inside libavformat or the finite-capture test harness.
+- Binary framing and media-duration queue limits now have prototype coverage.
+  Proof-object conversions, worker/supervisor integration and end-to-end sustained
+  memory/load measurements remain open. Clock startup counts expanded proof-object
+  serialization as well as binary wire bytes; this does not bound all buffering
+  inside libavformat or the finite-capture test harness.
 - Both camera models and Apple live/HSV playback, latency/resource baselines and
   actual recording delivery acceptance. No hardware or performance claim is made.

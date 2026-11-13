@@ -1,7 +1,7 @@
 """Deterministic protocol/admission/cleanup tests; no FFmpeg needed."""
 import asyncio
 import hashlib
-import json
+from packet_wire import decode_frame, encode_frame
 import sys
 import unittest
 
@@ -34,7 +34,7 @@ class AdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(gate.queue.queue.empty())
         self.assertTrue(gate.offer(frame()))
         self.assertEqual(gate.queue.queue.qsize(), 3)  # two configs then the IDR
-        first = json.loads(await gate.queue.receive())
+        first = decode_frame(await gate.queue.receive())
         self.assertEqual(first["type"], "stream")
         self.assertTrue(gate.offer(frame("41", key=False)))
         self.assertTrue(gate.offer({**frame(), "stream": 1}))
@@ -107,12 +107,12 @@ class AdmissionTests(unittest.IsolatedAsyncioTestCase):
     async def test_protocol_accepts_only_supervisor_assigned_epoch(self):
         state = Protocol(2)
         with self.assertRaises(ValueError):
-            state.accept(json.dumps(hello()).encode())
-        state.accept(json.dumps({**hello(), "generation": 2}).encode())
-        state.accept(json.dumps(config(2)).encode())
+            state.accept(encode_frame(hello()))
+        state.accept(encode_frame({**hello(), "generation": 2}))
+        state.accept(encode_frame(config(2)))
         with self.assertRaises(ValueError):
-            state.accept(json.dumps(frame()).encode())
-        state.accept(json.dumps(frame(generation=2)).encode())
+            state.accept(encode_frame(frame()))
+        state.accept(encode_frame(frame(generation=2)))
 
 
 class FixtureTests(unittest.TestCase):

@@ -5,6 +5,7 @@ initial missing timestamps of proven non-reordering H264 profiles are repaired.
 This excludes first SRs arriving after media and missing reordered DTS.
 """
 from fractions import Fraction
+import json
 import math
 import time
 
@@ -77,6 +78,11 @@ class ClockNormalizer:
         if not self.ready and (self.bytes + len(raw) > self.max_bytes or len(self.pending) >= self.max_frames):
             raise ValueError("startup buffer limit")
         frame = self.protocol.accept(raw)
+        # Proof objects retain hex for inspection. Budget their expanded serialized
+        # representation too, not just the now-smaller binary envelope.
+        retained_size = max(len(raw), len(json.dumps(frame, separators=(",", ":")).encode()))
+        if not self.ready and self.bytes + retained_size > self.max_bytes:
+            raise ValueError("startup buffer limit")
         kind = frame["type"]
         if kind == "hello":
             if frame.get("start_time_realtime") is None:
@@ -94,7 +100,7 @@ class ClockNormalizer:
             self._validate(frame)
             return [frame]
         self.pending.append(frame)
-        self.bytes += len(raw)
+        self.bytes += retained_size
         if (len(self.state) == self.protocol.hello["streams"] and
                 all(s["report"] is not None and s["pts_seen"] and not s["missing"] for s in self.state.values())):
             for item in self.pending:

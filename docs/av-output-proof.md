@@ -112,16 +112,19 @@ initialization; a contiguous later subset is allowed for prebuffer-style clips.
 It rejects mixed epochs, wrong init, gaps, duplicates and reordered fragments. These
 are internal ownership guards, not authentication against forged media objects.
 
-Fourteen native rejection cases cover mixed generations, absent/truncated endings,
+Thirty-three native rejection cases cover mixed generations, absent/truncated endings,
 oversized frames, sequence/count mismatches, DTS rollback, missing or nonintegral
-PTS, unsigned timestamp overflow, invalid hex, non-keyframe video start, invalid
-clocks and attempts to overwrite an existing file. Rejected new outputs disappear;
-an existing file stays byte-identical.
+PTS, unsigned timestamp overflow, non-keyframe video start, invalid clocks and
+attempts to overwrite an existing file. This includes twenty shared malformed
+[AMC2 binary envelope](packet-ingest-proof.md#experimental-wire-contract-amc2) vectors,
+inserted after output creation. Rejected new outputs disappear; an existing file
+stays byte-identical.
 
 The sink rejects missing timestamps or nonpositive durations; it does not synthesize
-a decode clock or silently invent timing. It retains the earlier IPC size limits,
-limits side-data totals/counts and rejects duplicate side-data types. It is an
-experimental local consumer, not a hardened arbitrary-media service.
+a decode clock or silently invent timing. It enforces the bounded AMC2 envelope,
+limits payload/extradata bytes and side-data totals/counts and rejects duplicate
+side-data types. It is an experimental local consumer, not a hardened arbitrary-media
+service.
 
 ## Newly exposed RTSP blocker
 
@@ -152,8 +155,9 @@ establishes a correct real-camera synchronization policy.
    decode-clock recovery remain open.
 2. Define finite AAC clip-end semantics and verify the chosen behavior in HomeKit;
    retain the direct-copy control and explicit padding assertion.
-3. Binary IPC, time-based buffering, production supervision/leases and Rust
-   integration. The current proof stages short finite captures and is not a sustained
-   streaming/memory/throughput benchmark.
+3. Binary worker/queue framing and media-duration budgets now have prototype coverage.
+   Remaining work includes proof-object conversion removal, in-flight/residence
+   limits, production supervision/leases and Rust integration. Short finite captures
+   are not a sustained streaming/memory/throughput benchmark.
 4. Both real camera models, Apple live/HSV acceptance and matched resource/latency
    measurements. None of those hardware gates are complete yet.

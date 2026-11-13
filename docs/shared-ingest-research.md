@@ -128,7 +128,10 @@ live-view input: that introduces fragment-duration latency.
 
 1. **Native-worker local-file proof complete:** exact packet/timestamp/AAC-side-data
    preservation with two consumers, bounded slow-consumer isolation, cancellation
-   and malformed-frame limits. See [results and scope](packet-ingest-proof.md).
+   and malformed-frame limits. Native worker/queue framing now uses bounded AMC2
+   metadata plus raw binary payloads, with media-duration budgets after clock
+   admission. Wire size is lower; throughput/resource gains remain unmeasured.
+   See [results and scope](packet-ingest-proof.md).
    Finite-file output muxing/playback is now covered by the [A/V proof](av-output-proof.md).
    [Early-SR/non-reordering RTSP output](rtsp-clock-proof.md) now has bounded timestamp
    repair. Broader clocks/codec coverage and finite AAC end-trimming remain open.

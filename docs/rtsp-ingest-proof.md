@@ -125,8 +125,9 @@ signals, not production supervisor integration. See the
    remains explicit. [Clocked non-reordering RTSP output](rtsp-clock-proof.md) now succeeds
    using early sender reports and bounded startup repair. Unclocked or ambiguous
    reordered timestamp input is still rejected.
-2. Replace the inspectable hex-JSON prototype with bounded binary IPC and implement
-   media-duration queue budgets before making performance claims.
+2. Bounded binary worker/queue framing and post-clock-admission media-duration
+   budgets now have prototype coverage. Remove inspection-object conversions and
+   measure sustained resource use before making performance claims.
 3. Broader RTSP interoperability: qop variants, RTCP sender-report clock mapping,
    in-session codec changes, B-frame/discontinuous clocks, and actual camera quirks.
    This fixture changes codec configuration on reconnect, not within one session.

@@ -13,6 +13,8 @@ import tempfile
 
 from ingest_probe import command, inspect, stop_process
 from packet_ingest_probe import MAX_FRAME, Protocol, read_frame
+from packet_wire import decode_frame, encode_frame
+from packet_wire_faults import malformed_bodies
 from rtsp_fixture import CameraFixture, make_media
 
 
@@ -111,7 +113,7 @@ def unpack_wire(data, generation):
             raise ValueError("invalid IPC length")
         frame = data[offset:offset + size]
         protocol.accept(frame)
-        frames.append(json.loads(frame))
+        frames.append(decode_frame(frame))
         offset += size
     if not protocol.ended:
         raise ValueError("missing IPC end")
@@ -121,7 +123,7 @@ def unpack_wire(data, generation):
 def pack_wire(frames):
     result = []
     for obj in frames:
-        raw = json.dumps(obj, separators=(",", ":")).encode()
+        raw = encode_frame(obj)
         if len(raw) > MAX_FRAME:
             raise ValueError("IPC length limit")
         result += [struct.pack("!I", len(raw)), raw]
@@ -242,10 +244,16 @@ async def reject_invalid_inputs(sink, directory, frames):
         "missing-pts": changed("packet", "pts", None),
         "unsigned-overflow": changed("packet", "pts", 1 << 63),
         "fractional-pts": changed("packet", "pts", 1.5),
-        "invalid-hex": changed("packet", "data", "xx", 5),
         "non-key-start": changed("packet", "flags", 0, video[0]),
         "bad-clock": changed("stream", "time_base", [1, 0]),
     }
+    # Corrupt a packet after output creation so rejection also exercises removal
+    # of partial output, not only refusal before opening the destination.
+    target = next(i for i, frame in enumerate(frames)
+                  if frame["type"] == "packet" and frame["sequence"] == 5)
+    prefix, suffix = pack_wire(frames[:target]), pack_wire(frames[target + 1:])
+    for name, raw in malformed_bodies(encode_frame(frames[target])).items():
+        variants[f"binary-{name}"] = prefix + struct.pack("!I", len(raw)) + raw + suffix
     for name, wire in variants.items():
         await mux(sink, directory / f"invalid-{name}.mp4", wire, success=False)
     existing = directory / "existing.mp4"

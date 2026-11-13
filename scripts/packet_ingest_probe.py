@@ -16,6 +16,7 @@ import struct
 import tempfile
 
 from ingest_probe import command, inspect, stop_process
+from packet_wire import HEADER, MAX_WIRE, decode_frame
 
 MAX_FRAME = 16 * 1024 * 1024
 MAX_PAYLOAD = 4 * 1024 * 1024
@@ -59,7 +60,7 @@ class Protocol:
         if not raw or len(raw) > MAX_FRAME or self.ended:
             raise ValueError("invalid frame/lifecycle")
         try:
-            obj = json.loads(raw)
+            obj = decode_frame(raw)
             if not isinstance(obj, dict) or integer(obj["generation"]) != self.generation:
                 raise ValueError("invalid generation")
             kind = obj["type"]
@@ -122,7 +123,7 @@ async def read_frame(reader):
             return None
         raise ValueError("truncated frame header") from error
     size = struct.unpack("!I", header)[0]
-    if not 0 < size <= MAX_FRAME:
+    if not HEADER.size < size <= MAX_WIRE:
         raise ValueError("invalid frame size")
     try:
         return await reader.readexactly(size)
@@ -285,6 +286,7 @@ async def acquire(worker, source, *, started=None):
     stalled = PacketQueue(MAX_FRAME, max_frames=1)
     media_stalled = MediaQueue(MAX_FRAME * 2, Fraction(1, 2))
     protocol = Protocol()
+    wire_bytes = hex_control_bytes = 0
     terminal = "source_failed"
 
     async def consume(subscriber):
@@ -312,6 +314,8 @@ async def acquire(worker, source, *, started=None):
                 if raw is None:
                     break
                 obj = protocol.accept(raw)
+                wire_bytes += 4 + len(raw)
+                hex_control_bytes += 4 + len(json.dumps(obj, separators=(",", ":")).encode())
                 for subscriber in healthy + [media_stalled]:
                     subscriber.offer(raw)
                 # Model a subscriber that stops consuming media after setup.
@@ -328,7 +332,8 @@ async def acquire(worker, source, *, started=None):
             if not media_stalled.detached or media_stalled.overflow_limit != "media":
                 raise ValueError("media-duration isolation failed")
             terminal = "source_complete"
-            return protocol, copies[0], [s.peak for s in healthy + [stalled, media_stalled]]
+            return (protocol, copies[0], [s.peak for s in healthy + [stalled, media_stalled]],
+                    {"binary_wire_bytes": wire_bytes, "equivalent_hex_wire_bytes": hex_control_bytes})
         except asyncio.CancelledError:
             terminal = "cancelled"
             raise
@@ -395,13 +400,16 @@ async def experiment(worker, bframes):
                       "sine=frequency=1000:sample_rate=48000", "-t", "3", "-c:v", "libx264",
                       "-preset", "ultrafast", "-g", "30", "-bf", str(bframes),
                       "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "1", str(source))
-        protocol, packets, peaks = await acquire(worker, source)
+        protocol, packets, peaks, wire_sizes = await acquire(worker, source)
+        if wire_sizes["binary_wire_bytes"] >= wire_sizes["equivalent_hex_wire_bytes"]:
+            raise ValueError("fixture did not reduce wire bytes")
         versions = json.loads(await command("ffprobe", "-v", "error", "-show_library_versions", "-of", "json"))
         codec_version = next(v["version"] for v in versions["library_versions"] if v["name"] == "libavcodec")
         if protocol.hello["avcodec_version"] != codec_version:
             raise ValueError("worker and ffprobe must use the same libavcodec version")
         skips = compare(protocol, packets, await inspect(source))
         return {"bframes": bframes, "packets": len(packets), "aac_side_data_packets": skips,
+                **wire_sizes,
                 "exact_packet_comparison": True, "healthy_consumers": 2,
                 "stalled_consumer_detached": True, "peak_queue_bytes": peaks,
                 "media_stalled_consumer_detached": True, "media_budget_seconds": 0.5,

@@ -1,5 +1,5 @@
 """Clock policy and compound RTCP fixture tests; no native libraries required."""
-import json
+from packet_wire import encode_frame
 import struct
 import unittest
 
@@ -18,7 +18,7 @@ def sr(track=0, at=0, drift=0):
 
 
 def feed(clock, frame):
-    return clock.feed(json.dumps(frame).encode(), now=0)
+    return clock.feed(encode_frame(frame), now=0)
 
 
 def setup(profile=578, delay=0, **limits):
@@ -160,6 +160,14 @@ class ClockTests(unittest.TestCase):
             clock.expire(now=5)
         self.assert_closed(clock)
 
+    def test_startup_budget_counts_expanded_proof_objects(self):
+        clock = setup()
+        raw = encode_frame({**pkt(0, report=sr()), "data": "aa" * 1000})
+        clock.max_bytes = clock.bytes + len(raw) + 1
+        with self.assertRaisesRegex(ValueError, "startup buffer limit"):
+            clock.feed(raw, now=0)
+        self.assert_closed(clock)
+
     def test_generation_end_and_ambiguous_prefix(self):
         for frame in ({**pkt(0), "generation": 2}, {"type": "end", "generation": 1, "packets": 0},
                       pkt(0, pts=None, dts=1, report=sr())):
@@ -198,14 +206,14 @@ class FreshnessTests(unittest.TestCase):
 
     def test_reports_renew_only_their_own_track(self):
         clock = admitted()
-        clock.feed(json.dumps(pkt(2, pts=6000, dts=6000, report=sr(at=0.5))).encode(), now=0.5)
+        clock.feed(encode_frame(pkt(2, pts=6000, dts=6000, report=sr(at=0.5))), now=0.5)
         self.assertEqual(clock.next_deadline, 2)  # audio did not renew
         with self.assertRaisesRegex(ValueError, "freshness expired"):
             clock.expire(now=2)
         self.assert_closed(clock)
         clock = admitted()
-        clock.feed(json.dumps(pkt(2, pts=6000, dts=6000, report=sr(at=0.5))).encode(), now=0.5)
-        clock.feed(json.dumps(pkt(3, track=1, pts=1024, dts=1024, report=sr(1, at=0.5))).encode(), now=0.5)
+        clock.feed(encode_frame(pkt(2, pts=6000, dts=6000, report=sr(at=0.5))), now=0.5)
+        clock.feed(encode_frame(pkt(3, track=1, pts=1024, dts=1024, report=sr(1, at=0.5))), now=0.5)
         self.assertEqual(clock.next_deadline, 2.5)
         clock.expire(now=2.49)
         self.assertTrue(clock.ready)
@@ -224,7 +232,7 @@ class FreshnessTests(unittest.TestCase):
     def test_late_report_does_not_revive_expired_mapping(self):
         clock = admitted()
         with self.assertRaisesRegex(ValueError, "freshness expired \\(wall clock\\)"):
-            clock.feed(json.dumps(pkt(2, pts=6000, dts=6000, report=sr(at=2))).encode(), now=2)
+            clock.feed(encode_frame(pkt(2, pts=6000, dts=6000, report=sr(at=2))), now=2)
         self.assert_closed(clock)
         clock = admitted()
         with self.assertRaisesRegex(ValueError, "freshness expired \\(report interval\\)"):
