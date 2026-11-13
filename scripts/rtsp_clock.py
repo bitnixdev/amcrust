@@ -5,6 +5,7 @@ initial missing timestamps of proven non-reordering H264 profiles are repaired.
 This excludes first SRs arriving after media and missing reordered DTS.
 """
 from fractions import Fraction
+import math
 import time
 
 from packet_ingest_probe import Protocol, integer
@@ -14,9 +15,20 @@ NTP_UNIX_OFFSET = 2208988800
 
 class ClockNormalizer:
     def __init__(self, generation, *, now=None, max_bytes=2 * 1024 * 1024,
-                 max_frames=64, max_media=Fraction(1, 2), timeout=4):
+                 max_frames=64, max_media=Fraction(1, 2), timeout=4,
+                 report_timeout=Fraction(2)):
+        try:
+            self.report_timeout = Fraction(report_timeout)
+        except (TypeError, ValueError, OverflowError, ZeroDivisionError) as error:
+            raise ValueError("invalid report timeout") from error
+        if isinstance(report_timeout, bool) or not 0 < self.report_timeout <= 30:
+            raise ValueError("invalid report timeout")
         self.protocol = Protocol(generation)
-        self.deadline = (time.monotonic() if now is None else now) + timeout
+        self.now = time.monotonic() if now is None else now
+        if not math.isfinite(self.now):
+            raise ValueError("invalid monotonic time")
+        self.deadline = self.now + timeout
+        self.horizon = None
         self.max_bytes, self.max_frames, self.max_media = max_bytes, max_frames, max_media
         self.pending, self.bytes = [], 0
         self.state = {}
@@ -29,11 +41,28 @@ class ClockNormalizer:
         self.state.clear()
         self.protocol.streams.clear()
         self.bytes = 0
+        self.horizon = None
+
+    @property
+    def next_deadline(self):
+        """Caller must arm an idle timer; feed() alone cannot observe silence."""
+        deadlines = [s["report_deadline"] for s in self.state.values() if s["report"] is not None]
+        if not self.ready:
+            deadlines.append(self.deadline)
+        return min(deadlines)
 
     def expire(self, now=None):
-        if self.failed or (not self.ready and (time.monotonic() if now is None else now) >= self.deadline):
+        now = time.monotonic() if now is None else now
+        if not math.isfinite(now) or now < self.now:
+            self._abort()
+            raise ValueError("invalid/regressing monotonic time")
+        self.now = now
+        if self.failed or (not self.ready and now >= self.deadline):
             self._abort()
             raise ValueError("clock admission closed/timed out")
+        if any(s["report"] is not None and now >= s["report_deadline"] for s in self.state.values()):
+            self._abort()
+            raise ValueError("sender report freshness expired (wall clock)")
 
     def feed(self, raw, *, now=None):
         try:
@@ -88,7 +117,12 @@ class ClockNormalizer:
             if (ssrc != previous["ssrc"] or not 0 < delta_ntp <= 30 or
                     abs(delta_rtp * tick - delta_ntp) > tick):
                 raise ValueError("sender clock/SSRC discontinuity")
+            if delta_ntp >= self.report_timeout:
+                raise ValueError("sender report freshness expired (report interval)")
         state["report"] = {"ssrc": ssrc, "ntp": ntp, "rtp": rtp}
+        state["report_deadline"] = self.now + float(self.report_timeout)
+        state["report_media_time"] = (Fraction(ntp, 1 << 32) - NTP_UNIX_OFFSET -
+                                      Fraction(self.epoch, 1000000))
 
     def _packet(self, packet):
         stream = self.protocol.streams[packet["stream"]]
@@ -150,4 +184,13 @@ class ClockNormalizer:
                 raise ValueError("nonmonotonic decode clock")
             if (baseline or stream["codec"] == "aac") and pts != last[0] + last[2]:
                 raise ValueError("non-reordering track has a timestamp gap/rollback")
+        end = (pts + packet["duration"]) * Fraction(*stream["time_base"])
+        horizon = end if self.horizon is None else max(self.horizon, end)
+        # Shared presentation progress ages every track's clock evidence, including
+        # a track that has stopped delivering packets. Receipt bursts cannot refresh
+        # an old source clock simply by arriving quickly on the IPC pipe.
+        for other in self.state.values():
+            if horizon - other["report_media_time"] >= self.report_timeout:
+                raise ValueError("sender report freshness expired (media clock)")
+        self.horizon = horizon
         state["last"] = (pts, dts, packet["duration"])

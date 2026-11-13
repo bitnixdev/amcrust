@@ -126,9 +126,9 @@ class ClockTests(unittest.TestCase):
 
     def test_sender_report_wrap_and_clock_faults(self):
         clock = admitted()
-        # Two seconds of RTP ticks wrap the fixture's origin, not its timeline.
-        clock._report(sr(at=2), clock.protocol.streams[0], clock.state[0])
-        self.assertEqual(clock.state[0]["report"]["rtp"], (0xFFFF0000 + 180000) & 0xFFFFFFFF)
+        # One second of RTP ticks wraps the fixture's origin, not its timeline.
+        clock._report(sr(at=1), clock.protocol.streams[0], clock.state[0])
+        self.assertEqual(clock.state[0]["report"]["rtp"], (0xFFFF0000 + 90000) & 0xFFFFFFFF)
         for report in (sr(at=1, drift=9000), {**sr(at=1), "ssrc": 99}, sr(at=0)):
             clock = admitted()
             with self.assertRaisesRegex(ValueError, "discontinuity"):
@@ -175,6 +175,71 @@ class ClockTests(unittest.TestCase):
             feed(clock, pkt(2))
         self.assert_closed(clock)
         self.assertFalse(setup().ready)  # fresh generation has no inherited clock admission
+
+
+class FreshnessTests(unittest.TestCase):
+    assert_closed = ClockTests.assert_closed
+
+    def test_idle_expiry_after_admission_clears_state(self):
+        clock = admitted()
+        self.assertEqual(clock.next_deadline, 2)
+        clock.expire(now=1.99)
+        with self.assertRaisesRegex(ValueError, "freshness expired \\(wall clock\\)"):
+            clock.expire(now=2)
+        self.assert_closed(clock)
+
+    def test_first_track_can_expire_while_waiting_for_other_track(self):
+        clock = setup()
+        feed(clock, pkt(0, pts=None, dts=None, report=sr()))
+        self.assertEqual(clock.next_deadline, 2)  # earlier than startup's 4s deadline
+        with self.assertRaisesRegex(ValueError, "freshness expired"):
+            clock.expire(now=2)
+        self.assert_closed(clock)
+
+    def test_reports_renew_only_their_own_track(self):
+        clock = admitted()
+        clock.feed(json.dumps(pkt(2, pts=6000, dts=6000, report=sr(at=0.5))).encode(), now=0.5)
+        self.assertEqual(clock.next_deadline, 2)  # audio did not renew
+        with self.assertRaisesRegex(ValueError, "freshness expired"):
+            clock.expire(now=2)
+        self.assert_closed(clock)
+        clock = admitted()
+        clock.feed(json.dumps(pkt(2, pts=6000, dts=6000, report=sr(at=0.5))).encode(), now=0.5)
+        clock.feed(json.dumps(pkt(3, track=1, pts=1024, dts=1024, report=sr(1, at=0.5))).encode(), now=0.5)
+        self.assertEqual(clock.next_deadline, 2.5)
+        clock.expire(now=2.49)
+        self.assertTrue(clock.ready)
+
+    def test_media_burst_cannot_keep_another_tracks_old_mapping_alive(self):
+        clock = admitted()
+        with self.assertRaisesRegex(ValueError, "freshness expired \\(media clock\\)"):
+            for i in range(1, 31):
+                at = {8: 0.5, 15: 1, 23: 1.5, 30: 2}.get(i)
+                # Video SRs stay current; the silent audio track does not.
+                feed(clock, pkt(i + 1, pts=i * 6000, dts=i * 6000,
+                                report=sr(at=at) if at is not None else None))
+        self.assertEqual(clock.now, 0)  # no receiver wall time elapsed
+        self.assert_closed(clock)
+
+    def test_late_report_does_not_revive_expired_mapping(self):
+        clock = admitted()
+        with self.assertRaisesRegex(ValueError, "freshness expired \\(wall clock\\)"):
+            clock.feed(json.dumps(pkt(2, pts=6000, dts=6000, report=sr(at=2))).encode(), now=2)
+        self.assert_closed(clock)
+        clock = admitted()
+        with self.assertRaisesRegex(ValueError, "freshness expired \\(report interval\\)"):
+            feed(clock, pkt(2, pts=6000, dts=6000, report=sr(at=2)))
+        self.assert_closed(clock)
+
+    def test_timeout_policy_and_monotonic_inputs_are_bounded(self):
+        for value in (0, -1, True, 31, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                ClockNormalizer(1, report_timeout=value)
+        for value in (-1, float("nan"), float("inf")):
+            clock = admitted()
+            with self.assertRaisesRegex(ValueError, "monotonic time"):
+                clock.expire(now=value)
+            self.assert_closed(clock)
 
 
 class SenderReportTests(unittest.TestCase):

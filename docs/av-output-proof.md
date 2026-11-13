@@ -147,8 +147,9 @@ establishes a correct real-camera synchronization policy.
 ## Next work
 
 1. **Early-SR/Baseline subset complete:** [clocked RTSP → IPC → fragmented MP4](rtsp-clock-proof.md)
-   preserves sender-schedule timing and decoded A/V. Broader profiles, late/freshness
-   report policies and reordered RTSP decode-clock recovery remain open.
+   preserves sender-schedule timing and decoded A/V, including bounded report loss.
+   Broader profiles, late reports, production freshness budgets and reordered RTSP
+   decode-clock recovery remain open.
 2. Define finite AAC clip-end semantics and verify the chosen behavior in HomeKit;
    retain the direct-copy control and explicit padding assertion.
 3. Binary IPC, time-based buffering, production supervision/leases and Rust

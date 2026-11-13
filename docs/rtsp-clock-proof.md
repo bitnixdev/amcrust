@@ -73,7 +73,8 @@ clock normalizer:
 6. Subsequent reports must retain SSRC and a consistent RTP/NTP slope, with modular
    32-bit timestamp arithmetic and at most one track tick of disagreement. Clock
    jumps, reversed/repeated report time or implausibly large report intervals fail.
-   This is not adaptive drift correction or a complete RTCP freshness policy.
+   This is not adaptive drift correction. The freshness guards below additionally
+   bound how long previously accepted reports may support output.
 
 On failure the normalizer clears held packets/configuration and cannot be resumed;
 a fresh generation needs a new instance. This is local rejection behavior, not yet
@@ -82,6 +83,43 @@ a production supervisor/subscriber terminal-notification implementation.
 The probe captures a deliberately finite clip while the source is still active,
 then supplies an explicit matching end count. Source disconnection is never turned
 into successful finite-media completion.
+
+## Report freshness and bounded loss
+
+The initial implementation checked report consistency but could keep an old mapping
+alive indefinitely if reports stopped. The normalizer now enforces a configurable
+`report_timeout` (default **2 seconds**, positive and at most 30 seconds) using three
+independent checks:
+
+- **Receiver monotonic time:** each track has its own deadline from when its latest
+  report was accepted from IPC. Other tracks' reports cannot renew it. `next_deadline`
+  and `expire()` let the capture driver arm an idle timer, including after startup;
+  silence does not require another packet to trigger expiry.
+- **Shared media progress:** the furthest validated presentation end across tracks
+  must remain within the budget of every track's latest SR NTP time relative to the
+  common epoch. A burst of buffered packets, or a healthy track continuing while
+  another stops, cannot hide stale clock evidence by arriving quickly.
+- **Successive SR intervals:** a fresh-looking report arriving in a burst cannot
+  bridge an already excessive sender-time gap. Intervals at or beyond the configured
+  budget are rejected before renewing that track's mapping.
+
+Expiry at the boundary closes the generation and clears retained state. A late
+report does not revive it. The receiver clock must be finite and nondecreasing.
+These are evidence-age limits, **not** estimates of camera-to-viewer latency: IPC
+observation time is not the original network-receive/capture time.
+
+The fixture emits SRs every 0.5 seconds, so the integration probe uses a **1.25-second
+budget**. Losing one scheduled report is tolerated: the next arrives with a
+one-second sender-time interval. That case still preserves exact packet timing,
+video and PCM through fMP4 output. Sustained loss of all reports, loss of only video
+reports while audio reports remain healthy, and post-admission socket silence each
+fail specifically as report-freshness expiry. Worker cancellation/reaping still
+runs on every capture failure.
+
+Real cameras may report much less frequently. Neither the default nor the fixture
+budget is a production recommendation; cadence, jitter and acceptable uncertainty
+need coordinated hardware measurement. No automatic timeout extension or drift
+correction is implemented.
 
 ## Observed results
 
@@ -92,8 +130,9 @@ macOS arm64, repository FFmpeg 9.0.2:
 | Aligned A/V | Both at shared epoch | 30 / 94 | 1 / 3 | 2 |
 | Audio starts 250 ms later | Both at shared epoch | 30 / 83 | 1 / 6 | 2 |
 | Audio starts 250 ms later | Audio SR also starts 250 ms later | 30 / 83 | 1 / 6 | 2 |
+| Aligned A/V, one scheduled SR lost per track | Both at shared epoch | 30 / 94 | 1 / 3 | 2 |
 
-For all three cases:
+For all four cases:
 
 - Every normalized timestamp matches an **independent sender-schedule oracle**:
   video advances by 6000/90000 seconds; audio by 1024/48000 seconds plus its offset.
@@ -111,11 +150,14 @@ An actual on-wire 200 ms video sender-report clock jump is rejected specifically
 a clock/SSRC discontinuity. Unit cases additionally cover missing epoch/evidence,
 late/out-of-window reports, SSRC changes, timestamp gaps/rollback, bounded prefix
 repair, buffer/deadline limits, stale generations and unambiguous B-frame timestamps.
+Freshness regressions cover independent per-track renewal, silent startup/active
+expiry, zero-wall-time media bursts, late renewal attempts and invalid timer inputs.
 
 ## Remaining gates
 
-- Real-camera sender-report behavior, NTP quality, late initial reports, report
-  freshness/loss and source drift. The current policy intentionally rejects some
+- Real-camera sender-report cadence, NTP quality, late initial reports and source
+  drift. Bounded report loss/freshness now has synthetic coverage, but suitable
+  production budgets remain unmeasured. The current policy intentionally rejects some
   otherwise usable cameras rather than silently constructing an uncertain epoch.
 - Non-B guarantees for Main/High profiles (e.g. reliable SPS restrictions), and
   reordered RTSP decode-clock recovery. `video_delay == 0` alone is not treated as

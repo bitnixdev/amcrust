@@ -15,6 +15,7 @@ from ingest_probe import command
 
 REALM = "amcrust-fixture"
 NONCE = "synthetic-fixed-nonce"
+CLOCK_FAULTS = ("clock-jump", "reports-lost", "video-reports-lost", "clock-silent", "report-once-lost")
 
 
 def nals(data):
@@ -102,12 +103,12 @@ def sender_report(track, origin, elapsed, packets, octets):
 class CameraFixture:
     def __init__(self, media, mode="disconnect", *, clocked=False, audio_offset=0, staggered_reports=False):
         self.video, self.audio = media
-        if mode not in ("disconnect", "stall", "silent", "rollback", "reject", "clock-jump"):
+        if mode not in ("disconnect", "stall", "silent", "rollback", "reject") + CLOCK_FAULTS:
             raise ValueError("unknown fixture mode")
         self.mode = mode
         if audio_offset < 0 or audio_offset > 0.5 or (audio_offset and not clocked):
             raise ValueError("unsupported fixture audio offset")
-        if mode == "clock-jump" and not clocked:
+        if mode in CLOCK_FAULTS and not clocked:
             raise ValueError("clock fault requires sender reports")
         if staggered_reports and (not clocked or not audio_offset):
             raise ValueError("staggered reports require delayed clocked audio")
@@ -243,11 +244,15 @@ class CameraFixture:
         # SR precedes media at the same instant, including both initial reports.
         for at, track, index, au in sorted(events, key=lambda event: (event[0], -1 if event[1] >= 2 else event[1])):
             # Enough media to discover both tracks, join late, and reach a new IDR.
-            if at >= 2.2:
+            if at >= 2.2 or (self.mode == "clock-silent" and at >= 0.5):
                 break
             await asyncio.sleep(max(0, started + at - asyncio.get_running_loop().time()))
             if track >= 2:
                 for report_track in ((1,) if track == 3 else (0, 1)):
+                    if ((self.mode == "reports-lost" and at > 0) or
+                            (self.mode == "video-reports-lost" and report_track == 0 and at > 0) or
+                            (self.mode == "report-once-lost" and at == 0.5)):
+                        continue
                     if self.staggered_reports and report_track == 1 and at < self.audio_offset:
                         continue
                     origin = self.origins[report_track]

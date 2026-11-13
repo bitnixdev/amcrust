@@ -17,7 +17,8 @@ from rtsp_fixture import CameraFixture, make_media
 
 
 async def capture(worker, media, generation, offset, mode="stall", staggered=False):
-    normalizer = ClockNormalizer(generation)
+    # Fixture SR period is 0.5s: tolerate one lost report, not indefinite loss.
+    normalizer = ClockNormalizer(generation, report_timeout=Fraction(5, 4))
     original, normalized, counts = [], [], [0, 0]
     async with CameraFixture(media, mode, clocked=True, audio_offset=offset,
                              staggered_reports=staggered) as camera:
@@ -26,8 +27,13 @@ async def capture(worker, media, generation, offset, mode="stall", staggered=Fal
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
         try:
             while counts[0] < 30 or counts[1] < 80:
-                timeout = 2.5 if normalizer.ready else min(4, normalizer.deadline - time.monotonic())
-                raw = await asyncio.wait_for(read_frame(process.stdout), max(0.001, timeout))
+                normalizer.expire()
+                timeout = min(2.5, normalizer.next_deadline - time.monotonic())
+                try:
+                    raw = await asyncio.wait_for(read_frame(process.stdout), max(0.001, timeout))
+                except asyncio.TimeoutError:
+                    normalizer.expire()  # distinguish clock expiry from a transport timeout
+                    raise ValueError("source read deadline exceeded")
                 if raw is None:
                     raise ValueError("source ended before intentional clip cut")
                 frame = json.loads(raw)
@@ -41,6 +47,8 @@ async def capture(worker, media, generation, offset, mode="stall", staggered=Fal
             normalized.extend(normalizer.feed(json.dumps(terminal).encode()))
             original.append(terminal)
         finally:
+            if not normalizer.protocol.ended:
+                normalizer._abort()
             await stop_process(process)
     return original, normalized, normalizer
 
@@ -69,8 +77,8 @@ def check_repair(original, normalized, offset):
     return counts
 
 
-async def output_case(worker, sink, directory, media, generation, offset, staggered):
-    original, frames, clock = await capture(worker, media, generation, offset, staggered=staggered)
+async def output_case(worker, sink, directory, media, generation, offset, staggered, mode="stall"):
+    original, frames, clock = await capture(worker, media, generation, offset, mode, staggered)
     counts = check_repair(original, frames, offset)
     path = directory / f"clock-{generation}.mp4"
     await mux(sink, path, pack_wire(frames))
@@ -99,6 +107,7 @@ async def output_case(worker, sink, directory, media, generation, offset, stagge
     if await decoded(rebuilt) != (video, audio):
         raise ValueError("fragment assembly changed media")
     return {"generation": generation, "audio_offset_seconds": offset, "staggered_first_reports": staggered,
+            "report_mode": mode,
             "video_frames": counts[0], "audio_packets": counts[1], "fragments": len(fragments),
             "repaired_video_pts": clock.repaired_pts, "repaired_video_dts": clock.repaired_dts,
             "source_clock_and_output_timing_exact": True, "decoded_av_exact": True}
@@ -117,7 +126,19 @@ async def run(worker, sink):
                 raise
         else:
             raise ValueError("sender report jump accepted")
+        results.append(await output_case(worker, sink, directory, media, 5, 0, False, "report-once-lost"))
+        expired = []
+        for generation, mode in enumerate(("reports-lost", "video-reports-lost", "clock-silent"), 6):
+            try:
+                await capture(worker, media, generation, 0, mode)
+            except ValueError as error:
+                if "sender report freshness expired" not in str(error):
+                    raise
+                expired.append(mode)
+            else:
+                raise ValueError("stale sender clock accepted")
         return {"cases": results, "rtcp_clock_jump_rejected": True,
+                "freshness_faults_rejected": expired,
                 "scope": "early common-epoch SRs, baseline H264; not general RTSP or HomeKit acceptance"}
 
 
