@@ -449,6 +449,7 @@ impl StreamManager {
             session.video_port,
             session.video_key.clone(),
             1,
+            self.metrics.clone(),
         ) else {
             self.metrics.error(ErrorSubsystem::LiveStream);
             return;
@@ -577,6 +578,7 @@ impl StreamManager {
                                 session.audio_port,
                                 session.audio_key.clone(),
                                 48000 / audio_rate_hz.max(1),
+                                self.metrics.clone(),
                             );
                             inner.audio_children.insert(session.id.clone(), child);
                             if let Some(proxy) = proxy {
@@ -682,7 +684,9 @@ fn spawn_media_proxy(
     controller_port: u16,
     key: Vec<u8>,
     ratio: u32,
+    metrics: Arc<Metrics>,
 ) -> Option<tokio::task::JoinHandle<()>> {
+    let started = std::time::Instant::now();
     let mut srtp = match crate::srtp::SrtpSession::new(&key) {
         Some(srtp) => srtp,
         None => {
@@ -719,11 +723,15 @@ fn spawn_media_proxy(
                             }
                             sent_rtp += 1;
                             if sent_rtp == 1 {
+                                if label == "video" {
+                                    metrics.live_first_packet(false, started.elapsed());
+                                }
                                 debug!("{label} proxy: first RTP packet → {dest}");
                             }
                             if label == "video" && !logged_keyframe && h264_contains_idr(packet) {
                                 debug!("video proxy: first H.264 keyframe packet → {dest}");
                                 logged_keyframe = true;
+                                metrics.live_first_packet(true, started.elapsed());
                             }
                         }
                     }

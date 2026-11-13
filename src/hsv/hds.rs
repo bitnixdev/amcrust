@@ -12,7 +12,7 @@ use tokio::time::{Duration, Instant, timeout};
 use crate::hsv::codec::{self, Value};
 use crate::hsv::frame::{self, SessionKeys};
 use crate::hsv::recording::HsvState;
-use crate::metrics::{ErrorSubsystem, Metrics};
+use crate::metrics::{ErrorSubsystem, Metrics, RecordingDeliveryOutcome};
 
 const PREPARED_SESSION_TTL: Duration = Duration::from_secs(10);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -415,10 +415,15 @@ impl Connection {
         let metrics = self.server.metrics.clone();
         let camera_name = self.server.camera_name.clone();
         tokio::spawn(async move {
-            if let Err(e) = pump_recording(writer, state, stream_id, cancel).await {
-                metrics.error(ErrorSubsystem::DataStream);
-                warn!("recording stream {stream_id} ended with error: {e}");
-            }
+            let outcome = match pump_recording(writer, state, stream_id, cancel).await {
+                Ok(outcome) => outcome,
+                Err(e) => {
+                    metrics.error(ErrorSubsystem::DataStream);
+                    warn!("recording stream {stream_id} ended with error: {e}");
+                    RecordingDeliveryOutcome::WriteError
+                }
+            };
+            metrics.recording_delivery_finished(outcome);
             busy.store(false, Ordering::SeqCst);
             metrics.recording_stream_active(false);
             info!("[{camera_name}] HomeKit recording stopped (stream {stream_id})");
@@ -442,10 +447,11 @@ async fn pump_recording(
     state: Arc<HsvState>,
     stream_id: i64,
     cancel: Arc<AtomicBool>,
-) -> Result<(), String> {
+) -> Result<RecordingDeliveryOutcome, String> {
     let (init, prebuffer, mut live) = state.recorder.snapshot_and_subscribe().await;
     let Some(init) = init else {
-        return send_close(&writer, stream_id, 6).await; // TIMEOUT: nothing buffered yet
+        send_close(&writer, stream_id, 6).await?; // TIMEOUT: nothing buffered yet
+        return Ok(RecordingDeliveryOutcome::SourceUnavailable);
     };
     let prebuffer_fragments = prebuffer.len();
     let prebuffer_bytes: usize = prebuffer.iter().map(|fragment| fragment.data.len()).sum();
@@ -472,7 +478,7 @@ async fn pump_recording(
     for fragment in prebuffer {
         if cancel.load(Ordering::SeqCst) {
             debug!("recording stream {stream_id}: cancelled during prebuffer");
-            return Ok(());
+            return Ok(RecordingDeliveryOutcome::Cancelled);
         }
         let seq = sequence.fetch_add(1, Ordering::SeqCst);
         send_data(
@@ -494,12 +500,18 @@ async fn pump_recording(
             debug!(
                 "recording stream {stream_id}: controller closed after {fragment_count} fragments ({media_bytes} bytes)"
             );
-            return Ok(());
+            return Ok(RecordingDeliveryOutcome::Cancelled);
         }
         let fragment = match timeout(Duration::from_secs(30), live.recv()).await {
             Ok(Ok(fragment)) => fragment,
-            Ok(Err(_)) => return send_close(&writer, stream_id, 5).await,
-            Err(_) => return send_close(&writer, stream_id, 6).await,
+            Ok(Err(_)) => {
+                send_close(&writer, stream_id, 5).await?;
+                return Ok(RecordingDeliveryOutcome::SourceUnavailable);
+            }
+            Err(_) => {
+                send_close(&writer, stream_id, 6).await?;
+                return Ok(RecordingDeliveryOutcome::SourceUnavailable);
+            }
         };
         let motion_still_active = state.motion_active.load(Ordering::SeqCst);
         let end_of_stream = if motion_still_active {
@@ -526,7 +538,7 @@ async fn pump_recording(
                 "recording stream {stream_id}: end of stream sent after {fragment_count} fragments ({media_bytes} bytes, {}s post-motion tail)",
                 RECORDING_TAIL.as_secs()
             );
-            return Ok(());
+            return Ok(RecordingDeliveryOutcome::EndSent);
         }
     }
 }

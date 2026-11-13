@@ -20,6 +20,14 @@ pub enum ErrorSubsystem {
     Recording,
 }
 
+#[derive(Clone, Copy)]
+pub enum RecordingDeliveryOutcome {
+    EndSent = 0,
+    Cancelled = 1,
+    SourceUnavailable = 2,
+    WriteError = 3,
+}
+
 /// Process-wide counters and gauges. All labels are from fixed sets to avoid
 /// unbounded Prometheus cardinality.
 pub struct Metrics {
@@ -36,6 +44,11 @@ pub struct Metrics {
     snapshot_delivery_bytes: AtomicU64,
     snapshot_delivery_errors: AtomicU64,
     live_stream_starts: AtomicU64,
+    live_first_rtp_count: AtomicU64,
+    live_first_rtp_micros: AtomicU64,
+    live_first_idr_count: AtomicU64,
+    live_first_idr_micros: AtomicU64,
+    recording_deliveries: [AtomicU64; 4],
     recording_fragments: AtomicU64,
     recording_bytes: AtomicU64,
     errors_event_stream: AtomicU64,
@@ -66,6 +79,11 @@ impl Metrics {
             snapshot_delivery_bytes: AtomicU64::new(0),
             snapshot_delivery_errors: AtomicU64::new(0),
             live_stream_starts: AtomicU64::new(0),
+            live_first_rtp_count: AtomicU64::new(0),
+            live_first_rtp_micros: AtomicU64::new(0),
+            live_first_idr_count: AtomicU64::new(0),
+            live_first_idr_micros: AtomicU64::new(0),
+            recording_deliveries: std::array::from_fn(|_| AtomicU64::new(0)),
             recording_fragments: AtomicU64::new(0),
             recording_bytes: AtomicU64::new(0),
             errors_event_stream: AtomicU64::new(0),
@@ -125,6 +143,25 @@ impl Metrics {
         self.live_stream_starts.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Proxy startup to first successfully sent video RTP / IDR packet.
+    /// This is not controller decode latency or a complete keyframe measurement.
+    pub fn live_first_packet(&self, idr: bool, elapsed: Duration) {
+        let (count, micros) = if idr {
+            (&self.live_first_idr_count, &self.live_first_idr_micros)
+        } else {
+            (&self.live_first_rtp_count, &self.live_first_rtp_micros)
+        };
+        micros.fetch_add(
+            elapsed.as_micros().min(u64::MAX as u128) as u64,
+            Ordering::Relaxed,
+        );
+        count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn recording_delivery_finished(&self, outcome: RecordingDeliveryOutcome) {
+        self.recording_deliveries[outcome as usize].fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn recording_fragment(&self, bytes: usize) {
         self.recording_fragments.fetch_add(1, Ordering::Relaxed);
         self.recording_bytes
@@ -174,7 +211,7 @@ impl Metrics {
     }
 
     fn render(&self, recording_pipeline_running: bool) -> String {
-        format!(
+        let mut output = format!(
             concat!(
                 "# HELP amcrust_build_info Build and version information.\n",
                 "# TYPE amcrust_build_info gauge\n",
@@ -230,6 +267,12 @@ impl Metrics {
                 "# HELP amcrust_live_stream_starts_total Live video streams started.\n",
                 "# TYPE amcrust_live_stream_starts_total counter\n",
                 "amcrust_live_stream_starts_total {}\n",
+                "# HELP amcrust_live_first_packet_seconds Proxy startup to first sent video packet; not decoded-frame latency.\n",
+                "# TYPE amcrust_live_first_packet_seconds summary\n",
+                "amcrust_live_first_packet_seconds_count{{packet=\"rtp\"}} {}\n",
+                "amcrust_live_first_packet_seconds_sum{{packet=\"rtp\"}} {:.6}\n",
+                "amcrust_live_first_packet_seconds_count{{packet=\"idr\"}} {}\n",
+                "amcrust_live_first_packet_seconds_sum{{packet=\"idr\"}} {:.6}\n",
                 "# HELP amcrust_recording_fragments_total Recording fragments produced.\n",
                 "# TYPE amcrust_recording_fragments_total counter\n",
                 "amcrust_recording_fragments_total {}\n",
@@ -263,9 +306,24 @@ impl Metrics {
             Self::load(&self.snapshot_delivery_bytes),
             Self::load(&self.snapshot_delivery_errors),
             Self::load(&self.live_stream_starts),
+            Self::load(&self.live_first_rtp_count),
+            Self::load(&self.live_first_rtp_micros) as f64 / 1_000_000.0,
+            Self::load(&self.live_first_idr_count),
+            Self::load(&self.live_first_idr_micros) as f64 / 1_000_000.0,
             Self::load(&self.recording_fragments),
             Self::load(&self.recording_bytes),
-        )
+        );
+        output.push_str("# HELP amcrust_recording_deliveries_total Recording pump outcomes; end_sent is not an iCloud storage acknowledgement.\n# TYPE amcrust_recording_deliveries_total counter\n");
+        for (label, count) in ["end_sent", "cancelled", "source_unavailable", "write_error"]
+            .iter()
+            .zip(&self.recording_deliveries)
+        {
+            output.push_str(&format!(
+                "amcrust_recording_deliveries_total{{outcome=\"{label}\"}} {}\n",
+                Self::load(count)
+            ));
+        }
+        output
     }
 
     fn stderr_summary(&self) -> String {
@@ -411,6 +469,34 @@ mod tests {
         assert!(output.contains("amcrust_snapshot_deliveries_total 1"));
         assert!(output.contains("amcrust_snapshot_delivery_bytes_total 4096"));
         assert!(output.contains("amcrust_snapshot_delivery_errors_total 1"));
+    }
+
+    #[test]
+    fn live_startup_samples_keep_rtp_and_idr_separate() {
+        let metrics = Metrics::new();
+        metrics.live_first_packet(false, std::time::Duration::from_millis(125));
+        metrics.live_first_packet(false, std::time::Duration::from_millis(375));
+        metrics.live_first_packet(true, std::time::Duration::from_millis(750));
+        let output = metrics.render(false);
+        assert!(output.contains("amcrust_live_first_packet_seconds_count{packet=\"rtp\"} 2"));
+        assert!(output.contains("amcrust_live_first_packet_seconds_sum{packet=\"rtp\"} 0.500000"));
+        assert!(output.contains("amcrust_live_first_packet_seconds_count{packet=\"idr\"} 1"));
+        assert!(output.contains("amcrust_live_first_packet_seconds_sum{packet=\"idr\"} 0.750000"));
+    }
+
+    #[test]
+    fn recording_outcomes_are_distinct_from_fragment_production() {
+        use super::RecordingDeliveryOutcome;
+        let metrics = Metrics::new();
+        metrics.recording_fragment(100);
+        metrics.recording_delivery_finished(RecordingDeliveryOutcome::EndSent);
+        metrics.recording_delivery_finished(RecordingDeliveryOutcome::SourceUnavailable);
+        let output = metrics.render(true);
+        assert!(output.contains("amcrust_recording_deliveries_total{outcome=\"end_sent\"} 1"));
+        assert!(
+            output.contains("amcrust_recording_deliveries_total{outcome=\"source_unavailable\"} 1")
+        );
+        assert!(output.contains("amcrust_recording_deliveries_total{outcome=\"write_error\"} 0"));
     }
 
     #[tokio::test]

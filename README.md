@@ -115,6 +115,11 @@ curl http://localhost:9090/metrics
 A compact process summary is also written directly to stderr every hour,
 regardless of the configured log filter.
 
+For shared-ingest baseline sampling and the synthetic FFmpeg fanout experiment,
+see [shared-ingest research](docs/shared-ingest-research.md). Startup metrics measure
+first sent RTP/IDR packets, not controller decode latency; recording delivery
+outcomes distinguish an end-of-stream write from confirmed iCloud storage.
+
 On first startup, each camera gets its own random setup PIN, persisted with its
 pairing state. The log prints it as `1234-5678`; add the accessory in the Home
 app via "Add Accessory → More options…". The instance must be reachable from
