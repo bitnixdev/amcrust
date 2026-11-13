@@ -141,6 +141,31 @@ Observed wire sizes for the same 187-packet fixtures, including outer prefixes:
 This is about **48% fewer serialized bytes**, measured against equivalent metadata
 and payloads, not a CPU/RSS/latency benchmark or a comparison across FFmpeg versions.
 
+## Binary consumer views
+
+Packet fanout consumers and `MediaQueue` validation now use `Protocol(binary=True)`.
+Byte fields are independent, read-only `memoryview` slices into the immutable AMC2
+body, not payload-sized hex strings or decoded byte copies. Hashing and side-data
+comparison consume those views directly. Native no-B/B-frame fanout asserts that
+payload, extradata and side-data views actually refer to the received wire body,
+as well as preserving the existing exact packet comparisons.
+
+Only backing bytes are shared: each decode gets its own metadata and view objects.
+Releasing one consumer's view or changing its metadata cannot invalidate another
+consumer. Retained codec data survives later reads; a delivered view remains valid
+after peer detach, queue draining and source-reference release. Byte-field validation
+rejects read-only aliases of mutable storage, noncontiguous views and non-byte casts.
+
+Delivered views retain their whole backing frame until released. They are outside
+queue byte/duration accounting; this is not an in-flight memory limit. Closing a
+queue clears its own descriptors/views, but cannot revoke data already handed out.
+
+The explicit inspection mode still returns hex for the source-side ffprobe oracle,
+clock repair and H.264 evidence tooling. Metadata parsing/lifecycle validation still
+occur separately per consumer. Sharing validated immutable metadata and sustained
+load/memory measurement remain next steps; no end-to-end zero-copy or CPU/RSS
+improvement is claimed here.
+
 ## Subscriber terminal signals
 
 The original `PacketQueue.detach()` cleared data but left an already waiting
@@ -212,10 +237,11 @@ per-packet accounting empty rather than accumulating it.
 limit, throughput measurement, or production latency recommendation. Source idle
 expiry remains a separate supervisor/clock responsibility. Retained descriptor
 state has the protocol's own stream/configuration caps and is not included in queued
-wire-byte counts. Accounting scans at most the bounded queued frame count; metadata
-parsing and hex inspection objects per subscriber are proof scaffolding, not a
-performance-ready fanout design. Binary worker/queue framing is now in place;
-removing inspection conversions and sustained load/memory measurements remain open.
+wire-byte counts. Accounting scans at most the bounded queued frame count. Queue
+validation and packet fanout consumers now use binary views instead of hex, but
+metadata parsing per subscriber and source-side inspection objects remain proof
+scaffolding. Shared validated metadata and sustained load/memory measurements remain
+open before performance claims.
 
 ## Follow-up gates
 
@@ -237,9 +263,10 @@ It does **not** make this worker production-ready.
    terminal AAC padding. The [clocked RTSP proof](rtsp-clock-proof.md) now repairs
    bounded non-reordering startup timestamps with shared-epoch and codec evidence. Unclocked/ambiguous
    input is still rejected; real-camera/HomeKit acceptance remains open.
-5. **Bounded binary worker/queue framing complete for the prototype.** Remove
-   per-consumer proof-object conversions before treating this as a performance design.
-   Export additional codec/layout/color metadata as required by supported consumers.
+5. **Bounded binary framing and consumer payload views complete for the prototype.**
+   Share validated metadata and remove remaining source-side inspection conversions
+   before treating this as a performance design. Export additional codec/layout/color
+   metadata as required by supported consumers.
 
 Production still uses its original FFmpeg readers. The local living plan tracks
 these open gates, including the two real-camera models and deployment baseline.

@@ -30,6 +30,13 @@ def integer(value, low=0, high=(1 << 63) - 1):
 
 
 def byte_field(value, maximum=MAX_PAYLOAD):
+    if isinstance(value, (bytes, memoryview)):
+        if isinstance(value, memoryview) and (not value.readonly or not value.c_contiguous
+                or value.ndim != 1 or value.format != "B" or not isinstance(value.obj, bytes)):
+            raise ValueError("byte views require an immutable contiguous owner")
+        if len(value) > maximum:
+            raise ValueError("byte field limit exceeded")
+        return value
     if (not isinstance(value, str) or len(value) > maximum * 2 or len(value) % 2
             or any(c not in "0123456789abcdef" for c in value)):
         raise ValueError("invalid byte field")
@@ -49,7 +56,8 @@ def side_data(value):
 
 class Protocol:
     """Strict lifecycle validation: one generation, all configs before packets."""
-    def __init__(self, generation=1):
+    def __init__(self, generation=1, *, binary=False):
+        self.binary = binary
         self.generation = integer(generation, 1, (1 << 31) - 1)
         self.hello = None
         self.streams = {}
@@ -60,7 +68,7 @@ class Protocol:
         if not raw or len(raw) > MAX_FRAME or self.ended:
             raise ValueError("invalid frame/lifecycle")
         try:
-            obj = decode_frame(raw)
+            obj = decode_frame(raw, binary=self.binary)
             if not isinstance(obj, dict) or integer(obj["generation"]) != self.generation:
                 raise ValueError("invalid generation")
             kind = obj["type"]
@@ -207,7 +215,7 @@ class MediaQueue(PacketQueue):
             raise ValueError("media budget must be positive exact seconds")
         super().__init__(max_bytes, max_frames)
         self.max_duration = Fraction(max_duration)
-        self.protocol = Protocol(generation)
+        self.protocol = Protocol(generation, binary=True)
         self.spans = deque()
         self.last_dts = {}
         self.watermark = None
@@ -278,7 +286,7 @@ class MediaQueue(PacketQueue):
 
 def summarize(packet):
     return {**{key: packet[key] for key in ("stream", "pts", "dts", "duration", "flags", "side_data")},
-            "hash": "SHA256:" + hashlib.sha256(bytes.fromhex(packet["data"])).hexdigest()}
+            "hash": "SHA256:" + hashlib.sha256(byte_field(packet["data"])).hexdigest()}
 
 
 async def acquire(worker, source, *, started=None):
@@ -290,11 +298,16 @@ async def acquire(worker, source, *, started=None):
     terminal = "source_failed"
 
     async def consume(subscriber):
-        state = Protocol()
+        state = Protocol(binary=True)
         packets = []
         while not state.ended:
             raw = await subscriber.receive()
             obj = state.accept(raw)
+            if obj["type"] in ("stream", "packet"):
+                primary = obj["extradata"] if obj["type"] == "stream" else obj["data"]
+                views = [primary] + [entry["data"] for entry in obj["side_data"]]
+                if any(not isinstance(view, memoryview) or view.obj is not raw for view in views):
+                    raise ValueError("consumer materialized binary byte fields")
             if obj["type"] == "packet":
                 packets.append(summarize(obj))
         if not state.ended:
@@ -384,7 +397,7 @@ def compare(protocol, packets, reference):
             expected_bytes = struct.pack("<IIBB", decoded["skip_samples"], decoded["discard_padding"],
                                          decoded["skip_reason"], decoded["discard_reason"])
             if (raw["type"] != protocol.hello["skip_samples_type"]
-                    or bytes.fromhex(raw["data"]) != expected_bytes):
+                    or byte_field(raw["data"]) != expected_bytes):
                 raise ValueError("AAC skip/discard side data changed")
             skip_samples += 1
     if not skip_samples:
@@ -411,6 +424,7 @@ async def experiment(worker, bframes):
         return {"bframes": bframes, "packets": len(packets), "aac_side_data_packets": skips,
                 **wire_sizes,
                 "exact_packet_comparison": True, "healthy_consumers": 2,
+                "consumer_byte_views_share_wire_body": True,
                 "stalled_consumer_detached": True, "peak_queue_bytes": peaks,
                 "media_stalled_consumer_detached": True, "media_budget_seconds": 0.5,
                 "scope": "local file packet preservation; no remux/playback/RTSP proof"}

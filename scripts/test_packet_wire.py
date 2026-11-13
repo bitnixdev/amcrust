@@ -32,6 +32,11 @@ class BinaryWireTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(blob_size, MAX_BYTES + MAX_SIDE)
         self.assertEqual(len(raw), HEADER.size + meta_size + blob_size)
         self.assertEqual(decode_frame(raw), obj)
+        binary = decode_frame(raw, binary=True)
+        self.assertIs(binary["data"].obj, raw)
+        self.assertEqual(len(binary["data"]), MAX_BYTES)
+        self.assertIs(binary["side_data"][0]["data"].obj, raw)
+        self.assertEqual(len(binary["side_data"][0]["data"]), MAX_SIDE)
 
     def test_empty_byte_fields_and_non_mutating_encoder(self):
         obj = {**stream(), "extradata": "", "side_data": [{"type": 0, "data": ""}]}
@@ -41,8 +46,9 @@ class BinaryWireTests(unittest.IsolatedAsyncioTestCase):
 
     def test_shared_malformed_vectors(self):
         for name, raw in malformed_bodies(encode_frame(packet())).items():
-            with self.subTest(name=name), self.assertRaises(ValueError):
-                decode_frame(raw)
+            for binary in (False, True):
+                with self.subTest(name=name, binary=binary), self.assertRaises(ValueError):
+                    decode_frame(raw, binary=binary)
 
     def test_metadata_caps_schema_and_non_finite_values(self):
         for obj in ({**hello(), "extra": "x" * MAX_METADATA},

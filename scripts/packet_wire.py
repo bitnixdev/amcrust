@@ -1,7 +1,8 @@
 """AMC2: bounded JSON metadata plus raw binary byte fields (experimental ABI).
 
-Queue bodies are binary. Decoded proof objects still use hex for comparison and
-bitstream inspection; these adapters are not a zero-copy/performance claim.
+Queue bodies are binary. Binary decoding exposes independent read-only views into
+immutable bodies; inspection decoding retains hex for comparison/bitstream tools.
+Metadata parsing still allocates; this is not an end-to-end zero-copy claim.
 """
 import copy
 import json
@@ -67,7 +68,7 @@ def encode_frame(obj):
         raise ValueError("invalid binary schema") from error
 
 
-def decode_frame(raw):
+def decode_frame(raw, *, binary=False):
     try:
         if not isinstance(raw, bytes) or not HEADER.size < len(raw) <= MAX_WIRE:
             raise ValueError("binary frame limit exceeded")
@@ -96,7 +97,8 @@ def decode_frame(raw):
                 side_total += size
                 if side_total > MAX_SIDE:
                     raise ValueError("side data limit exceeded")
-            owner[key] = blob[used:used + size].hex()
+            view = blob[used:used + size]
+            owner[key] = view if binary else view.hex()
             used += size
         if used != blob_size:
             raise ValueError("unreferenced binary bytes")
