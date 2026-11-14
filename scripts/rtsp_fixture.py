@@ -256,6 +256,7 @@ class CameraFixture:
             if self.staggered_reports:
                 events.append((self.audio_offset, 3, 0, None))
         octets = [0, 0]
+        sent = [0, 0]  # RTCP counters belong to this connection, not all fixture clients.
         sequence = [65000, 65000]
         started = asyncio.get_running_loop().time()
         # SR precedes media at the same instant, including both initial reports.
@@ -278,7 +279,7 @@ class CameraFixture:
                     if self.mode == "clock-jump" and report_track == 0 and at >= 1:
                         origin += 18000
                     report = sender_report(report_track, origin, at,
-                                           self.sent[report_track], octets[report_track])
+                                           sent[report_track], octets[report_track])
                     writer.write(b"$" + bytes([channels[report_track] + 1]) + struct.pack("!H", len(report)) + report)
                 await writer.drain()
                 continue
@@ -298,6 +299,7 @@ class CameraFixture:
                 sequence[track] = (sequence[track] + 1) & 0xFFFF
                 writer.write(b"$" + bytes([channels[track]]) + struct.pack("!H", len(rtp)) + rtp)
                 self.sent[track] += 1
+                sent[track] += 1
                 octets[track] += len(payload)
             await writer.drain()
         if self.mode in ("disconnect", "rollback"):

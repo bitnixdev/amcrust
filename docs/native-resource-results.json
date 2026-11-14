@@ -1,0 +1,581 @@
+{
+  "environment": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "python": "3.14.10"
+  },
+  "ffmpeg": "9.0.2",
+  "scope": "Synthetic matched acquisition/IPC workloads; not production throughput or unique physical memory",
+  "method": "Sequential fresh publisher and fixture processes; opposite order on second six-second pass. RSS sampling enabled outside build sandbox. Input generation excluded from CPU intervals.",
+  "results": [
+    {
+      "order": 1,
+      "trial": "r1",
+      "mode": "shared",
+      "subscribers": 1,
+      "seconds": 6,
+      "workers": 1,
+      "workload_sha256": "c0286183fcbe366fae56488d28aa00259c7b76d593a503a849db4ecdff7970f0",
+      "packets_per_worker": [
+        90,
+        270
+      ],
+      "consumer_packets": 360,
+      "native_cpu_seconds": 0.071665,
+      "native_individual_peak_rss_bytes": [
+        18186240
+      ],
+      "publisher_cpu_seconds": 0.271341,
+      "publisher_subsets": {
+        "normalization_cpu_seconds": 0.06624000000000022,
+        "publication_cpu_seconds": 0.06642000000000019,
+        "oracle_hash_cpu_seconds": 0.0012879999999997338,
+        "consumer_hash_release_cpu_seconds": 0.00375599999999994
+      },
+      "fixture": {
+        "cpu_seconds": 0.040198,
+        "connections": 1,
+        "played": 1
+      },
+      "elapsed_seconds": 6.090442084008828,
+      "rss": {
+        "enabled": true,
+        "samples": 18,
+        "full_worker_samples": 17,
+        "publisher_rss_sample_peak_bytes": 34897920,
+        "fixture_rss_sample_peak_bytes": 34799616,
+        "worker_rss_sum_sample_peak_bytes": 18186240
+      }
+    },
+    {
+      "order": 2,
+      "trial": "r1",
+      "mode": "independent",
+      "subscribers": 1,
+      "seconds": 6,
+      "workers": 1,
+      "workload_sha256": "c0286183fcbe366fae56488d28aa00259c7b76d593a503a849db4ecdff7970f0",
+      "packets_per_worker": [
+        90,
+        270
+      ],
+      "consumer_packets": 360,
+      "native_cpu_seconds": 0.07016,
+      "native_individual_peak_rss_bytes": [
+        18415616
+      ],
+      "publisher_cpu_seconds": 0.285003,
+      "publisher_subsets": {
+        "normalization_cpu_seconds": 0.06788999999999981,
+        "publication_cpu_seconds": 0.06987000000000038,
+        "oracle_hash_cpu_seconds": 0.0012190000000001366,
+        "consumer_hash_release_cpu_seconds": 0.00384399999999957
+      },
+      "fixture": {
+        "cpu_seconds": 0.03726700000000001,
+        "connections": 1,
+        "played": 1
+      },
+      "elapsed_seconds": 6.138479958026437,
+      "rss": {
+        "enabled": true,
+        "samples": 18,
+        "full_worker_samples": 16,
+        "publisher_rss_sample_peak_bytes": 35045376,
+        "fixture_rss_sample_peak_bytes": 35323904,
+        "worker_rss_sum_sample_peak_bytes": 18399232
+      }
+    },
+    {
+      "order": 3,
+      "trial": "r1",
+      "mode": "shared",
+      "subscribers": 2,
+      "seconds": 6,
+      "workers": 1,
+      "workload_sha256": "c0286183fcbe366fae56488d28aa00259c7b76d593a503a849db4ecdff7970f0",
+      "packets_per_worker": [
+        90,
+        270
+      ],
+      "consumer_packets": 720,
+      "native_cpu_seconds": 0.070164,
+      "native_individual_peak_rss_bytes": [
+        18169856
+      ],
+      "publisher_cpu_seconds": 0.295122,
+      "publisher_subsets": {
+        "normalization_cpu_seconds": 0.06855799999999967,
+        "publication_cpu_seconds": 0.07680199999999965,
+        "oracle_hash_cpu_seconds": 0.001670000000000213,
+        "consumer_hash_release_cpu_seconds": 0.006479999999999028
+      },
+      "fixture": {
+        "cpu_seconds": 0.037427,
+        "connections": 1,
+        "played": 1
+      },
+      "elapsed_seconds": 6.04570629200316,
+      "rss": {
+        "enabled": true,
+        "samples": 17,
+        "full_worker_samples": 16,
+        "publisher_rss_sample_peak_bytes": 34914304,
+        "fixture_rss_sample_peak_bytes": 34848768,
+        "worker_rss_sum_sample_peak_bytes": 18153472
+      }
+    },
+    {
+      "order": 4,
+      "trial": "r1",
+      "mode": "independent",
+      "subscribers": 2,
+      "seconds": 6,
+      "workers": 2,
+      "workload_sha256": "c0286183fcbe366fae56488d28aa00259c7b76d593a503a849db4ecdff7970f0",
+      "packets_per_worker": [
+        90,
+        270
+      ],
+      "consumer_packets": 720,
+      "native_cpu_seconds": 0.13539,
+      "native_individual_peak_rss_bytes": [
+        18841600,
+        18432000
+      ],
+      "publisher_cpu_seconds": 0.41273600000000005,
+      "publisher_subsets": {
+        "normalization_cpu_seconds": 0.11919200000000063,
+        "publication_cpu_seconds": 0.1303309999999998,
+        "oracle_hash_cpu_seconds": 0.002059999999999562,
+        "consumer_hash_release_cpu_seconds": 0.0068529999999998314
+      },
+      "fixture": {
+        "cpu_seconds": 0.04570600000000001,
+        "connections": 2,
+        "played": 2
+      },
+      "elapsed_seconds": 6.125055874988902,
+      "rss": {
+        "enabled": true,
+        "samples": 18,
+        "full_worker_samples": 17,
+        "publisher_rss_sample_peak_bytes": 35291136,
+        "fixture_rss_sample_peak_bytes": 34979840,
+        "worker_rss_sum_sample_peak_bytes": 37273600
+      }
+    },
+    {
+      "order": 5,
+      "trial": "r1",
+      "mode": "shared",
+      "subscribers": 8,
+      "seconds": 6,
+      "workers": 1,
+      "workload_sha256": "c0286183fcbe366fae56488d28aa00259c7b76d593a503a849db4ecdff7970f0",
+      "packets_per_worker": [
+        90,
+        270
+      ],
+      "consumer_packets": 2880,
+      "native_cpu_seconds": 0.069286,
+      "native_individual_peak_rss_bytes": [
+        18268160
+      ],
+      "publisher_cpu_seconds": 0.34586000000000006,
+      "publisher_subsets": {
+        "normalization_cpu_seconds": 0.0669409999999994,
+        "publication_cpu_seconds": 0.10142600000000009,
+        "oracle_hash_cpu_seconds": 0.0035080000000003025,
+        "consumer_hash_release_cpu_seconds": 0.01959700000000064
+      },
+      "fixture": {
+        "cpu_seconds": 0.037386,
+        "connections": 1,
+        "played": 1
+      },
+      "elapsed_seconds": 6.1190319169836584,
+      "rss": {
+        "enabled": true,
+        "samples": 18,
+        "full_worker_samples": 17,
+        "publisher_rss_sample_peak_bytes": 35274752,
+        "fixture_rss_sample_peak_bytes": 34783232,
+        "worker_rss_sum_sample_peak_bytes": 18268160
+      }
+    },
+    {
+      "order": 6,
+      "trial": "r1",
+      "mode": "independent",
+      "subscribers": 8,
+      "seconds": 6,
+      "workers": 8,
+      "workload_sha256": "c0286183fcbe366fae56488d28aa00259c7b76d593a503a849db4ecdff7970f0",
+      "packets_per_worker": [
+        90,
+        270
+      ],
+      "consumer_packets": 2880,
+      "native_cpu_seconds": 0.526885,
+      "native_individual_peak_rss_bytes": [
+        18644992,
+        18989056,
+        18726912,
+        18612224,
+        18595840,
+        18235392,
+        18202624,
+        18382848
+      ],
+      "publisher_cpu_seconds": 1.104993,
+      "publisher_subsets": {
+        "normalization_cpu_seconds": 0.3759940000000053,
+        "publication_cpu_seconds": 0.4285329999999987,
+        "oracle_hash_cpu_seconds": 0.006055000000001323,
+        "consumer_hash_release_cpu_seconds": 0.021960999999996136
+      },
+      "fixture": {
+        "cpu_seconds": 0.146214,
+        "connections": 8,
+        "played": 8
+      },
+      "elapsed_seconds": 6.061004291987047,
+      "rss": {
+        "enabled": true,
+        "samples": 18,
+        "full_worker_samples": 17,
+        "publisher_rss_sample_peak_bytes": 36077568,
+        "fixture_rss_sample_peak_bytes": 35618816,
+        "worker_rss_sum_sample_peak_bytes": 148324352
+      }
+    },
+    {
+      "order": 7,
+      "trial": "r2",
+      "mode": "independent",
+      "subscribers": 8,
+      "seconds": 6,
+      "workers": 8,
+      "workload_sha256": "c0286183fcbe366fae56488d28aa00259c7b76d593a503a849db4ecdff7970f0",
+      "packets_per_worker": [
+        90,
+        270
+      ],
+      "consumer_packets": 2880,
+      "native_cpu_seconds": 0.528665,
+      "native_individual_peak_rss_bytes": [
+        18595840,
+        18661376,
+        18317312,
+        18644992,
+        18677760,
+        18661376,
+        18333696,
+        18464768
+      ],
+      "publisher_cpu_seconds": 1.1102569999999998,
+      "publisher_subsets": {
+        "normalization_cpu_seconds": 0.3745389999999938,
+        "publication_cpu_seconds": 0.4251870000000009,
+        "oracle_hash_cpu_seconds": 0.006149999999997449,
+        "consumer_hash_release_cpu_seconds": 0.022085000000004407
+      },
+      "fixture": {
+        "cpu_seconds": 0.149095,
+        "connections": 8,
+        "played": 8
+      },
+      "elapsed_seconds": 6.060694792016875,
+      "rss": {
+        "enabled": true,
+        "samples": 18,
+        "full_worker_samples": 17,
+        "publisher_rss_sample_peak_bytes": 35831808,
+        "fixture_rss_sample_peak_bytes": 35405824,
+        "worker_rss_sum_sample_peak_bytes": 148275200
+      }
+    },
+    {
+      "order": 8,
+      "trial": "r2",
+      "mode": "shared",
+      "subscribers": 8,
+      "seconds": 6,
+      "workers": 1,
+      "workload_sha256": "c0286183fcbe366fae56488d28aa00259c7b76d593a503a849db4ecdff7970f0",
+      "packets_per_worker": [
+        90,
+        270
+      ],
+      "consumer_packets": 2880,
+      "native_cpu_seconds": 0.069992,
+      "native_individual_peak_rss_bytes": [
+        18628608
+      ],
+      "publisher_cpu_seconds": 0.338894,
+      "publisher_subsets": {
+        "normalization_cpu_seconds": 0.06603499999999991,
+        "publication_cpu_seconds": 0.09935300000000102,
+        "oracle_hash_cpu_seconds": 0.0036810000000001702,
+        "consumer_hash_release_cpu_seconds": 0.01928399999999965
+      },
+      "fixture": {
+        "cpu_seconds": 0.03659499999999999,
+        "connections": 1,
+        "played": 1
+      },
+      "elapsed_seconds": 6.139826500002528,
+      "rss": {
+        "enabled": true,
+        "samples": 18,
+        "full_worker_samples": 16,
+        "publisher_rss_sample_peak_bytes": 35110912,
+        "fixture_rss_sample_peak_bytes": 34652160,
+        "worker_rss_sum_sample_peak_bytes": 18612224
+      }
+    },
+    {
+      "order": 9,
+      "trial": "r2",
+      "mode": "independent",
+      "subscribers": 2,
+      "seconds": 6,
+      "workers": 2,
+      "workload_sha256": "c0286183fcbe366fae56488d28aa00259c7b76d593a503a849db4ecdff7970f0",
+      "packets_per_worker": [
+        90,
+        270
+      ],
+      "consumer_packets": 720,
+      "native_cpu_seconds": 0.13556400000000002,
+      "native_individual_peak_rss_bytes": [
+        18284544,
+        18399232
+      ],
+      "publisher_cpu_seconds": 0.401899,
+      "publisher_subsets": {
+        "normalization_cpu_seconds": 0.11682400000000041,
+        "publication_cpu_seconds": 0.128542,
+        "oracle_hash_cpu_seconds": 0.0019799999999994405,
+        "consumer_hash_release_cpu_seconds": 0.006770999999999652
+      },
+      "fixture": {
+        "cpu_seconds": 0.046140000000000014,
+        "connections": 2,
+        "played": 2
+      },
+      "elapsed_seconds": 6.1084804169950075,
+      "rss": {
+        "enabled": true,
+        "samples": 18,
+        "full_worker_samples": 17,
+        "publisher_rss_sample_peak_bytes": 35143680,
+        "fixture_rss_sample_peak_bytes": 35225600,
+        "worker_rss_sum_sample_peak_bytes": 36683776
+      }
+    },
+    {
+      "order": 10,
+      "trial": "r2",
+      "mode": "shared",
+      "subscribers": 2,
+      "seconds": 6,
+      "workers": 1,
+      "workload_sha256": "c0286183fcbe366fae56488d28aa00259c7b76d593a503a849db4ecdff7970f0",
+      "packets_per_worker": [
+        90,
+        270
+      ],
+      "consumer_packets": 720,
+      "native_cpu_seconds": 0.069405,
+      "native_individual_peak_rss_bytes": [
+        18235392
+      ],
+      "publisher_cpu_seconds": 0.288892,
+      "publisher_subsets": {
+        "normalization_cpu_seconds": 0.06823100000000056,
+        "publication_cpu_seconds": 0.07495900000000018,
+        "oracle_hash_cpu_seconds": 0.001649999999999402,
+        "consumer_hash_release_cpu_seconds": 0.0061920000000000724
+      },
+      "fixture": {
+        "cpu_seconds": 0.037812,
+        "connections": 1,
+        "played": 1
+      },
+      "elapsed_seconds": 6.095342374988832,
+      "rss": {
+        "enabled": true,
+        "samples": 18,
+        "full_worker_samples": 17,
+        "publisher_rss_sample_peak_bytes": 35078144,
+        "fixture_rss_sample_peak_bytes": 34963456,
+        "worker_rss_sum_sample_peak_bytes": 18235392
+      }
+    },
+    {
+      "order": 11,
+      "trial": "r2",
+      "mode": "independent",
+      "subscribers": 1,
+      "seconds": 6,
+      "workers": 1,
+      "workload_sha256": "c0286183fcbe366fae56488d28aa00259c7b76d593a503a849db4ecdff7970f0",
+      "packets_per_worker": [
+        90,
+        270
+      ],
+      "consumer_packets": 360,
+      "native_cpu_seconds": 0.06799,
+      "native_individual_peak_rss_bytes": [
+        18317312
+      ],
+      "publisher_cpu_seconds": 0.25384,
+      "publisher_subsets": {
+        "normalization_cpu_seconds": 0.06275200000000038,
+        "publication_cpu_seconds": 0.06415200000000028,
+        "oracle_hash_cpu_seconds": 0.0011550000000001281,
+        "consumer_hash_release_cpu_seconds": 0.003562000000000176
+      },
+      "fixture": {
+        "cpu_seconds": 0.03255499999999999,
+        "connections": 1,
+        "played": 1
+      },
+      "elapsed_seconds": 6.105409915995551,
+      "rss": {
+        "enabled": true,
+        "samples": 18,
+        "full_worker_samples": 17,
+        "publisher_rss_sample_peak_bytes": 35078144,
+        "fixture_rss_sample_peak_bytes": 35078144,
+        "worker_rss_sum_sample_peak_bytes": 18317312
+      }
+    },
+    {
+      "order": 12,
+      "trial": "r2",
+      "mode": "shared",
+      "subscribers": 1,
+      "seconds": 6,
+      "workers": 1,
+      "workload_sha256": "c0286183fcbe366fae56488d28aa00259c7b76d593a503a849db4ecdff7970f0",
+      "packets_per_worker": [
+        90,
+        270
+      ],
+      "consumer_packets": 360,
+      "native_cpu_seconds": 0.068881,
+      "native_individual_peak_rss_bytes": [
+        18251776
+      ],
+      "publisher_cpu_seconds": 0.291506,
+      "publisher_subsets": {
+        "normalization_cpu_seconds": 0.06744899999999987,
+        "publication_cpu_seconds": 0.07051199999999969,
+        "oracle_hash_cpu_seconds": 0.0012079999999998065,
+        "consumer_hash_release_cpu_seconds": 0.0037499999999996564
+      },
+      "fixture": {
+        "cpu_seconds": 0.03715399999999999,
+        "connections": 1,
+        "played": 1
+      },
+      "elapsed_seconds": 6.147112749982625,
+      "rss": {
+        "enabled": true,
+        "samples": 18,
+        "full_worker_samples": 16,
+        "publisher_rss_sample_peak_bytes": 35110912,
+        "fixture_rss_sample_peak_bytes": 34930688,
+        "worker_rss_sum_sample_peak_bytes": 18235392
+      }
+    },
+    {
+      "order": 13,
+      "trial": "long",
+      "mode": "shared",
+      "subscribers": 8,
+      "seconds": 20,
+      "workers": 1,
+      "workload_sha256": "2721e6da6ce846ae3ba15ffd0a8520acc759b026451ffbd148db25e60a9eb473",
+      "packets_per_worker": [
+        300,
+        926
+      ],
+      "consumer_packets": 9808,
+      "native_cpu_seconds": 0.122754,
+      "native_individual_peak_rss_bytes": [
+        18415616
+      ],
+      "publisher_cpu_seconds": 1.141688,
+      "publisher_subsets": {
+        "normalization_cpu_seconds": 0.22597799999999968,
+        "publication_cpu_seconds": 0.3407510000000007,
+        "oracle_hash_cpu_seconds": 0.012366000000000793,
+        "consumer_hash_release_cpu_seconds": 0.066128000000004
+      },
+      "fixture": {
+        "cpu_seconds": 0.11347000000000002,
+        "connections": 1,
+        "played": 1
+      },
+      "elapsed_seconds": 20.0389715420024,
+      "rss": {
+        "enabled": true,
+        "samples": 57,
+        "full_worker_samples": 56,
+        "publisher_rss_sample_peak_bytes": 35569664,
+        "fixture_rss_sample_peak_bytes": 36651008,
+        "worker_rss_sum_sample_peak_bytes": 18415616
+      }
+    },
+    {
+      "order": 14,
+      "trial": "long",
+      "mode": "independent",
+      "subscribers": 8,
+      "seconds": 20,
+      "workers": 8,
+      "workload_sha256": "2721e6da6ce846ae3ba15ffd0a8520acc759b026451ffbd148db25e60a9eb473",
+      "packets_per_worker": [
+        300,
+        926
+      ],
+      "consumer_packets": 9808,
+      "native_cpu_seconds": 0.829047,
+      "native_individual_peak_rss_bytes": [
+        18808832,
+        18776064,
+        18317312,
+        18350080,
+        18399232,
+        18432000,
+        18857984,
+        18382848
+      ],
+      "publisher_cpu_seconds": 3.7018009999999997,
+      "publisher_subsets": {
+        "normalization_cpu_seconds": 1.2682010000000004,
+        "publication_cpu_seconds": 1.4406030000000083,
+        "oracle_hash_cpu_seconds": 0.02070999999999419,
+        "consumer_hash_release_cpu_seconds": 0.07483099999999748
+      },
+      "fixture": {
+        "cpu_seconds": 0.490005,
+        "connections": 8,
+        "played": 8
+      },
+      "elapsed_seconds": 20.056875083013438,
+      "rss": {
+        "enabled": true,
+        "samples": 58,
+        "full_worker_samples": 57,
+        "publisher_rss_sample_peak_bytes": 36110336,
+        "fixture_rss_sample_peak_bytes": 37978112,
+        "worker_rss_sum_sample_peak_bytes": 148324352
+      }
+    }
+  ]
+}

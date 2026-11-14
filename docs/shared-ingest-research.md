@@ -130,8 +130,11 @@ live-view input: that introduces fragment-duration latency.
    preservation with two consumers, bounded slow-consumer isolation, cancellation
    and malformed-frame limits. Native worker/queue framing now uses bounded AMC2
    metadata plus raw binary payloads, with media-duration budgets after clock
-   admission. Wire size is lower; throughput/resource gains remain unmeasured.
-   See [results and scope](packet-ingest-proof.md).
+   admission. Wire size is lower; serialization-only throughput/resource gains remain
+   unmeasured. See [results and scope](packet-ingest-proof.md). A separate
+   [matched native resource comparison](native-resource-proof.md) now covers shared
+   versus independent acquisition at 1/2/8 consumers—not AMC2 versus hex JSON or the
+   production bridge.
    Finite-file output muxing/playback is now covered by the [A/V proof](av-output-proof.md).
    [Early-SR/non-reordering RTSP output](rtsp-clock-proof.md) now has bounded timestamp
    repair. Broader clocks/codec coverage and finite AAC end-trimming remain open.

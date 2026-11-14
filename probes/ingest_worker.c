@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 
 #include "packet_wire.h"
 #define MAX_FRAME WIRE_METADATA
@@ -92,11 +93,29 @@ static unsigned parse_generation(const char *value) {
     return (unsigned)epoch;
 }
 
+static void resource_report(void) {
+    struct rusage usage;
+    if (getrusage(RUSAGE_SELF, &usage)) {
+        fputs("AMC_RESOURCE_ERROR\n", stderr);
+        return;
+    }
+    double user = usage.ru_utime.tv_sec + usage.ru_utime.tv_usec / 1000000.0;
+    double system = usage.ru_stime.tv_sec + usage.ru_stime.tv_usec / 1000000.0;
+#ifdef __APPLE__
+    unsigned long long peak_bytes = (unsigned long long)usage.ru_maxrss;
+#else
+    unsigned long long peak_bytes = (unsigned long long)usage.ru_maxrss * 1024ULL;
+#endif
+    fprintf(stderr, "AMC_RESOURCE {\"user_cpu_seconds\":%.9f,\"system_cpu_seconds\":%.9f,"
+                    "\"peak_rss_bytes\":%llu}\n", user, system, peak_bytes);
+}
+
 int main(int argc, char **argv) {
+    int resource_fixture = argc == 4 && !strcmp(argv[1], "--rtsp-resource-fixture");
     int file_generation = argc == 4 && !strcmp(argv[1], "--file-generation");
-    int rtsp_fixture = argc == 4 && !strcmp(argv[1], "--rtsp-fixture");
+    int rtsp_fixture = resource_fixture || (argc == 4 && !strcmp(argv[1], "--rtsp-fixture"));
     if (argc != 2 && !rtsp_fixture && !file_generation)
-        fail("usage: ingest-worker-probe LOCAL_FILE | --rtsp-fixture PORT GENERATION | --file-generation GENERATION LOCAL_FILE");
+        fail("usage: ingest-worker-probe LOCAL_FILE | --rtsp-fixture PORT GENERATION | --rtsp-resource-fixture PORT GENERATION | --file-generation GENERATION LOCAL_FILE");
     char fixture_url[128];
     const char *source = argv[1];
     if (rtsp_fixture) {
@@ -104,6 +123,7 @@ int main(int argc, char **argv) {
         unsigned long port = strtoul(argv[2], &end, 10);
         if (!*argv[2] || *end || port < 1 || port > 65535) fail("invalid fixture port");
         generation = parse_generation(argv[3]);
+        if (resource_fixture && atexit(resource_report)) fail("cannot register resource report");
         /* Only synthetic fixture credentials and a numeric loopback port. */
         snprintf(fixture_url, sizeof(fixture_url),
                  "rtsp://fixture:fixture@127.0.0.1:%lu/camera", port);

@@ -111,8 +111,10 @@ options are bounded and preserve existing default behavior. Unit checks cover th
 rolling hash oracle, a missing expected delivery, independent held-peer expiry, and
 fixture duration validation. Existing native mux/decode/clock suites remain enabled.
 
-Next: matched native resource measurements and longer-duration/multi-subscriber cases,
-without interpreting these short correctness runs as throughput/RSS results. Late AAC
-preroll/PCM and mux adapters, broader codec representations, hardware cadence/budgets,
-both real camera models and Apple playback/recording acceptance remain open. No camera
-access/configuration, production process, bridge setting, or production ingest changed.
+A subsequent [matched native resource comparison](native-resource-proof.md) measures
+shared versus independent acquisition at 1/2/8 consumers and extends to twenty seconds.
+Those scoped measurements are separate from these correctness runs and do not predict
+production gains. Late AAC preroll/PCM and mux adapters, broader codec representations,
+hardware cadence/budgets, both real camera models and Apple playback/recording acceptance
+remain open. No camera access/configuration, production process, bridge setting, or
+production ingest changed.
