@@ -23,6 +23,12 @@ def feed(gate, sequence, *, units=None, flags=1, **overrides):
         "flags": flags, "data": wire(*(units or [picture()])).hex(), **overrides}))
 
 
+async def take(queue):
+    # Test-only escape for identity assertions; production consumers must release aliases.
+    with await queue.receive() as delivery:
+        return delivery.frame
+
+
 class LateAdmissionTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_idr_not_flag_and_preserved_global_counters(self):
         intra = setup()
@@ -40,11 +46,11 @@ class LateAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(admission.snapshot.first_ordinal, first.ordinal)
         self.assertEqual(admission.snapshot.first_video_pts, 12000)
         self.assertIs(admission.snapshot.origin, first.origin)
-        self.assertIs(await admission.queue.receive(), first)
+        self.assertIs(await take(admission.queue), first)
         next_frame = feed(gate, 3, units=[picture(0)], flags=0)
-        self.assertIs(await admission.queue.receive(), next_frame)
+        self.assertIs(await take(admission.queue), next_frame)
         end = gate.feed(encode_frame({"type": "end", "generation": 1, "packets": 4}))
-        self.assertIs(await admission.queue.receive(), end)
+        self.assertIs(await take(admission.queue), end)
         self.assertTrue(admission.queue.protocol.ended)
         with self.assertRaises(ValueError):
             gate.join()
@@ -57,7 +63,7 @@ class LateAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(gate.join())
         first = feed(gate, 2)
         admission = gate.join()
-        self.assertIs(await admission.queue.receive(), first)
+        self.assertIs(await take(admission.queue), first)
         with self.assertRaises(FrozenInstanceError):
             admission.snapshot.first_sequence = 0
         with self.assertRaises(TypeError):
@@ -72,7 +78,7 @@ class LateAdmissionTests(unittest.IsolatedAsyncioTestCase):
             feed(gate, 0)
             admission = gate.join() if admitted else None
             if admission:
-                await admission.queue.receive()
+                await take(admission.queue)
                 reader = asyncio.create_task(admission.queue.receive())
                 await asyncio.sleep(0)
             with self.assertRaisesRegex(ValueError, "parameter sets changed"):
@@ -111,10 +117,10 @@ class LateAdmissionTests(unittest.IsolatedAsyncioTestCase):
         gate = setup()
         first = feed(gate, 0)
         fast, slow = gate.join(), gate.join()
-        self.assertIs(await fast.queue.receive(), first)
+        self.assertIs(await take(fast.queue), first)
         for sequence in range(1, 10):
             current = feed(gate, sequence, units=[picture(0)], flags=0)
-            self.assertIs(await fast.queue.receive(), current)
+            self.assertIs(await take(fast.queue), current)
         self.assertEqual(slow.queue.reason, "overflow")
         self.assertFalse(fast.queue.detached)
         reader = asyncio.create_task(fast.queue.receive())
@@ -131,10 +137,10 @@ class LateAdmissionTests(unittest.IsolatedAsyncioTestCase):
         admission = gate.join()
         with self.assertRaisesRegex(ValueError, "subscriber limit"):
             gate.join()
-        self.assertIs(await admission.queue.receive(), first)
+        self.assertIs(await take(admission.queue), first)
         admission.queue.detach()
         replacement = gate.join()
-        self.assertIs(await replacement.queue.receive(), first)
+        self.assertIs(await take(replacement.queue), first)
         gate.close()
         gate = setup(max_bytes=1)
         feed(gate, 0)
@@ -149,7 +155,7 @@ class LateAdmissionTests(unittest.IsolatedAsyncioTestCase):
         old = setup()
         old_frame = feed(old, 0)
         admission = old.join()
-        await admission.queue.receive()
+        await take(admission.queue)
         reader = asyncio.create_task(admission.queue.receive())
         await asyncio.sleep(0)
         old.close("generation_changed")
@@ -163,7 +169,7 @@ class LateAdmissionTests(unittest.IsolatedAsyncioTestCase):
         replacement = new.join()
         self.assertEqual(admission.snapshot.streams[0]["profile"], 77)
         self.assertEqual(replacement.snapshot.streams[0]["profile"], 100)
-        self.assertIs(await replacement.queue.receive(), new_frame)
+        self.assertIs(await take(replacement.queue), new_frame)
         with self.assertRaises(ValueError):
             replacement.queue.offer(old_frame)
         with self.assertRaises(ValueError):
@@ -174,7 +180,7 @@ class LateAdmissionTests(unittest.IsolatedAsyncioTestCase):
         gate = setup()
         feed(gate, 0)
         admission = gate.join()
-        await admission.queue.receive()
+        await take(admission.queue)
         other = SharedSource()
         other.accept(encode_frame(hello()))
         other.accept(encode_frame(descriptor()))

@@ -95,7 +95,9 @@ policy, **not** a guarantee for arbitrary consumers or a long-running native bri
   those counters. A consumer retaining deliveries indefinitely can still exhaust memory.
 - The producer is unpaced. Media timestamps advance at 15 packets/s independently of
   wall time; neither media duration nor accelerated wall time measures camera latency.
-- This covers one source generation with complete-generation consumers. Generation
-  churn, shared late-IDR admission, residency/in-flight limits, native acquisition,
-  decoding, packetization/encryption and real multi-camera load remain separate gates.
+- This covers one source generation with complete-generation consumers. Separate
+  proofs now cover [shared late-IDR admission](shared-late-admission-proof.md) and
+  [cooperative delivery limits plus generation churn](subscriber-ownership-proof.md).
+  Native continuous acquisition, decoding, packetization/encryption and real multi-camera
+  load remain separate gates; these older measurements do not include lease overhead.
 - No camera configuration, credentials, production processes or bridge settings change.

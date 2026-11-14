@@ -152,19 +152,20 @@ async def late_admission_case(frames, generation, directory, reference_video):
                 if admission is None:
                     continue
                 while not admission.queue.queue.empty():
-                    delivered = await admission.queue.receive()
-                    if delivered is not shared or delivered.raw != raw:
-                        raise ValueError("late admission changed/replayed a source frame")
-                    metadata = delivered.metadata
-                    if metadata["type"] != "packet":
-                        continue
-                    if admission is early:
-                        early_packets += 1
-                    elif metadata["stream"] == 0:
-                        late_video.append(bytes(metadata["data"].view()))
-                        late_pts.append(metadata["pts"])
-                    else:
-                        late_audio += 1
+                    with await admission.queue.receive() as delivery:
+                        delivered = delivery.frame
+                        if delivered is not shared or delivered.raw != raw:
+                            raise ValueError("late admission changed/replayed a source frame")
+                        metadata = delivered.metadata
+                        if metadata["type"] == "packet":
+                            if admission is early:
+                                early_packets += 1
+                            elif metadata["stream"] == 0:
+                                late_video.append(bytes(metadata["data"].view()))
+                                late_pts.append(metadata["pts"])
+                            else:
+                                late_audio += 1
+                        del delivered, metadata
         if (early is None or late is None or not early.queue.protocol.ended or
                 not late.queue.protocol.ended or early_packets != frames[-1]["packets"] or
                 late.snapshot.first_video_pts != 90000 or len(late_video) != 15 or not late_audio):

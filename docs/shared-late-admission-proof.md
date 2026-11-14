@@ -32,13 +32,16 @@ is eligible. At that point it creates:
   not by caller-selected counters, with that exact IDR already enqueued.
 
 The snapshot contains codec configuration but **no retained media packet**. The gate
-retains at most the current candidate IDR, which expires at the next source frame.
+retains at most the current candidate IDR, which expires at the next source frame
+or its receiver-monotonic residence deadline, even without subscribers.
 There is no historical GOP buffer or timestamp re-zeroing. Later packets retain
 original payloads, metadata, global sequence/ordinal and shared A/V time bases.
 The original global end count is checked using the admitted starting sequence.
 
 Up to eight subscribers may be active. A slow queue detaches on existing byte/count/
-media limits without stopping healthy peers. Retired queues are pruned; successful
+media limits without stopping healthy peers. Admitted `receive()` calls now return
+explicit [delivery leases with in-flight and residence limits](subscriber-ownership-proof.md),
+not unaccounted raw frames. Retired queues are pruned; successful
 admission does not reuse a detached queue. Live failure, clock freshness expiry,
 reconnect or cancellation must close the gate, clearing its configuration/candidate
 and waking receivers with the corresponding terminal reason. A finite `end` prevents
@@ -86,6 +89,7 @@ remain in place.
 This is a finite replay of captured RTSP media, not concurrent camera/Apple admission
 or a new production subscription API. Source video inspection currently makes bounded
 byte copies for the existing evidence parser; no throughput improvement is claimed.
-Remaining gates include residence/in-flight policies, generation-churn load, late-audio
-semantics, broader codec representations, native continuous integration and both real
+Residence/in-flight policies and synthetic generation churn are covered in the
+[ownership proof](subscriber-ownership-proof.md). Remaining gates include late-audio
+semantics, broader codec representations, continuous native integration and both real
 camera models plus HomeKit acceptance. Production paths and cameras are unchanged.
