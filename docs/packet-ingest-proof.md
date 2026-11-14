@@ -143,14 +143,15 @@ and payloads, not a CPU/RSS/latency benchmark or a comparison across FFmpeg vers
 
 ## Binary consumer views
 
-Packet fanout consumers and `MediaQueue` validation now use `Protocol(binary=True)`.
-Byte fields are independent, read-only `memoryview` slices into the immutable AMC2
-body, not payload-sized hex strings or decoded byte copies. Hashing and side-data
-comparison consume those views directly. Native no-B/B-frame fanout asserts that
-payload, extradata and side-data views actually refer to the received wire body,
-as well as preserving the existing exact packet comparisons.
+The direct `Protocol(binary=True)` adapter and `MediaQueue` validation expose
+independent, read-only `memoryview` slices into the immutable AMC2 body rather than
+payload-sized hex strings or decoded copies. The file fanout and normalized RTSP
+replay now go further with shared validated metadata, described below. Hashing and
+side-data comparison still consume fresh views of the original body; native no-B/B
+fanout asserts that ownership along with the existing exact packet comparisons.
 
-Only backing bytes are shared: each decode gets its own metadata and view objects.
+In the direct adapter, only backing bytes are shared: each decode gets its own
+metadata and view objects.
 Releasing one consumer's view or changing its metadata cannot invalidate another
 consumer. Retained codec data survives later reads; a delivered view remains valid
 after peer detach, queue draining and source-reference release. Byte-field validation
@@ -161,10 +162,47 @@ queue byte/duration accounting; this is not an in-flight memory limit. Closing a
 queue clears its own descriptors/views, but cannot revoke data already handed out.
 
 The explicit inspection mode still returns hex for the source-side ffprobe oracle,
-clock repair and H.264 evidence tooling. Metadata parsing/lifecycle validation still
-occur separately per consumer. Sharing validated immutable metadata and sustained
-load/memory measurement remain next steps; no end-to-end zero-copy or CPU/RSS
-improvement is claimed here.
+clock repair and H.264 evidence tooling. It is not used by shared subscribers.
+No end-to-end zero-copy or CPU/RSS improvement is claimed here.
+
+## Shared validated metadata
+
+`SharedSource` parses and validates each AMC2 body once and publishes a `SharedFrame`:
+immutable backing bytes, deeply frozen metadata, a source-instance identity and a
+contiguous frame ordinal. Mappings are read-only and arrays become tuples. Byte
+fields are frozen `ByteRange` objects containing an owner, offset and length—not
+shared `memoryview` instances, which a consumer could release. Each range creates
+a fresh read-only view on request without copying payload bytes.
+
+`SharedMediaQueue` and receiving consumers use `SharedCursor`, not another JSON
+parser. Each cursor independently checks generation, source identity, ordinal,
+packet sequence and terminal count. This catches subscriber gaps/duplicates and
+mixing two source instances even when they use the same numeric generation. The
+existing queue byte/count/media limits and terminal signals remain unchanged;
+clock admission is still a separate prerequisite for media-duration queues.
+
+This is a cooperative in-process publication contract, not authentication against
+hostile Python code. Construction is restricted to the source factory to prevent
+accidental publication of unvalidated objects. Source parsing failure clears retained
+configuration and permanently closes that source instance. Invalid cursor input
+closes that cursor; owning supervisors still propagate source failure to subscribers.
+Previously delivered immutable data cannot be revoked.
+
+These cursors require a complete generation from `hello`; this does **not** add
+late-IDR subscription or replay configuration for a new consumer. Such admission
+still needs an explicit generation-bound contract before production integration.
+
+An eight-subscriber regression counts exactly one parser call per source frame and
+checks shared object identity. Native file fanout reports **191 source parses** for
+each 187-packet fixture (hello, two descriptors, packets, end), while consumers share
+the same metadata. Successful normalized RTSP captures also share those objects
+through healthy/stalled queue checks. Ownership, nested immutability, origin mixing,
+fail-closed cursors, peer isolation and queue budgets have focused regressions.
+
+Metadata/object overhead and delivered/in-flight owners remain outside queued
+wire-byte accounting. The source-side wire-size oracle still explicitly materializes
+inspection JSON. Sustained fanout/load/memory measurement is the next gate; parser
+counts and object identity alone are not throughput or bounded-total-RSS evidence.
 
 ## Subscriber terminal signals
 
@@ -237,11 +275,10 @@ per-packet accounting empty rather than accumulating it.
 limit, throughput measurement, or production latency recommendation. Source idle
 expiry remains a separate supervisor/clock responsibility. Retained descriptor
 state has the protocol's own stream/configuration caps and is not included in queued
-wire-byte counts. Accounting scans at most the bounded queued frame count. Queue
-validation and packet fanout consumers now use binary views instead of hex, but
-metadata parsing per subscriber and source-side inspection objects remain proof
-scaffolding. Shared validated metadata and sustained load/memory measurements remain
-open before performance claims.
+wire-byte counts. Accounting scans at most the bounded queued frame count. Shared
+fanout now parses metadata once and shares immutable ranges rather than per-subscriber
+hex or JSON objects. Source-side inspection, in-flight budgets and sustained
+load/memory measurements remain open before performance claims.
 
 ## Follow-up gates
 
@@ -263,9 +300,9 @@ It does **not** make this worker production-ready.
    terminal AAC padding. The [clocked RTSP proof](rtsp-clock-proof.md) now repairs
    bounded non-reordering startup timestamps with shared-epoch and codec evidence. Unclocked/ambiguous
    input is still rejected; real-camera/HomeKit acceptance remains open.
-5. **Bounded binary framing and consumer payload views complete for the prototype.**
-   Share validated metadata and remove remaining source-side inspection conversions
-   before treating this as a performance design. Export additional codec/layout/color
+5. **Bounded binary framing, consumer views and shared validated metadata have
+   prototype coverage.** Measure sustained fanout/load/memory without diagnostic
+   materialization before performance claims. Export additional codec/layout/color
    metadata as required by supported consumers.
 
 Production still uses its original FFmpeg readers. The local living plan tracks

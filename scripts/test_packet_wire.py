@@ -46,9 +46,9 @@ class BinaryWireTests(unittest.IsolatedAsyncioTestCase):
 
     def test_shared_malformed_vectors(self):
         for name, raw in malformed_bodies(encode_frame(packet())).items():
-            for binary in (False, True):
-                with self.subTest(name=name, binary=binary), self.assertRaises(ValueError):
-                    decode_frame(raw, binary=binary)
+            for mode in ({}, {"binary": True}, {"ranges": True}):
+                with self.subTest(name=name, mode=mode), self.assertRaises(ValueError):
+                    decode_frame(raw, **mode)
 
     def test_metadata_caps_schema_and_non_finite_values(self):
         for obj in ({**hello(), "extra": "x" * MAX_METADATA},

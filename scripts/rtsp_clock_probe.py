@@ -13,7 +13,7 @@ import time
 from av_output_probe import assemble, decoded, decoded_audio, decoded_video, mux, pack_wire, split_recording
 from ingest_probe import command, inspect, stop_process
 from h264_reorder import evidence_for, parse_sps
-from packet_ingest_probe import MAX_FRAME, MediaQueue, Protocol, read_frame
+from packet_ingest_probe import MAX_FRAME, SharedMediaQueue, SharedSource, Protocol, read_frame
 from rtsp_clock import ClockNormalizer
 from rtsp_fixture import CameraFixture, make_media, nals
 
@@ -139,15 +139,17 @@ async def output_case(worker, sink, directory, media, generation, offset, stagge
                                clock.state[video_stream["index"]]["reorder_evidence"] is None):
         raise ValueError("fixture did not exercise explicit Main/High reorder evidence")
     # Only feed duration queues after common-epoch clock admission, never raw RTSP.
-    healthy = MediaQueue(MAX_FRAME * 2, Fraction(1, 2), generation=generation)
-    stalled = MediaQueue(MAX_FRAME * 2, Fraction(1, 2), generation=generation)
+    source = SharedSource(generation)
+    healthy = SharedMediaQueue(MAX_FRAME * 2, Fraction(1, 2), generation=generation)
+    stalled = SharedMediaQueue(MAX_FRAME * 2, Fraction(1, 2), generation=generation)
     terminal = "source_failed"
     try:
         for frame in frames:
             raw = encode_frame(frame)
-            if not healthy.offer(raw) or await healthy.receive() != raw:
+            shared = source.accept(raw)
+            if not healthy.offer(shared) or await healthy.receive() is not shared:
                 raise ValueError("clock-admitted queue changed or refused healthy media")
-            stalled.offer(raw)
+            stalled.offer(shared)
         if stalled.overflow_limit != "media" or not healthy.protocol.ended:
             raise ValueError("clock-admitted media budget isolation failed")
         queue_peak = str(healthy.peak_duration)
@@ -190,7 +192,8 @@ async def output_case(worker, sink, directory, media, generation, offset, stagge
             "repaired_video_pts": clock.repaired_pts, "repaired_video_dts": clock.repaired_dts,
             "source_clock_and_output_timing_exact": True, "decoded_av_exact": True,
             "media_budget_seconds": 0.5, "healthy_peak_media_seconds": queue_peak,
-            "media_stalled_consumer_detached": True}
+            "media_stalled_consumer_detached": True,
+            "consumer_metadata_shared": True, "source_parse_count": source.parse_count}
 
 
 async def run(worker, sink):

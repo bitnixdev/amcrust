@@ -5,7 +5,9 @@ immutable bodies; inspection decoding retains hex for comparison/bitstream tools
 Metadata parsing still allocates; this is not an end-to-end zero-copy claim.
 """
 import copy
+from dataclasses import dataclass
 import json
+from types import MappingProxyType
 import struct
 
 MAGIC = b"AMC2"
@@ -15,6 +17,48 @@ MAX_SIDE = 1024 * 1024
 MAX_BLOB = MAX_BYTES + MAX_SIDE
 HEADER = struct.Struct("!4sII")
 MAX_WIRE = HEADER.size + MAX_METADATA + MAX_BLOB
+
+
+@dataclass(frozen=True)
+class ByteRange:
+    """Immutable ownership/range, never a shared releasable memoryview."""
+    __slots__ = ("body", "offset", "length")
+    body: bytes
+    offset: int
+    length: int
+
+    def __post_init__(self):
+        if (not isinstance(self.body, bytes) or type(self.offset) is not int
+                or type(self.length) is not int or self.offset < 0 or self.length < 0
+                or self.offset + self.length > len(self.body)):
+            raise ValueError("invalid immutable byte range")
+
+    def view(self):
+        return memoryview(self.body)[self.offset:self.offset + self.length]
+
+    def __len__(self):
+        return self.length
+
+
+def freeze_metadata(value):
+    if isinstance(value, dict):
+        return MappingProxyType({key: freeze_metadata(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(freeze_metadata(item) for item in value)
+    if value is None or type(value) in (str, int, float, bool, ByteRange):
+        return value
+    raise ValueError("unsupported shared metadata value")
+
+
+def inspect_metadata(value):
+    """Explicit diagnostic boundary, not a subscriber decode operation."""
+    if isinstance(value, ByteRange):
+        return value.view().hex()
+    if isinstance(value, (dict, MappingProxyType)):
+        return {key: inspect_metadata(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [inspect_metadata(item) for item in value]
+    return value
 
 
 def byte_fields(obj):
@@ -68,7 +112,7 @@ def encode_frame(obj):
         raise ValueError("invalid binary schema") from error
 
 
-def decode_frame(raw, *, binary=False):
+def decode_frame(raw, *, binary=False, ranges=False):
     try:
         if not isinstance(raw, bytes) or not HEADER.size < len(raw) <= MAX_WIRE:
             raise ValueError("binary frame limit exceeded")
@@ -97,8 +141,11 @@ def decode_frame(raw, *, binary=False):
                 side_total += size
                 if side_total > MAX_SIDE:
                     raise ValueError("side data limit exceeded")
-            view = blob[used:used + size]
-            owner[key] = view if binary else view.hex()
+            if ranges:
+                owner[key] = ByteRange(raw, HEADER.size + meta_size + used, size)
+            else:
+                view = blob[used:used + size]
+                owner[key] = view if binary else view.hex()
             used += size
         if used != blob_size:
             raise ValueError("unreferenced binary bytes")

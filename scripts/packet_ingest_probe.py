@@ -7,7 +7,9 @@ packet metadata/payload preservation, not HomeKit playback or RTSP acquisition.
 import argparse
 import asyncio
 from collections import deque
+from dataclasses import dataclass, InitVar
 from fractions import Fraction
+from types import MappingProxyType
 import hashlib
 import json
 import os
@@ -16,7 +18,8 @@ import struct
 import tempfile
 
 from ingest_probe import command, inspect, stop_process
-from packet_wire import HEADER, MAX_WIRE, decode_frame
+from packet_wire import (HEADER, MAX_WIRE, ByteRange, decode_frame,
+                         freeze_metadata, inspect_metadata)
 
 MAX_FRAME = 16 * 1024 * 1024
 MAX_PAYLOAD = 4 * 1024 * 1024
@@ -30,6 +33,8 @@ def integer(value, low=0, high=(1 << 63) - 1):
 
 
 def byte_field(value, maximum=MAX_PAYLOAD):
+    if isinstance(value, ByteRange):
+        value = value.view()
     if isinstance(value, (bytes, memoryview)):
         if isinstance(value, memoryview) and (not value.readonly or not value.c_contiguous
                 or value.ndim != 1 or value.format != "B" or not isinstance(value.obj, bytes)):
@@ -56,8 +61,8 @@ def side_data(value):
 
 class Protocol:
     """Strict lifecycle validation: one generation, all configs before packets."""
-    def __init__(self, generation=1, *, binary=False):
-        self.binary = binary
+    def __init__(self, generation=1, *, binary=False, ranges=False):
+        self.binary, self.ranges = binary, ranges
         self.generation = integer(generation, 1, (1 << 31) - 1)
         self.hello = None
         self.streams = {}
@@ -68,7 +73,7 @@ class Protocol:
         if not raw or len(raw) > MAX_FRAME or self.ended:
             raise ValueError("invalid frame/lifecycle")
         try:
-            obj = decode_frame(raw, binary=self.binary)
+            obj = decode_frame(raw, binary=self.binary, ranges=self.ranges)
             if not isinstance(obj, dict) or integer(obj["generation"]) != self.generation:
                 raise ValueError("invalid generation")
             kind = obj["type"]
@@ -121,6 +126,113 @@ class Protocol:
             return obj
         except (KeyError, TypeError, UnicodeError, json.JSONDecodeError) as error:
             raise ValueError("invalid frame schema") from error
+
+
+_SHARED_SEAL = object()
+
+
+@dataclass(frozen=True, eq=False)
+class SharedFrame:
+    """In-process source-validated frame; not an authentication/security boundary."""
+    __slots__ = ("raw", "metadata", "origin", "ordinal")
+    raw: bytes
+    metadata: object
+    origin: object
+    ordinal: int
+    seal: InitVar[object]
+
+    def __post_init__(self, seal):
+        if seal is not _SHARED_SEAL:
+            raise ValueError("shared frames must come from SharedSource")
+
+    def __len__(self):
+        return len(self.raw)
+
+
+class SharedSource:
+    """One parse/schema validation per source frame, then immutable publication."""
+    def __init__(self, generation=1):
+        self._protocol = Protocol(generation, ranges=True)
+        self._origin = object()
+        self.parse_count = 0
+        self.failed = False
+
+    @property
+    def hello(self):
+        return self._protocol.hello
+
+    @property
+    def streams(self):
+        return MappingProxyType(self._protocol.streams)
+
+    @property
+    def ended(self):
+        return self._protocol.ended
+
+    def accept(self, raw):
+        if self.failed:
+            raise ValueError("shared source closed")
+        try:
+            ordinal = self.parse_count
+            self.parse_count += 1
+            if not isinstance(raw, bytes):
+                raise ValueError("shared source requires immutable wire bytes")
+            metadata = freeze_metadata(self._protocol.accept(raw))
+            if metadata["type"] == "hello":
+                self._protocol.hello = metadata
+            elif metadata["type"] == "stream":
+                self._protocol.streams[metadata["index"]] = metadata
+            return SharedFrame(raw, metadata, self._origin, ordinal, _SHARED_SEAL)
+        except ValueError:
+            self.failed = True
+            self._protocol.hello = None
+            self._protocol.streams.clear()
+            raise
+
+
+class SharedCursor:
+    """Subscriber-local ordering/origin checks, without JSON or payload decoding."""
+    def __init__(self, generation=1):
+        self.generation = integer(generation, 1, (1 << 31) - 1)
+        self.origin = None
+        self.ordinal = self.sequence = 0
+        self.hello = None
+        self.streams = {}
+        self.ended = self.failed = False
+
+    def accept(self, frame):
+        try:
+            if self.failed or self.ended or type(frame) is not SharedFrame:
+                raise ValueError("invalid shared frame/lifecycle")
+            metadata = frame.metadata
+            if metadata["generation"] != self.generation or frame.ordinal != self.ordinal:
+                raise ValueError("shared generation/order mismatch")
+            kind = metadata["type"]
+            if self.origin is None:
+                if kind != "hello":
+                    raise ValueError("shared cursor requires initial hello")
+                self.origin, self.hello = frame.origin, metadata
+            elif frame.origin is not self.origin:
+                raise ValueError("shared source identity changed")
+            elif kind == "stream":
+                self.streams[metadata["index"]] = metadata
+            elif kind == "packet":
+                if metadata["sequence"] != self.sequence:
+                    raise ValueError("shared packet gap/duplicate")
+                self.sequence += 1
+            elif kind == "end":
+                if metadata["packets"] != self.sequence:
+                    raise ValueError("shared end count mismatch")
+                self.ended = True
+            else:
+                raise ValueError("unexpected shared frame")
+            self.ordinal += 1
+            return metadata
+        except ValueError:
+            self.failed = True
+            self.hello = self.origin = None
+            self.streams.clear()
+            raise
 
 
 async def read_frame(reader):
@@ -227,13 +339,16 @@ class MediaQueue(PacketQueue):
         starts = [span[0] for span in self.spans if span is not None]
         return self.watermark - min(starts) if starts else Fraction(0)
 
+    def _decode(self, raw):
+        if not isinstance(raw, bytes):
+            raise ValueError("media queue requires immutable wire bytes")
+        return self.protocol.accept(raw)
+
     def offer(self, raw):
         if self.detached:
             return False
         try:
-            if not isinstance(raw, bytes):
-                raise ValueError("media queue requires immutable wire bytes")
-            frame = self.protocol.accept(raw)
+            frame = self._decode(raw)
             span = None
             if frame["type"] == "packet":
                 pts = integer(frame["pts"], -(1 << 63) + 1)
@@ -284,29 +399,41 @@ class MediaQueue(PacketQueue):
         self.protocol = None
 
 
+class SharedMediaQueue(MediaQueue):
+    """Same budgets/terminal semantics, sharing source-validated metadata."""
+    def __init__(self, max_bytes, max_duration, max_frames=256, generation=1):
+        super().__init__(max_bytes, max_duration, max_frames, generation)
+        self.protocol = SharedCursor(generation)
+
+    def _decode(self, frame):
+        return self.protocol.accept(frame)
+
+
 def summarize(packet):
     return {**{key: packet[key] for key in ("stream", "pts", "dts", "duration", "flags", "side_data")},
             "hash": "SHA256:" + hashlib.sha256(byte_field(packet["data"])).hexdigest()}
 
 
 async def acquire(worker, source, *, started=None):
-    healthy = [MediaQueue(MAX_FRAME * 2, Fraction(1, 2)) for _ in range(2)]
+    healthy = [SharedMediaQueue(MAX_FRAME * 2, Fraction(1, 2)) for _ in range(2)]
     stalled = PacketQueue(MAX_FRAME, max_frames=1)
-    media_stalled = MediaQueue(MAX_FRAME * 2, Fraction(1, 2))
-    protocol = Protocol()
+    media_stalled = SharedMediaQueue(MAX_FRAME * 2, Fraction(1, 2))
+    protocol = SharedSource()
     wire_bytes = hex_control_bytes = 0
     terminal = "source_failed"
 
     async def consume(subscriber):
-        state = Protocol(binary=True)
+        state = SharedCursor()
         packets = []
         while not state.ended:
             raw = await subscriber.receive()
             obj = state.accept(raw)
+            if obj is not raw.metadata:
+                raise ValueError("consumer copied shared metadata")
             if obj["type"] in ("stream", "packet"):
                 primary = obj["extradata"] if obj["type"] == "stream" else obj["data"]
-                views = [primary] + [entry["data"] for entry in obj["side_data"]]
-                if any(not isinstance(view, memoryview) or view.obj is not raw for view in views):
+                ranges = [primary] + [entry["data"] for entry in obj["side_data"]]
+                if any(not isinstance(item, ByteRange) or item.view().obj is not raw.raw for item in ranges):
                     raise ValueError("consumer materialized binary byte fields")
             if obj["type"] == "packet":
                 packets.append(summarize(obj))
@@ -326,11 +453,12 @@ async def acquire(worker, source, *, started=None):
                 raw = await asyncio.wait_for(read_frame(process.stdout), 10)
                 if raw is None:
                     break
-                obj = protocol.accept(raw)
+                shared = protocol.accept(raw)
+                obj = shared.metadata
                 wire_bytes += 4 + len(raw)
-                hex_control_bytes += 4 + len(json.dumps(obj, separators=(",", ":")).encode())
+                hex_control_bytes += 4 + len(json.dumps(inspect_metadata(obj), separators=(",", ":")).encode())
                 for subscriber in healthy + [media_stalled]:
-                    subscriber.offer(raw)
+                    subscriber.offer(shared)
                 # Model a subscriber that stops consuming media after setup.
                 if obj["type"] == "packet":
                     stalled.offer(raw)
@@ -369,7 +497,7 @@ def compare(protocol, packets, reference):
         actual = protocol.streams[stream["index"]]
         tb = "/".join(str(n) for n in actual["time_base"])
         if (actual["codec"] != stream["codec_name"] or tb != stream["time_base"]
-                or "SHA256:" + hashlib.sha256(bytes.fromhex(actual["extradata"])).hexdigest()
+                or "SHA256:" + hashlib.sha256(byte_field(actual["extradata"])).hexdigest()
                 != stream["extradata_hash"]):
             raise ValueError("codec configuration/time base changed")
         for field in ("width", "height", "sample_rate", "channels", "level"):
@@ -425,6 +553,7 @@ async def experiment(worker, bframes):
                 **wire_sizes,
                 "exact_packet_comparison": True, "healthy_consumers": 2,
                 "consumer_byte_views_share_wire_body": True,
+                "consumer_metadata_shared": True, "source_parse_count": protocol.parse_count,
                 "stalled_consumer_detached": True, "peak_queue_bytes": peaks,
                 "media_stalled_consumer_detached": True, "media_budget_seconds": 0.5,
                 "scope": "local file packet preservation; no remux/playback/RTSP proof"}

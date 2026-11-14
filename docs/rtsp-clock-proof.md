@@ -230,8 +230,10 @@ expiry, zero-wall-time media bursts, late renewal attempts and invalid timer inp
 
 ## Post-admission subscriber budgets
 
-Successful normalized captures now also pass through a byte/count/media-duration
-queue with unchanged wire bytes. A healthy consumer drains each frame; a separate
+Successful normalized captures now also pass through shared byte/count/media-duration
+queues with unchanged wire bytes. Each normalized frame is validated once into
+immutable metadata/ranges, and the same published object is delivered without
+subscriber parsing. A healthy consumer drains each frame; a separate
 stalled consumer detaches on the synthetic 0.5 s media-span limit. This covers the
 aligned and delayed-audio cases, one lost report, and the non-reordering Main/High
 cases. The existing mux, timing, payload and decode comparisons remain in place.
