@@ -5,6 +5,7 @@ SPS/PPS evidence. This is not a general AVC parser or production subscription AP
 """
 from dataclasses import dataclass
 from fractions import Fraction
+import weakref
 
 from h264_reorder import ReorderEvidence, annexb
 from packet_ingest_probe import (MAX_FRAME, SharedSource, SharedCursor,
@@ -16,7 +17,7 @@ from subscriber_budget import LeasedMediaQueue
 @dataclass(frozen=True)
 class Snapshot:
     __slots__ = ("generation", "origin", "hello", "streams", "first_ordinal",
-                 "first_sequence", "first_video_pts")
+                 "first_sequence", "first_video_pts", "__weakref__")
     generation: int
     origin: object
     hello: object
@@ -45,6 +46,7 @@ class _AdmittedQueue(LeasedMediaQueue):
         cursor.streams = {stream["index"]: stream for stream in snapshot.streams}
         cursor.ordinal, cursor.sequence = snapshot.first_ordinal, snapshot.first_sequence
         self.protocol, self._epoch = cursor, epoch
+        self._snapshot_ref = weakref.ref(snapshot)
 
     def _decode(self, frame):
         if not self._epoch.active:
@@ -57,6 +59,16 @@ class Admission:
     __slots__ = ("snapshot", "queue")
     snapshot: Snapshot
     queue: _AdmittedQueue
+
+
+def require_admission(admission):
+    """Bind consumers to the exact source-issued snapshot, not reconstructed fields."""
+    if (type(admission) is not Admission or type(admission.queue) is not _AdmittedQueue or
+            admission.queue._snapshot_ref() is not admission.snapshot):
+        raise ValueError("source-issued admission required")
+    admission.queue.expire()
+    if admission.queue.detached or not admission.queue._epoch.active:
+        raise ValueError("retired source admission")
 
 
 class LateAdmission:

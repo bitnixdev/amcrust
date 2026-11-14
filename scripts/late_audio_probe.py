@@ -7,7 +7,9 @@ from pathlib import Path
 import tempfile
 import asyncio
 
-from av_output_probe import compare_timing, decoded_audio, decoded_video, mux, pack_wire
+from av_output_probe import compare_timing, decoded_audio, decoded_video, mux, pack_wire, pcm_difference
+from audio_window import AudioWindowIndex
+from audio_window_output import output_windows
 from ingest_probe import inspect
 from late_mux_input import LateMuxInput
 from packet_wire import encode_frame
@@ -26,37 +28,34 @@ def adts_units(data):
     return units
 
 
-def pcm_difference(reference, actual):
-    if len(reference) != len(actual) or len(reference) % 2:
-        raise ValueError("PCM sample count changed")
-    first = last = None
-    count = maximum = 0
-    for offset in range(0, len(reference), 2):
-        if reference[offset:offset + 2] != actual[offset:offset + 2]:
-            first = offset // 2 if first is None else first
-            last = offset // 2
-            count += 1
-            maximum = max(maximum, abs(int.from_bytes(reference[offset:offset + 2], "little", signed=True) -
-                                       int.from_bytes(actual[offset:offset + 2], "little", signed=True)))
-    return {"different_samples": count, "first": first, "last": last, "max_abs_s16_error": maximum}
-
-
 async def case(worker, sink, directory, media, generation, offset, pns):
     original, frames, _ = await capture(worker, media, generation, offset, staggered=bool(offset))
     check_repair(original, frames, offset)
     original_wire = pack_wire(frames)
     gate = LateAdmission(generation)
-    admission = adapter = None
+    admission = adapter = observer = window = None
+    plans = None
     video_seen = 0
     try:
         for obj in frames:
             gate.feed(encode_frame(obj))
+            if observer is None:
+                observer = gate.join()
+                if observer is not None:
+                    window = AudioWindowIndex(observer)
+            if observer is not None:
+                while not observer.queue.queue.empty():
+                    with await observer.queue.receive() as delivery:
+                        window.observe(delivery)
             if obj["type"] == "packet" and obj["stream"] == 0:
                 video_seen += 1
             if admission is None and video_seen >= 8:
                 admission = gate.join()
                 if admission is not None:
                     adapter = LateMuxInput(admission)
+                    plans = {n: window.plan(admission, preceding=n) for n in (0, 1)}
+                    if any(plan is None for plan in plans.values()):
+                        raise ValueError("bounded AAC history did not cover the IDR")
             if admission is not None:
                 while not admission.queue.queue.empty():
                     with await admission.queue.receive() as delivery:
@@ -66,6 +65,8 @@ async def case(worker, sink, directory, media, generation, offset, pns):
         clip = adapter.finish()
         first_sequence = admission.snapshot.first_sequence
     finally:
+        if window is not None:
+            window.close()
         gate.close()
     if pack_wire(frames) != original_wire:
         raise ValueError("private mux adapter mutated published source input")
@@ -147,7 +148,17 @@ async def case(worker, sink, directory, media, generation, offset, pns):
             raise ValueError("PNS-disabled fixture no longer isolates one-AU startup state")
     elif any(warmups[n]["different_samples"] == 0 for n in (1, 2, 4, 8)):
         raise ValueError("default-PNS fixture no longer demonstrates residual short-preroll differences")
+    window_results = await output_windows(sink, directory, generation, frames, first_sequence,
+                                          plans, units, continuous, full_info, reference_video, pns)
+    if pack_wire(frames) != original_wire:
+        raise ValueError("window oracle mux changed source input")
     return {"generation": generation, "profile": clip[1]["profile"], "audio_offset": offset,
+            "timestamp_windows": window_results,
+            "window_index": {"peak_records": window.peak_records,
+                             "peak_represented_wire_bytes": window.peak_wire_bytes,
+                             "evicted_records": window.evicted,
+                             "max_media_seconds": "1/4", "max_age_seconds": 0.5,
+                             "retained_media_bodies": 0},
             "aac_pns": "encoder default" if pns is None else pns,
             "aac_configuration": {key: clip[2][key] for key in
                                   ("extradata", "profile", "sample_rate", "channels", "frame_size", "time_base")},

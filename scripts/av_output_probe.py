@@ -196,6 +196,22 @@ def compare_timing(source, output):
     return float(worst)
 
 
+def pcm_difference(reference, actual):
+    if len(reference) != len(actual) or len(reference) % 2:
+        raise ValueError("PCM sample count changed")
+    first = last = None
+    count = maximum = 0
+    for offset in range(0, len(reference), 2):
+        if reference[offset:offset + 2] != actual[offset:offset + 2]:
+            first = offset // 2 if first is None else first
+            last = offset // 2
+            count += 1
+            maximum = max(maximum, abs(int.from_bytes(reference[offset:offset + 2], "little", signed=True) -
+                                       int.from_bytes(actual[offset:offset + 2], "little", signed=True)))
+    return {"different_samples": count, "first": first, "last": last, "max_abs_s16_error": maximum}
+
+
+
 def compare_audio(source_audio, output_audio, reference, channels):
     """Permit only the known terminal AAC discard samples, never drift/front loss.
 

@@ -8,6 +8,7 @@ import json
 from packet_ingest_probe import Protocol, integer
 from packet_wire import encode_frame, inspect_metadata
 from subscriber_budget import Delivery
+from shared_admission import require_admission
 
 
 class LateMuxInput:
@@ -21,6 +22,7 @@ class LateMuxInput:
         self._ordinal = admission.snapshot.first_ordinal
         self._sequence = admission.snapshot.first_sequence
         try:
+            require_admission(admission)
             self._max_bytes = integer(max_bytes, 1, 32 * 1024 * 1024)
             self._max_packets = integer(max_packets, 1, 256)
             self._queue.expire()

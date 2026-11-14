@@ -117,10 +117,10 @@ end, expiry without timer dispatch, local byte/count caps, strict fixture switch
 ADTS header preservation and exact PCM diagnostics. Full integrations, 160 Python
 tests and 61 Rust tests/doctests passed.
 
-Next work must distinguish packet continuity from PCM-exactness requirements and
-explore a bounded, timestamp-selected AAC window covering the video IDR, rather
-than a delivery-order suffix. Such a window also needs ownership/expiry and an
-explicit common clip start/edit policy. The observed PNS-dependent differences
-must remain explicit; this proof authorizes no generic preroll amount, arbitrary
-sample removal, production recording adapter, hardware support, or Apple live/HSV
-acceptance claim.
+A subsequent [timestamp-window proof](audio-window-proof.md) now distinguishes
+packet coverage from PCM exactness with a bounded metadata planner and finite mux
+controls retaining complete leading AUs. It is not an actual media-history store or
+live replay handoff. Body ownership/expiry and a production clip start/edit policy
+remain open. The observed PNS-dependent differences must remain explicit; these
+proofs authorize no generic preroll amount, arbitrary sample removal, production
+recording adapter, hardware support, or Apple live/HSV acceptance claim.
