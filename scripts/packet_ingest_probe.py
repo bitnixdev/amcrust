@@ -134,7 +134,7 @@ _SHARED_SEAL = object()
 @dataclass(frozen=True, eq=False)
 class SharedFrame:
     """In-process source-validated frame; not an authentication/security boundary."""
-    __slots__ = ("raw", "metadata", "origin", "ordinal")
+    __slots__ = ("raw", "metadata", "origin", "ordinal", "__weakref__")
     raw: bytes
     metadata: object
     origin: object

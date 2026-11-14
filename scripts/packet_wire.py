@@ -22,7 +22,7 @@ MAX_WIRE = HEADER.size + MAX_METADATA + MAX_BLOB
 @dataclass(frozen=True)
 class ByteRange:
     """Immutable ownership/range, never a shared releasable memoryview."""
-    __slots__ = ("body", "offset", "length")
+    __slots__ = ("body", "offset", "length", "__weakref__")
     body: bytes
     offset: int
     length: int

@@ -201,8 +201,10 @@ fail-closed cursors, peer isolation and queue budgets have focused regressions.
 
 Metadata/object overhead and delivered/in-flight owners remain outside queued
 wire-byte accounting. The source-side wire-size oracle still explicitly materializes
-inspection JSON. Sustained fanout/load/memory measurement is the next gate; parser
-counts and object identity alone are not throughput or bounded-total-RSS evidence.
+inspection JSON. A separate [synthetic load probe](fanout-load-proof.md) now omits
+that oracle and measures up to 100,000 packets/eight subscribers, with weak ownership
+checks and Python allocation samples. This is not native/production throughput or
+bounded-total-RSS evidence.
 
 ## Subscriber terminal signals
 
@@ -277,8 +279,9 @@ expiry remains a separate supervisor/clock responsibility. Retained descriptor
 state has the protocol's own stream/configuration caps and is not included in queued
 wire-byte counts. Accounting scans at most the bounded queued frame count. Shared
 fanout now parses metadata once and shares immutable ranges rather than per-subscriber
-hex or JSON objects. Source-side inspection, in-flight budgets and sustained
-load/memory measurements remain open before performance claims.
+hex or JSON objects. Synthetic sustained-load measurements now cover prompt-release
+consumers and one controlled retained view. In-flight/residence limits and native/
+real-camera resource measurements remain open before production performance claims.
 
 ## Follow-up gates
 
@@ -301,8 +304,9 @@ It does **not** make this worker production-ready.
    bounded non-reordering startup timestamps with shared-epoch and codec evidence. Unclocked/ambiguous
    input is still rejected; real-camera/HomeKit acceptance remains open.
 5. **Bounded binary framing, consumer views and shared validated metadata have
-   prototype coverage.** Measure sustained fanout/load/memory without diagnostic
-   materialization before performance claims. Export additional codec/layout/color
+   prototype coverage.** [Synthetic load/ownership measurements](fanout-load-proof.md)
+   now omit diagnostic materialization, but native/production resource measurements
+   remain open. Export additional codec/layout/color
    metadata as required by supported consumers.
 
 Production still uses its original FFmpeg readers. The local living plan tracks
