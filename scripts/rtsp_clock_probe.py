@@ -16,6 +16,7 @@ from h264_reorder import evidence_for, parse_sps
 from packet_ingest_probe import MAX_FRAME, SharedMediaQueue, SharedSource, Protocol, read_frame
 from rtsp_clock import ClockNormalizer
 from rtsp_fixture import CameraFixture, make_media, nals
+from shared_admission import LateAdmission
 
 
 async def capture(worker, media, generation, offset, mode="stall", staggered=False, replacement_sps=None):
@@ -131,6 +132,62 @@ def check_repair(original, normalized, offset):
     return counts
 
 
+async def late_admission_case(frames, generation, directory, reference_video):
+    gate = LateAdmission(generation)
+    early = late = None
+    seen_video = early_packets = late_audio = 0
+    late_video, late_pts = [], []
+    terminal = "source_failed"
+    try:
+        for obj in frames:
+            raw = encode_frame(obj)
+            shared = gate.feed(raw)
+            if obj["type"] == "packet" and obj["stream"] == 0:
+                seen_video += 1
+            if early is None:
+                early = gate.join()
+            if late is None and seen_video >= 8:
+                late = gate.join()  # first old IDR has passed; wait for the next real one
+            for admission in (early, late):
+                if admission is None:
+                    continue
+                while not admission.queue.queue.empty():
+                    delivered = await admission.queue.receive()
+                    if delivered is not shared or delivered.raw != raw:
+                        raise ValueError("late admission changed/replayed a source frame")
+                    metadata = delivered.metadata
+                    if metadata["type"] != "packet":
+                        continue
+                    if admission is early:
+                        early_packets += 1
+                    elif metadata["stream"] == 0:
+                        late_video.append(bytes(metadata["data"].view()))
+                        late_pts.append(metadata["pts"])
+                    else:
+                        late_audio += 1
+        if (early is None or late is None or not early.queue.protocol.ended or
+                not late.queue.protocol.ended or early_packets != frames[-1]["packets"] or
+                late.snapshot.first_video_pts != 90000 or len(late_video) != 15 or not late_audio):
+            raise ValueError("fixture did not establish expected independent late admission")
+        descriptor = next(stream for stream in late.snapshot.streams if stream["media"] == "video")
+        path = directory / f"late-{generation}.h264"
+        path.write_bytes(bytes(descriptor["extradata"].view()) + b"".join(late_video))
+        if await decoded_video(path) != reference_video[15:30]:
+            raise ValueError("late IDR video differs from source frames")
+        if late_pts != [index * 6000 for index in range(15, 30)]:
+            raise ValueError("late video timestamps shifted")
+        terminal = "source_complete"
+        return {"late_video_frames": 15, "late_audio_packets": late_audio,
+                "first_video_pts": late.snapshot.first_video_pts,
+                "first_global_sequence": late.snapshot.first_sequence,
+                "source_frames_unchanged": True, "late_video_decoded_exact": True}
+    except asyncio.CancelledError:
+        terminal = "cancelled"
+        raise
+    finally:
+        gate.close(terminal)
+
+
 async def output_case(worker, sink, directory, media, generation, offset, staggered, mode="stall", profile=None):
     original, frames, clock = await capture(worker, media, generation, offset, mode, staggered)
     counts = check_repair(original, frames, offset)
@@ -186,7 +243,10 @@ async def output_case(worker, sink, directory, media, generation, offset, stagge
     rebuilt.write_bytes(assemble(init, fragments))
     if await decoded(rebuilt) != (video, audio):
         raise ValueError("fragment assembly changed media")
+    late_result = (await late_admission_case(frames, generation, directory, reference_video)
+                   if profile in (77, 100) else None)
     return {"generation": generation, "audio_offset_seconds": offset, "staggered_first_reports": staggered,
+            "shared_late_admission": late_result,
             "report_mode": mode, "video_profile": video_stream["profile"],
             "video_frames": counts[0], "audio_packets": counts[1], "fragments": len(fragments),
             "repaired_video_pts": clock.repaired_pts, "repaired_video_dts": clock.repaired_dts,

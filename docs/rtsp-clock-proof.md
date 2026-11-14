@@ -239,7 +239,11 @@ aligned and delayed-audio cases, one lost report, and the non-reordering Main/Hi
 cases. The existing mux, timing, payload and decode comparisons remain in place.
 Raw uncertain clocks are not admitted to this queue. See the
 [duration-budget contract and limits](packet-ingest-proof.md#media-duration-budgets-after-clock-admission).
-This replay check is not a concurrent live load or latency measurement.
+The Main/High captures additionally exercise [shared late-IDR admission](shared-late-admission-proof.md):
+a second viewer joins at the next actual IDR, preserves the original clocks and
+independently decodes source video frames 15–29. Late audio packets remain unchanged;
+late AAC PCM/preroll and Apple playback are not established. These replay checks are
+not concurrent live load or latency measurements.
 
 ## Remaining gates
 

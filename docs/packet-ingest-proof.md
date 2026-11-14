@@ -188,9 +188,11 @@ configuration and permanently closes that source instance. Invalid cursor input
 closes that cursor; owning supervisors still propagate source failure to subscribers.
 Previously delivered immutable data cannot be revoked.
 
-These cursors require a complete generation from `hello`; this does **not** add
-late-IDR subscription or replay configuration for a new consumer. Such admission
-still needs an explicit generation-bound contract before production integration.
+The base cursors require a complete generation from `hello`. A separate
+[late-IDR source factory](shared-late-admission-proof.md) now bootstraps them from
+immutable configuration snapshots at an actual current IDR for the proven zero-reorder
+Main/High subset. It preserves global counters and clocks; unsupported configurations
+still have no late-admission permission. This remains separate from production integration.
 
 An eight-subscriber regression counts exactly one parser call per source frame and
 checks shared object identity. Native file fanout reports **191 source parses** for
