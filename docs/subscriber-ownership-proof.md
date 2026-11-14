@@ -106,7 +106,8 @@ idle queued/held expiry, candidate expiry, no age reset, delayed timer dispatch,
 read-only lease fields, timer reuse/rearming, cancellation, generation retirement,
 escaped aliases and healthy-peer isolation. Nix also runs a 32-generation churn smoke.
 
-Next: continuous native acquisition/normalized fanout exercising these ownership rules
-without accumulating full captures, including live expiry/reconnect propagation. Late
-AAC preroll/PCM and mux adapters, broader codec contracts, both camera models and Apple
-acceptance remain open. Nothing here replaces production ingest or changes cameras.
+A subsequent [continuous native fanout proof](native-fanout-proof.md) exercises these
+rules during acquisition without full output captures, including idle clock expiry,
+changed-configuration serial restart and cancellation. Matched native resource
+measurements, late AAC preroll/PCM and mux adapters, broader codec contracts, both
+camera models and Apple acceptance remain open. Production ingest/cameras are unchanged.

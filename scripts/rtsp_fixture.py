@@ -6,6 +6,7 @@ Only synthetic credentials/media; no forwarding, external URLs or camera access.
 import asyncio
 import base64
 import hashlib
+import math
 from pathlib import Path
 import re
 import struct
@@ -75,18 +76,20 @@ def authorized(header, method, uri):
     return fields.get("response") == expected
 
 
-async def make_media(directory, width, height, profile=None):
+async def make_media(directory, width, height, profile=None, duration=4):
+    if type(duration) is not int or not 1 <= duration <= 30:
+        raise ValueError("unsupported fixture duration")
     if profile not in (None, "main", "high"):
         raise ValueError("unsupported fixture profile")
     video = Path(directory) / f"{width}.h264"
     audio = Path(directory) / f"{width}.aac"
     await command("ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i",
-                  f"testsrc2=size={width}x{height}:rate=15", "-t", "4", "-c:v", "libx264",
+                  f"testsrc2=size={width}x{height}:rate=15", "-t", str(duration), "-c:v", "libx264",
                   "-preset", "veryfast" if profile else "ultrafast", "-tune", "zerolatency", "-g", "15", "-bf", "0",
                   *(["-profile:v", profile] if profile else []),
                   "-x264-params", "aud=1:repeat-headers=1:scenecut=0", "-f", "h264", str(video))
     await command("ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i",
-                  "sine=frequency=1000:sample_rate=48000", "-t", "4", "-c:a", "aac",
+                  "sine=frequency=1000:sample_rate=48000", "-t", str(duration), "-c:a", "aac",
                   "-ac", "1", "-f", "adts", str(audio))
     return access_units(video.read_bytes()), aac_frames(audio.read_bytes())
 
@@ -106,8 +109,11 @@ def sender_report(track, origin, elapsed, packets, octets):
 
 class CameraFixture:
     def __init__(self, media, mode="disconnect", *, clocked=False, audio_offset=0,
-                 staggered_reports=False, replacement_sps=None):
+                 staggered_reports=False, replacement_sps=None, send_seconds=2.2):
         self.video, self.audio = media
+        if type(send_seconds) not in (int, float) or not 0 < send_seconds <= 30:
+            raise ValueError("unsupported fixture send duration")
+        self.send_seconds = send_seconds
         if mode not in ("disconnect", "stall", "silent", "rollback", "reject", "parameter-change") + CLOCK_FAULTS:
             raise ValueError("unknown fixture mode")
         self.mode = mode
@@ -246,7 +252,7 @@ class CameraFixture:
         events = [(i / 15, 0, i, au) for i, au in enumerate(self.video)]
         events += [(self.audio_offset + i * 1024 / 48000, 1, i, au) for i, au in enumerate(self.audio)]
         if self.clocked:
-            events += [(at / 2, 2, at, None) for at in range(5)]
+            events += [(at / 2, 2, at, None) for at in range(math.ceil(self.send_seconds * 2))]
             if self.staggered_reports:
                 events.append((self.audio_offset, 3, 0, None))
         octets = [0, 0]
@@ -255,7 +261,7 @@ class CameraFixture:
         # SR precedes media at the same instant, including both initial reports.
         for at, track, index, au in sorted(events, key=lambda event: (event[0], -1 if event[1] >= 2 else event[1])):
             # Enough media to discover both tracks, join late, and reach a new IDR.
-            if at >= 2.2 or (self.mode == "clock-silent" and at >= 0.5):
+            if at >= self.send_seconds or (self.mode == "clock-silent" and at >= 0.5):
                 break
             await asyncio.sleep(max(0, started + at - asyncio.get_running_loop().time()))
             if track >= 2:
