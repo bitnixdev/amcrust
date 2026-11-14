@@ -1,0 +1,319 @@
+{
+  "cases": [
+    {
+      "generation": 1,
+      "profile": 77,
+      "audio_offset": 0,
+      "aac_pns": "encoder default",
+      "aac_configuration": {
+        "extradata": "1188",
+        "profile": 1,
+        "sample_rate": 48000,
+        "channels": 1,
+        "frame_size": 1024,
+        "time_base": [
+          1,
+          48000
+        ]
+      },
+      "unadapted_suffix_rejected": true,
+      "first_global_sequence": 65,
+      "first_video_pts": 90000,
+      "first_audio_pts": 51200,
+      "first_audio_source_index": 50,
+      "audio_gap_seconds_exact": "1/15",
+      "audio_gap_samples_48k": "3200",
+      "audio_end_after_video_seconds_exact": "2/375",
+      "late_video_frames": 15,
+      "late_aac_packets": 44,
+      "decoded_audio_samples": 45056,
+      "fresh_start_difference": {
+        "different_samples": 2001,
+        "first": 0,
+        "last": 45044,
+        "max_abs_s16_error": 3999
+      },
+      "mux_clocks_and_payloads_preserved": true,
+      "late_mux_video_exact": true,
+      "fresh_aac_control_exact": true,
+      "one_au_warmup_recovers_reference": false,
+      "warmup_differences_by_preceding_aus": {
+        "1": {
+          "different_samples": 980,
+          "first": 4,
+          "last": 45044,
+          "max_abs_s16_error": 1
+        },
+        "2": {
+          "different_samples": 1021,
+          "first": 7,
+          "last": 45044,
+          "max_abs_s16_error": 1
+        },
+        "4": {
+          "different_samples": 1001,
+          "first": 58,
+          "last": 45044,
+          "max_abs_s16_error": 1
+        },
+        "8": {
+          "different_samples": 995,
+          "first": 4,
+          "last": 45044,
+          "max_abs_s16_error": 1
+        },
+        "50": {
+          "different_samples": 0,
+          "first": null,
+          "last": null,
+          "max_abs_s16_error": 0
+        }
+      },
+      "fresh_difference_after_first_au": {
+        "different_samples": 983,
+        "first": 0,
+        "last": 44020,
+        "max_abs_s16_error": 1
+      },
+      "actual_output_trimmed_or_padded": false
+    },
+    {
+      "generation": 2,
+      "profile": 77,
+      "audio_offset": 0.25,
+      "aac_pns": "encoder default",
+      "aac_configuration": {
+        "extradata": "1188",
+        "profile": 1,
+        "sample_rate": 48000,
+        "channels": 1,
+        "frame_size": 1024,
+        "time_base": [
+          1,
+          48000
+        ]
+      },
+      "unadapted_suffix_rejected": true,
+      "first_global_sequence": 54,
+      "first_video_pts": 90000,
+      "first_audio_pts": 51936,
+      "first_audio_source_index": 39,
+      "audio_gap_seconds_exact": "41/500",
+      "audio_gap_samples_48k": "3936",
+      "audio_end_after_video_seconds_exact": "31/1500",
+      "late_video_frames": 15,
+      "late_aac_packets": 44,
+      "decoded_audio_samples": 45056,
+      "fresh_start_difference": {
+        "different_samples": 2062,
+        "first": 0,
+        "last": 45036,
+        "max_abs_s16_error": 5014
+      },
+      "mux_clocks_and_payloads_preserved": true,
+      "late_mux_video_exact": true,
+      "fresh_aac_control_exact": true,
+      "one_au_warmup_recovers_reference": false,
+      "warmup_differences_by_preceding_aus": {
+        "1": {
+          "different_samples": 1015,
+          "first": 19,
+          "last": 45041,
+          "max_abs_s16_error": 1
+        },
+        "2": {
+          "different_samples": 1025,
+          "first": 90,
+          "last": 44963,
+          "max_abs_s16_error": 1
+        },
+        "4": {
+          "different_samples": 1094,
+          "first": 19,
+          "last": 44985,
+          "max_abs_s16_error": 1
+        },
+        "8": {
+          "different_samples": 1042,
+          "first": 19,
+          "last": 45041,
+          "max_abs_s16_error": 1
+        },
+        "39": {
+          "different_samples": 0,
+          "first": null,
+          "last": null,
+          "max_abs_s16_error": 0
+        }
+      },
+      "fresh_difference_after_first_au": {
+        "different_samples": 1041,
+        "first": 30,
+        "last": 44012,
+        "max_abs_s16_error": 1
+      },
+      "actual_output_trimmed_or_padded": false
+    },
+    {
+      "generation": 3,
+      "profile": 100,
+      "audio_offset": 0.25,
+      "aac_pns": "encoder default",
+      "aac_configuration": {
+        "extradata": "1188",
+        "profile": 1,
+        "sample_rate": 48000,
+        "channels": 1,
+        "frame_size": 1024,
+        "time_base": [
+          1,
+          48000
+        ]
+      },
+      "unadapted_suffix_rejected": true,
+      "first_global_sequence": 54,
+      "first_video_pts": 90000,
+      "first_audio_pts": 51936,
+      "first_audio_source_index": 39,
+      "audio_gap_seconds_exact": "41/500",
+      "audio_gap_samples_48k": "3936",
+      "audio_end_after_video_seconds_exact": "31/1500",
+      "late_video_frames": 15,
+      "late_aac_packets": 44,
+      "decoded_audio_samples": 45056,
+      "fresh_start_difference": {
+        "different_samples": 2062,
+        "first": 0,
+        "last": 45036,
+        "max_abs_s16_error": 5014
+      },
+      "mux_clocks_and_payloads_preserved": true,
+      "late_mux_video_exact": true,
+      "fresh_aac_control_exact": true,
+      "one_au_warmup_recovers_reference": false,
+      "warmup_differences_by_preceding_aus": {
+        "1": {
+          "different_samples": 1015,
+          "first": 19,
+          "last": 45041,
+          "max_abs_s16_error": 1
+        },
+        "2": {
+          "different_samples": 1025,
+          "first": 90,
+          "last": 44963,
+          "max_abs_s16_error": 1
+        },
+        "4": {
+          "different_samples": 1094,
+          "first": 19,
+          "last": 44985,
+          "max_abs_s16_error": 1
+        },
+        "8": {
+          "different_samples": 1042,
+          "first": 19,
+          "last": 45041,
+          "max_abs_s16_error": 1
+        },
+        "39": {
+          "different_samples": 0,
+          "first": null,
+          "last": null,
+          "max_abs_s16_error": 0
+        }
+      },
+      "fresh_difference_after_first_au": {
+        "different_samples": 1041,
+        "first": 30,
+        "last": 44012,
+        "max_abs_s16_error": 1
+      },
+      "actual_output_trimmed_or_padded": false
+    },
+    {
+      "generation": 4,
+      "profile": 77,
+      "audio_offset": 0.25,
+      "aac_pns": false,
+      "aac_configuration": {
+        "extradata": "1188",
+        "profile": 1,
+        "sample_rate": 48000,
+        "channels": 1,
+        "frame_size": 1024,
+        "time_base": [
+          1,
+          48000
+        ]
+      },
+      "unadapted_suffix_rejected": true,
+      "first_global_sequence": 54,
+      "first_video_pts": 90000,
+      "first_audio_pts": 51936,
+      "first_audio_source_index": 39,
+      "audio_gap_seconds_exact": "41/500",
+      "audio_gap_samples_48k": "3936",
+      "audio_end_after_video_seconds_exact": "31/1500",
+      "late_video_frames": 15,
+      "late_aac_packets": 44,
+      "decoded_audio_samples": 45056,
+      "fresh_start_difference": {
+        "different_samples": 1022,
+        "first": 0,
+        "last": 1023,
+        "max_abs_s16_error": 5014
+      },
+      "mux_clocks_and_payloads_preserved": true,
+      "late_mux_video_exact": true,
+      "fresh_aac_control_exact": true,
+      "one_au_warmup_recovers_reference": true,
+      "warmup_differences_by_preceding_aus": {
+        "1": {
+          "different_samples": 0,
+          "first": null,
+          "last": null,
+          "max_abs_s16_error": 0
+        },
+        "2": {
+          "different_samples": 0,
+          "first": null,
+          "last": null,
+          "max_abs_s16_error": 0
+        },
+        "4": {
+          "different_samples": 0,
+          "first": null,
+          "last": null,
+          "max_abs_s16_error": 0
+        },
+        "8": {
+          "different_samples": 0,
+          "first": null,
+          "last": null,
+          "max_abs_s16_error": 0
+        },
+        "39": {
+          "different_samples": 0,
+          "first": null,
+          "last": null,
+          "max_abs_s16_error": 0
+        }
+      },
+      "fresh_difference_after_first_au": {
+        "different_samples": 0,
+        "first": null,
+        "last": null,
+        "max_abs_s16_error": 0
+      },
+      "actual_output_trimmed_or_padded": false
+    }
+  ],
+  "scope": "finite diagnostic captures; no production AAC preroll, mux API, or Apple acceptance claim",
+  "environment": {
+    "os": "Darwin",
+    "architecture": "arm64",
+    "ffmpeg": "9.0.2",
+    "python": "3.14.10"
+  }
+}

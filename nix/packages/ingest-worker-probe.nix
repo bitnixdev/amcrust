@@ -22,6 +22,7 @@
     python3 scripts/rtsp_ingest_probe.py --worker ./ingest-worker-probe
     python3 scripts/av_output_probe.py --worker ./ingest-worker-probe --sink ./mux-worker-probe
     python3 scripts/rtsp_clock_probe.py --worker ./ingest-worker-probe --sink ./mux-worker-probe
+    python3 scripts/late_audio_probe.py --worker ./ingest-worker-probe --sink ./mux-worker-probe
     python3 scripts/fanout_load_probe.py --packets 2000 --subscribers 4
     python3 scripts/admission_churn_probe.py --generations 32
     python3 scripts/native_fanout_probe.py --worker ./ingest-worker-probe --seconds 3

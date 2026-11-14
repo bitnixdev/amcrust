@@ -76,9 +76,11 @@ def authorized(header, method, uri):
     return fields.get("response") == expected
 
 
-async def make_media(directory, width, height, profile=None, duration=4):
+async def make_media(directory, width, height, profile=None, duration=4, aac_pns=None):
     if type(duration) is not int or not 1 <= duration <= 30:
         raise ValueError("unsupported fixture duration")
+    if aac_pns is not None and type(aac_pns) is not bool:
+        raise ValueError("unsupported AAC PNS setting")
     if profile not in (None, "main", "high"):
         raise ValueError("unsupported fixture profile")
     video = Path(directory) / f"{width}.h264"
@@ -90,7 +92,8 @@ async def make_media(directory, width, height, profile=None, duration=4):
                   "-x264-params", "aud=1:repeat-headers=1:scenecut=0", "-f", "h264", str(video))
     await command("ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i",
                   "sine=frequency=1000:sample_rate=48000", "-t", str(duration), "-c:a", "aac",
-                  "-ac", "1", "-f", "adts", str(audio))
+                  "-ac", "1", *(["-aac_pns", str(int(aac_pns))] if aac_pns is not None else []),
+                  "-f", "adts", str(audio))
     return access_units(video.read_bytes()), aac_frames(audio.read_bytes())
 
 

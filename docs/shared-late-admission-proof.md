@@ -75,7 +75,10 @@ Audio packets retain their original clocks and bytes, but this does **not** esta
 late AAC PCM equality, preroll handling or synchronized Apple playback. Admission
 skips all earlier packets in global demux order; it does not buffer earlier audio
 around the IDR or hide an initial audio gap. Existing whole-clip A/V mux/decode proofs
-remain separate from this late-viewer video proof.
+remain separate from this late-viewer video proof. A subsequent
+[late AAC / finite mux diagnostic](late-audio-proof.md) measures these gaps and
+compares fresh, short-preroll and continuous decoding. It preserves mux clocks and
+packet-copy output, but does not establish a generic PCM-exact preroll policy.
 
 ## Regression coverage and remaining work
 
@@ -90,6 +93,7 @@ This is a finite replay of captured RTSP media, not concurrent camera/Apple admi
 or a new production subscription API. Source video inspection currently makes bounded
 byte copies for the existing evidence parser; no throughput improvement is claimed.
 Residence/in-flight policies and synthetic generation churn are covered in the
-[ownership proof](subscriber-ownership-proof.md). Remaining gates include late-audio
-semantics, broader codec representations, continuous native integration and both real
-camera models plus HomeKit acceptance. Production paths and cameras are unchanged.
+[ownership proof](subscriber-ownership-proof.md); continuous experimental acquisition
+is covered by the [native fanout proof](native-fanout-proof.md). Remaining gates
+include late-audio policy, broader codec representations, production integration and
+both real camera models plus HomeKit acceptance. Production paths and cameras are unchanged.

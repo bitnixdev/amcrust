@@ -137,7 +137,10 @@ live-view input: that introduces fragment-duration latency.
    production bridge.
    Finite-file output muxing/playback is now covered by the [A/V proof](av-output-proof.md).
    [Early-SR/non-reordering RTSP output](rtsp-clock-proof.md) now has bounded timestamp
-   repair. Broader clocks/codec coverage and finite AAC end-trimming remain open.
+   repair. The [late AAC / finite mux diagnostic](late-audio-proof.md) preserves
+   late mux clocks/payloads but exposes audio start gaps and PNS-dependent PCM
+   differences that rule out assuming a generic one-AU preroll contract. Broader
+   clocks/codec coverage, recording-start policy and finite AAC end-trimming remain open.
 2. **Synthetic RTSP fixture complete:** authentication, interleaved H.264/AAC,
    backward timestamps, silent socket stall, reconnect with changed SPS/PPS and late
    IDR video decoding. See [coverage and remaining cases](rtsp-ingest-proof.md),
