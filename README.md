@@ -71,6 +71,23 @@ not project-owned C workers, MediaMTX, or a selectable legacy-reader fallback.
   VictoriaMetrics scraping. Metrics cover uptime, camera events, errors,
   snapshots, reconnects, open connections, motion, and live/recording video.
 
+## Building
+
+Use the repository-pinned Nix environment for Cargo builds:
+
+```sh
+nix develop
+cargo check --all-targets
+cargo build --release
+# Or build the packaged application:
+nix build .#amcrust
+```
+
+The shell/package supplies FFmpeg 9 libraries, pkg-config and libclang/bindgen;
+`ffmpeg-sys-next` is pinned in Cargo. The Rust acquisition library is implemented
+but is not yet the production reader. The unused project C worker draft is removed.
+No system-wide FFmpeg or compiler installation is needed with this workflow.
+
 ## Running
 
 Requires `ffmpeg` on `PATH` (with SRTP support; standard builds have it).

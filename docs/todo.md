@@ -22,21 +22,27 @@ milestone or add another parallel plan/proof document.
   public packet side-data/RTCP metadata, codec parameters, time bases, read interruption,
   muxing and AAC/Opus APIs against the real camera. Use audited Rust FFI where needed;
   no custom C shim, private FFmpeg structs or new relay dependency.
-- [ ] Replace the unfinished `src/ingest.rs` worker/IPC implementation with Rust-owned
+  - [x] Pin `ffmpeg-sys-next = 9.1.1` against Nix FFmpeg 9.0.2; compile public
+    packet/RTCP SR, codec-parameter and interrupt APIs and read the real main stream.
+  - [ ] Exercise Rust muxing and AAC/Opus APIs; characterize real RTCP cadence/A/V clocks.
+- [x] Replace the unfinished `src/ingest.rs` worker/IPC implementation with Rust-owned
   library acquisition. Reuse sound contracts, not its standalone-C process assumptions.
-- [ ] Define owned packet/configuration/error types, reference lifetimes, thread-safety
+- [x] Define owned packet/configuration/error types, reference lifetimes, thread-safety
   boundary and interruption/shutdown behavior before exposing subscriptions. Redact
   credential-bearing URLs in native-library diagnostics as well as Rust logs.
+  The blocking reader is thread-bound; immutable packet/configuration owners cross
+  threads. Deadlines and sticky cancellation interrupt library I/O; Drop closes it.
+  A joined source supervisor and subscription/privacy ownership are still section 2 work.
 - [ ] Complete every applicable row below; update Cargo/Nix and remove stale entrypoints.
 
 | Project C / related scaffolding | Required Rust replacement or removal |
 |---|---|
-| `native/ingest.c` | Rust libavformat open/read/interrupt/close with protected credentials, codec metadata and packet/side-data ownership; remove the C entrypoint |
-| `probes/ingest_worker.c` | Carry required acquisition/export knowledge into Rust; remove this worker and its production-mode hook rather than build production on the probe |
-| `native/output.c` | Rust-owned RTP video output and fMP4 library muxing, including timestamps, stream selection, error handling and cleanup; remove the C consumer |
+| `native/ingest.c` | **Removed.** `src/ingest.rs` owns libavformat open/read/interrupt/close, codec metadata and packet/side-data lifetimes; no production consumer is connected yet |
+| `probes/ingest_worker.c` | Production hook removed; historical fixture exporter remains until obsolete probe launchers are retired |
+| `native/output.c` | **Unused C draft removed.** Rust RTP and fMP4 consumers still need implementation/integration; historical mux behavior remains in `probes/mux_worker.c` |
 | `probes/mux_worker.c` | Carry required codec-parameter reconstruction, packet-copy mux and validation behavior into Rust; retire the historical C sink |
 | `probes/packet_wire.h` | Remove worker-only framing when typed Rust packets replace IPC; use a bounded Rust parser only if retained diagnostic artifacts need it |
-| `nix/packages/native-media.nix` | Remove C executable packaging; supply FFmpeg libraries through the actual Rust application's build/runtime closure |
+| `nix/packages/native-media.nix` | **Removed.** Application package and dev shell now supply FFmpeg libraries, pkg-config and bindgen dependencies |
 | `nix/packages/ingest-worker-probe.nix` | Retire obsolete C/probe build dependencies, including json-c where no longer used; do not add a replacement synthetic rollout gate |
 | Python worker launchers / unused AMC2 scaffolding | Remove or clearly retire obsolete worker entrypoints after their findings are preserved; do not leave the application dependent on the research harness |
 

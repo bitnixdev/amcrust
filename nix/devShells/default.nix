@@ -1,8 +1,4 @@
-{config, ...}: {
-  config = {
-    # programs.supervisord.enable = true;
-    # services.mysql.enable = true;
-    programs.rust.enable = true;
-    # programs.bun.enable = true;
-  };
+{pkgs}: pkgs.mkShell {
+  nativeBuildInputs = with pkgs; [cargo rustc rustfmt clippy pkg-config rustPlatform.bindgenHook];
+  buildInputs = with pkgs; [ffmpeg libiconv];
 }

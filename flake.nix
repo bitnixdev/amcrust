@@ -11,12 +11,17 @@
     };
   };
 
-  outputs = inputs @ {chips, ...}:
-    chips.lib.mkFlake {
+  outputs = inputs @ {chips, nixpkgs, ...}: let
+    base = chips.lib.mkFlake {
       inherit inputs;
-      # Generate new devShells with `nix run .#init-dev-shell <GITHUB_USERNAME>`
-      sources.devShells = ./nix/devShells;
       sources.packages = ./nix/packages;
       sources.nixosModules = ./nix/nixosModules;
     };
+  in base // {
+    # This application needs a library/toolchain shell, not chips' NixOS service
+    # shims (which import modules removed from the pinned nixpkgs).
+    devShells = nixpkgs.lib.genAttrs (builtins.attrNames base.packages) (system: {
+      default = import ./nix/devShells/default.nix {pkgs = nixpkgs.legacyPackages.${system};};
+    });
+  };
 }

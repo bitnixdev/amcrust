@@ -17,12 +17,12 @@ completed work and its limitations are in [Evidence](evidence.md). The
 | Live audio | Per-viewer FFmpeg AAC decode/Opus encode | Rust-owned FFmpeg-library audio processing shared where negotiated settings match |
 | Recording | Persistent FFmpeg reader/mux, Rust fMP4 prebuffer and HDS delivery | Shared packet subscriptions, Rust-owned mux/lifetimes, existing HomeKit/HDS integration |
 | Experiments | Python prototypes plus C FFmpeg wrappers | Behavioral evidence to carry forward, not a second production implementation |
-| Interrupted cutover | `src/ingest.rs`, `native/*.c`, `nix/packages/native-media.nix` | Superseded draft; not wired into `src/main.rs` or the normal package |
+| Rust acquisition boundary | `src/ingest.rs` owns blocking libavformat reads and immutable packet/configuration lifetimes; unused `native/` draft removed | Connect a joined source supervisor, registry and bounded subscriptions to production consumers |
 
 **The production acquisition cutover has not happened.** Previous packet, lifetime,
 mux and presentation experiments do not establish that the new Rust path is deployed
-or accepted by Apple clients. The interrupted draft is preserved, not approved for
-promotion as-is. Its C-based packaging and worker coupling must be removed.
+or accepted by Apple clients. The unused C-based draft and packaging have been removed;
+the new Rust library reader is built but not connected to production consumers.
 
 ## Intended data flow
 
@@ -53,7 +53,9 @@ viewer, recording session or requested output format.
   FFmpeg is still a native library dependency; this is not a codec rewrite in Rust.
 - Select bindings compatible with the repository-pinned FFmpeg API. Missing safe
   wrappers may require a small audited **Rust FFI module**, not a project C shim or
-  access to private FFmpeg structs. Binding choice remains an implementation task.
+  access to private FFmpeg structs. `ffmpeg-sys-next` is pinned to 9.1.1 against
+  Nix FFmpeg 9.0.2. `src/ingest.rs` contains the acquisition FFI ownership boundary;
+  muxing/audio integration remains to be implemented.
 - Blocking I/O belongs off the async executor, with interruptible reads, deadlines and
   explicit shutdown/join. If process isolation proves necessary, use a Rust worker
   with owned lifetime; do not reinstate the standalone C-worker architecture.

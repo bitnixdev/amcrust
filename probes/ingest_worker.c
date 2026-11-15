@@ -114,23 +114,12 @@ int main(int argc, char **argv) {
     int resource_fixture = argc == 4 && !strcmp(argv[1], "--rtsp-resource-fixture");
     int file_generation = argc == 4 && !strcmp(argv[1], "--file-generation");
     int rtsp_fixture = resource_fixture || (argc == 4 && !strcmp(argv[1], "--rtsp-fixture"));
-    int camera = 0;
-#ifdef AMCRUST_PRODUCTION
-    camera = argc == 3 && !strcmp(argv[1], "--camera");
-#endif
-    if (argc != 2 && !rtsp_fixture && !file_generation && !camera)
+    /* Historical fixture exporter only; production acquisition is Rust-owned. */
+    if (argc != 2 && !rtsp_fixture && !file_generation)
         fail("usage: ingest-worker-probe LOCAL_FILE | --rtsp-fixture PORT GENERATION | --rtsp-resource-fixture PORT GENERATION | --file-generation GENERATION LOCAL_FILE");
-    char camera_url[8192];
     char fixture_url[128];
     const char *source = argv[1];
-    if (camera) {
-        generation = parse_generation(argv[2]);
-        if (!fgets(camera_url, sizeof(camera_url), stdin) || !strchr(camera_url, '\n'))
-            fail("camera source configuration missing");
-        camera_url[strcspn(camera_url, "\r\n")] = 0;
-        if (strncmp(camera_url, "rtsp://", 7)) fail("camera source must use RTSP");
-        source = camera_url;
-    } else if (rtsp_fixture) {
+    if (rtsp_fixture) {
         char *end;
         unsigned long port = strtoul(argv[2], &end, 10);
         if (!*argv[2] || *end || port < 1 || port > 65535) fail("invalid fixture port");
@@ -150,8 +139,8 @@ int main(int argc, char **argv) {
     AVFormatContext *input = NULL;
     AVDictionary *options = NULL;
     /* Network acquisition is opt-in and restricted to our loopback fixture URL. */
-    av_dict_set(&options, "protocol_whitelist", (rtsp_fixture || camera) ? "tcp,rtp" : "file", 0);
-    if (rtsp_fixture || camera) {
+    av_dict_set(&options, "protocol_whitelist", rtsp_fixture ? "tcp,rtp" : "file", 0);
+    if (rtsp_fixture) {
         av_dict_set(&options, "rtsp_transport", "tcp", 0);
         av_dict_set(&options, "timeout", "2000000", 0);
         av_dict_set(&options, "analyzeduration", "200000", 0);
@@ -159,7 +148,7 @@ int main(int argc, char **argv) {
         av_dict_set(&options, "fpsprobesize", "2", 0);
     }
     int result = avformat_open_input(&input, source,
-                                    (rtsp_fixture || camera) ? av_find_input_format("rtsp") : NULL, &options);
+                                    rtsp_fixture ? av_find_input_format("rtsp") : NULL, &options);
     av_dict_free(&options);
     if (result < 0) fail("cannot open local input");
     if (avformat_find_stream_info(input, NULL) < 0) fail("cannot read stream info");
@@ -233,7 +222,7 @@ int main(int argc, char **argv) {
         av_packet_unref(packet);
     }
     /* A live source ending is a discontinuity, never successful finite media. */
-    if (rtsp_fixture || camera || result != AVERROR_EOF) fail("input read failed");
+    if (rtsp_fixture || result != AVERROR_EOF) fail("input read failed");
     append("{\"type\":\"end\",\"generation\":%u,\"packets\":%llu}", generation, (unsigned long long)sequence);
     emit();
     av_packet_free(&packet);

@@ -9,6 +9,9 @@ edition = "2024"
 [dependencies]
 hap = { path = "hap" }
 
+# Public FFmpeg 9 APIs; link the Nix libraries, never build bundled C workers.
+ffmpeg-sys-next = { version = "=9.1.1", default-features = false, features = ["avformat", "swresample"] }
+
 tokio = { version = "1.49.0", features = ["full"] }
 
 clap = { version = "4", features = ["derive", "env"] }

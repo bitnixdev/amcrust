@@ -16,10 +16,34 @@ delivery outcomes (`end_sent`, `cancelled`, `source_unavailable`, `write_error`)
 `scripts/ingest_baseline.py` avoids command lines/environment values; process counts
 are not RTSP session counts and summed RSS may double-count shared pages.
 
-The unfinished C-worker cutover (`native/`, `src/ingest.rs`, `native-media.nix`) is not
-wired into `src/main.rs` or the normal application package. It is superseded by the
-Rust-application-code decision. MediaMTX was investigated but not added or launched.
-No production shared-ingest or Apple acceptance claim follows from either detour.
+The unused C-worker draft (`native/`, `native-media.nix`) has been removed and
+`src/ingest.rs` replaced by a Rust libavformat acquisition boundary. It is compiled
+as application library code, but not wired into `src/main.rs` or production consumers.
+MediaMTX was investigated but not added or launched. No production shared-ingest or
+Apple acceptance claim follows from these steps.
+
+### Rust acquisition increment
+
+With user-confirmed camera availability, an opt-in read-only check against
+**10.76.14.10**, main encoder, exercised `ffmpeg-sys-next` **9.1.1** linked to the
+repository's Nix FFmpeg **9.0.2** on Darwin arm64. A five-second read returned **320
+packets**, **one missing PTS/DTS**, and **four packets with public RTCP SR side data**.
+Descriptors were H.264 **1920×1080, 1/90000**, and AAC **48-kHz mono, 1/48000**.
+No clocks were repaired/rebased, encoder settings written, or captured media retained.
+This does not establish sender-report cadence or A/V synchronization.
+
+The first run exposed premature packet destruction; after fixing ownership transfer,
+the check passed, including cross-thread cancellation (under two seconds), sticky
+terminal notification, and packet/codec metadata access after input close. The
+opt-in check lives in `tests/camera_acquisition.rs`; it does not run in ordinary tests.
+Native diagnostics are suppressed before library I/O because FFmpeg can log URLs;
+Rust errors carry only operation/code or typed lifecycle reasons.
+
+`cargo check --all-targets` and `nix build .#amcrust --no-link` passed. The dev shell
+now uses the pinned toolchain/media packages directly, avoiding an obsolete chips
+NixOS MinIO module import. Still unexercised here: blocked/stalled-camera deadlines,
+Rust mux/audio processing, source supervision/fanout, production sockets/connection
+counts, Apple playback and privacy behavior. This is not a Rust-only bridge run.
 
 ## Actual camera observation
 
