@@ -1,0 +1,123 @@
+{
+  "environment": {
+    "os": "Darwin",
+    "architecture": "arm64",
+    "python": "3.14.10",
+    "ffmpeg": "9.0.2"
+  },
+  "cases": [
+    {
+      "generation": 1,
+      "action": "commit",
+      "published_packets": [
+        48,
+        139
+      ],
+      "ordinary_deliveries_exact": 187,
+      "ordinary_first_sequence": 0,
+      "source_failure": "native source EOF",
+      "cut_source_sequence": 87,
+      "later_source_packets": 99,
+      "connections": 1,
+      "worker_reaped": true,
+      "state": "committed",
+      "committed_while_source_active_with_newer_queued_media": true,
+      "prepared_cut_refused": false,
+      "private_packet_count": 39,
+      "video_frames": 9,
+      "aac_packets": 30,
+      "source_clocks_exact": true,
+      "direct_aac_pcm_exact": true,
+      "decoded_audio_samples": 30720,
+      "continuous_pcm_difference": {
+        "different_samples": 1682,
+        "first": 0,
+        "last": 30703,
+        "max_abs_s16_error": 4623
+      },
+      "continuous_pcm_from_video_boundary": {
+        "different_samples": 662,
+        "first": 24,
+        "last": 29519,
+        "max_abs_s16_error": 1
+      },
+      "audio_lead_seconds": "37/1500",
+      "audio_end_after_video_seconds": "23/1500"
+    },
+    {
+      "generation": 2,
+      "action": "commit",
+      "published_packets": [
+        48,
+        150
+      ],
+      "ordinary_deliveries_exact": 194,
+      "ordinary_first_sequence": 4,
+      "source_failure": "native source EOF",
+      "cut_source_sequence": 98,
+      "later_source_packets": 99,
+      "connections": 1,
+      "worker_reaped": true,
+      "state": "committed",
+      "committed_while_source_active_with_newer_queued_media": true,
+      "prepared_cut_refused": false,
+      "private_packet_count": 39,
+      "video_frames": 9,
+      "aac_packets": 30,
+      "source_clocks_exact": true,
+      "direct_aac_pcm_exact": true,
+      "decoded_audio_samples": 30720,
+      "continuous_pcm_difference": {
+        "different_samples": 1729,
+        "first": 0,
+        "last": 30649,
+        "max_abs_s16_error": 5013
+      },
+      "continuous_pcm_from_video_boundary": {
+        "different_samples": 690,
+        "first": 57,
+        "last": 28729,
+        "max_abs_s16_error": 1
+      },
+      "audio_lead_seconds": "1/25",
+      "audio_end_after_video_seconds": "0"
+    },
+    {
+      "generation": 3,
+      "action": "subscriber-cancel",
+      "published_packets": [
+        48,
+        139
+      ],
+      "ordinary_deliveries_exact": 187,
+      "ordinary_first_sequence": 0,
+      "source_failure": "native source EOF",
+      "cut_source_sequence": 87,
+      "later_source_packets": 99,
+      "connections": 1,
+      "worker_reaped": true,
+      "state": "aborted",
+      "committed_while_source_active_with_newer_queued_media": false,
+      "prepared_cut_refused": true
+    },
+    {
+      "generation": 4,
+      "action": "source-failure",
+      "published_packets": [
+        30,
+        86
+      ],
+      "ordinary_deliveries_exact": 116,
+      "ordinary_first_sequence": 0,
+      "source_failure": "clock admission failed: parameter sets changed within clock generation",
+      "cut_source_sequence": 87,
+      "later_source_packets": 28,
+      "connections": 1,
+      "worker_reaped": true,
+      "state": "aborted",
+      "committed_while_source_active_with_newer_queued_media": false,
+      "prepared_cut_refused": true
+    }
+  ],
+  "scope": "bounded recording-local IPC cut; no HDS/cloud, privacy erasure or Apple acceptance"
+}

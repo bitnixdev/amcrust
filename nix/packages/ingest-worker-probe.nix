@@ -27,6 +27,7 @@
     python3 scripts/admission_churn_probe.py --generations 32
     python3 scripts/native_fanout_probe.py --worker ./ingest-worker-probe --seconds 3
     python3 scripts/native_history_probe.py --worker ./ingest-worker-probe --seconds 3
+    python3 scripts/recording_cut_probe.py --worker ./ingest-worker-probe --sink ./mux-worker-probe
     python3 scripts/native_resource_probe.py --worker ./ingest-worker-probe --seconds 3 --subscribers 2 --mode shared --no-rss
     python3 scripts/native_resource_probe.py --worker ./ingest-worker-probe --seconds 3 --subscribers 2 --mode independent --no-rss
     runHook postCheck

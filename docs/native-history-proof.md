@@ -101,8 +101,10 @@ coverage checks history/live hashing, incorrect/missing source oracles, multiple
 and retirement waiters, parameter-change bounds, and worker cleanup despite retirement
 or cleanup failure.
 
-Next: recording-specific cut/end while acquisition remains active, with explicit
-common clip presentation/edit semantics and cancellation precedence. Do not use source
-EOF or receipt of a packet as proof of a completed recording. Production Rust registry,
+The subsequent [recording-local cut proof](recording-cut-proof.md) now separates
+private input completion from source EOF while acquisition continues, and exercises
+pre-commit cancellation precedence. Its common-epoch passthrough baseline is not a
+final presentation/edit or copied-output privacy policy. Do not use source EOF or
+receipt of a packet as proof of a completed recording. Production Rust registry,
 consumer-copy privacy policy, broader codec/clock contracts, both physical cameras and
 Apple live/HSV acceptance remain open. No camera or production setting changed.
