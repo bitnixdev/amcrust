@@ -7,7 +7,21 @@ failing or being reconfigured never affects the others.
 
 Supported/tested cameras: Amcrest `IP8M-2696E-AI` and `IP8M-2796E-AI`.
 
-## What it does
+## Project direction and documentation
+
+**The shared-ingest cutover is not implemented yet.** The current application below
+still uses separate FFmpeg camera readers. The destination is Rust-owned shared
+acquisition through FFmpeg library bindings, with independent HomeKit transports—
+not project-owned C workers, MediaMTX, or a selectable legacy-reader fallback.
+
+- [Architecture](docs/architecture.md): current versus intended data flow and decisions.
+- [TODO](docs/todo.md): the single ordered backlog, including every C replacement/removal
+  and the authorized real-device testing workflow. No more synthetic-testing work.
+- [Evidence](docs/evidence.md): consolidated completed findings and unresolved limits;
+  historical experiment success is not production or Apple-client acceptance.
+- [HDS wire reference](docs/hds-wire-format.md): transport/protocol reference, not a roadmap.
+
+## What the current application does
 
 - **Live video in the Home app**: HAP RTP stream management with SRTP. Amcrust
   advertises and routes two native camera encoders without video transcoding:
@@ -37,7 +51,7 @@ Supported/tested cameras: Amcrest `IP8M-2696E-AI` and `IP8M-2796E-AI`.
   **no transcoding**. Amcrust advertises only modes reported by the camera,
   reprograms the main-stream encoder (resolution, fps, GOP = fragment length,
   bitrate, AAC sample rate) to match, and ffmpeg stream-copies into fMP4. Requires a home
-  hub and iCloud+; see docs/hds-wire-format.md for the wire format reference.
+  hub and iCloud+; see the [HDS wire reference](docs/hds-wire-format.md).
 - **Optional audio** (`--audio`): the camera's main-stream 48 kHz AAC audio is
   transcoded to the Opus format negotiated by HomeKit. Live audio carries RTP
   and RTCP in both directions through an SRTP/SRTCP proxy, including sender
@@ -94,11 +108,11 @@ Credentials can also live in a `.env` file. Options (all settable via env vars):
 | `--host`           | `CAMERA_HOST`      | —                  | camera IP/hostname                                              |
 | `--username`       | `AMCREST_USERNAME` | —                  | camera API user                                                 |
 | `--password`       | `AMCREST_PASSWORD` | —                  | camera API password                                             |
-| `--port`           | `HAP_PORT`         | `51826`            | HAP server port (unique per instance)                           |
+| `--port`           | `HAP_PORT`         | free port, persisted | prefers 51826–51925; unique per instance                       |
 | `--hds-port`       | `HDS_PORT`         | OS-assigned        | Secure Video data-stream TCP port; must pass the firewall       |
 | `--pin`            | `HAP_PIN`          | randomly generated | override the persisted setup PIN (`1234-5678`)                  |
 | `--data-dir`       | `DATA_DIR`         | `./data`           | pairing state (`<data-dir>/<name>/`)                            |
-| `--rtsp-subtype`   | `RTSP_SUBTYPE`     | `2`                | live RTSP substream (1 or 2); subtype 2 supports 1080p          |
+| `--rtsp-subtype`   | `RTSP_SUBTYPE`     | `2`                | native allocation uses Sub Stream 2; other values are overridden |
 | `--audio`          | `AUDIO`            | `true`             | send Opus audio                                                 |
 | `--ir-lighting`    | `IR_LIGHTING`       | `true`             | allow automatic IR illumination; disable behind glass          |
 | `--metrics-port`   | `METRICS_PORT`     | OS-assigned        | `/health` and `/metrics` HTTP port; set explicitly for scraping |
@@ -115,10 +129,10 @@ curl http://localhost:9090/metrics
 A compact process summary is also written directly to stderr every hour,
 regardless of the configured log filter.
 
-For shared-ingest baseline sampling and the synthetic FFmpeg fanout experiment,
-see [shared-ingest research](docs/shared-ingest-research.md). Startup metrics measure
-first sent RTP/IDR packets, not controller decode latency; recording delivery
-outcomes distinguish an end-of-stream write from confirmed iCloud storage.
+For measurement boundaries and historical findings, see [Evidence](docs/evidence.md).
+The [TODO](docs/todo.md#4-run-and-evaluate-the-real-replacement-alongside-integration)
+contains the real-device cutover workflow. Startup metrics measure sent RTP/IDR,
+not controller decode latency; an end-of-stream write is not confirmed iCloud storage.
 
 On first startup, each camera gets its own random setup PIN, persisted with its
 pairing state. The log prints it as `1234-5678`; add the accessory in the Home
@@ -174,7 +188,10 @@ default is `hapPort + 100`; both ports must pass the firewall. Set
 `services.amcrust.openFirewall = true`, or allow the HAP and HDS ports in
 interface-specific firewall rules.
 
-## Architecture
+## Current code map
+
+The target architecture and invariants live only in [Architecture](docs/architecture.md).
+This map describes the existing application, not the unfinished cutover draft.
 
 ```
 src/
@@ -183,6 +200,9 @@ src/
   accessory.rs  HomeKit accessory: stream management + motion sensor services
   stream.rs     SetupEndpoints/SelectedRTPStreamConfiguration TLV8 negotiation
                 and the ffmpeg RTSP→SRTP media pipeline
+  srtp.rs       per-session SRTP/SRTCP handling
+  hsv/          recording configuration, fMP4 prebuffer, HDS codec/framing/delivery
+  metrics.rs    health, media metrics and delivery outcomes
   motion.rs     AI events → motion sensor characteristic updates
   tlv8.rs       minimal TLV8 encoder/decoder
 hap/            vendored fork of hap-rs (github.com/ewilken/hap-rs), extended
