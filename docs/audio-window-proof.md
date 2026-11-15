@@ -1,5 +1,11 @@
 # Timestamp-selected AAC start windows
 
+This document records the metadata-planning milestone. The subsequent
+[owned-history proof](audio-history-proof.md) replaces oracle-sourced mux input
+with actual leased bodies and a historical/live handoff in finite replay. The
+current probe includes both sets of observations; the original scope below is
+not a claim that the later implementation still lacks body storage.
+
 The [late-AAC diagnostic](late-audio-proof.md) exposed 66.7/82 ms gaps when audio
 starts with the packet-order suffix after an IDR. This next experiment selects
 complete AAC access units by timestamp. It separates **packet coverage**, **fresh

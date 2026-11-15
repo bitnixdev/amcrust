@@ -1,14 +1,15 @@
-"""Finite oracle mux controls for metadata-only window plans, not a live handoff."""
+"""Finite mux controls for captured history/live deliveries; corpus is the oracle only."""
 from fractions import Fraction
 import hashlib
 
 from av_output_probe import (compare_timing, decoded_audio, decoded_video, mux,
                              pack_wire, pcm_difference)
 from ingest_probe import inspect
+from packet_wire import decode_frame
 
 
 async def output_windows(sink, directory, generation, frames, first_sequence, plans,
-                         units, continuous, full_info, reference_video, pns):
+                         units, continuous, full_info, reference_video, pns, delivered):
     source = [obj for obj in frames if obj["type"] == "packet"]
     all_audio = [obj for obj in source if obj["stream"] == 1]
     boundary = Fraction(source[first_sequence]["pts"], 90000)
@@ -16,8 +17,7 @@ async def output_windows(sink, directory, generation, frames, first_sequence, pl
     for preceding, records in plans.items():
         if not records:
             raise ValueError("window lacks IDR coverage")
-        # Deliberately materialize from the finite captured oracle, NOT from a live
-        # history buffer or a plan used as replay authorization. Check every hash.
+        # Use the finite corpus only to verify actual leased history/live input.
         chosen = {record.sequence for record in records}
         for record in records:
             obj = source[record.sequence]
@@ -31,9 +31,14 @@ async def output_windows(sink, directory, generation, frames, first_sequence, pl
         audio_start = next(i for i, obj in enumerate(all_audio) if obj["sequence"] == audio[0]["sequence"])
         if audio != all_audio[audio_start:] or not records[preceding].start <= boundary < records[preceding].end:
             raise ValueError("window did not yield contiguous AAC covering IDR")
-        private = [obj for obj in frames if obj["type"] in ("hello", "stream")]
-        private += [{**obj, "sequence": i} for i, obj in enumerate(selected)]
-        private.append({"type": "end", "generation": generation, "packets": len(selected)})
+        received = [decode_frame(raw) for raw in delivered[preceding]["frames"]]
+        headers = delivered[preceding]["headers"]
+        if (received != selected + [frames[-1]] or headers !=
+                [obj for obj in frames if obj["type"] in ("hello", "stream")]):
+            raise ValueError("leased history/live handoff differs from original source selection")
+        private = list(headers)
+        private += [{**obj, "sequence": i} for i, obj in enumerate(received[:-1])]
+        private.append({**received[-1], "packets": len(received) - 1})
         path = directory / f"window-{generation}-{preceding}.mp4"
         await mux(sink, path, pack_wire(private))
         info = await inspect(path)

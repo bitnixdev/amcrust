@@ -8,14 +8,13 @@ import tempfile
 import asyncio
 
 from av_output_probe import compare_timing, decoded_audio, decoded_video, mux, pack_wire, pcm_difference
-from audio_window import AudioWindowIndex
+from audio_history import HistorySource
 from audio_window_output import output_windows
 from ingest_probe import inspect
 from late_mux_input import LateMuxInput
-from packet_wire import encode_frame
+from packet_wire import encode_frame, inspect_metadata
 from rtsp_clock_probe import capture, check_repair
 from rtsp_fixture import aac_frames, make_media
-from shared_admission import LateAdmission
 
 
 def adts_units(data):
@@ -32,21 +31,16 @@ async def case(worker, sink, directory, media, generation, offset, pns):
     original, frames, _ = await capture(worker, media, generation, offset, staggered=bool(offset))
     check_repair(original, frames, offset)
     original_wire = pack_wire(frames)
-    gate = LateAdmission(generation)
-    admission = adapter = observer = window = None
+    gate = HistorySource(generation)
+    admission = adapter = window = None
     plans = None
+    handoffs, delivered = {}, {}
     video_seen = 0
     try:
         for obj in frames:
-            gate.feed(encode_frame(obj))
-            if observer is None:
-                observer = gate.join()
-                if observer is not None:
-                    window = AudioWindowIndex(observer)
-            if observer is not None:
-                while not observer.queue.queue.empty():
-                    with await observer.queue.receive() as delivery:
-                        window.observe(delivery)
+            await gate.feed(encode_frame(obj))
+            if gate.history is not None:
+                window = gate.history.index
             if obj["type"] == "packet" and obj["stream"] == 0:
                 video_seen += 1
             if admission is None and video_seen >= 8:
@@ -56,18 +50,41 @@ async def case(worker, sink, directory, media, generation, offset, pns):
                     plans = {n: window.plan(admission, preceding=n) for n in (0, 1)}
                     if any(plan is None for plan in plans.values()):
                         raise ValueError("bounded AAC history did not cover the IDR")
+                    for n in (0, 1):
+                        handoff = gate.open(preceding=n)
+                        if handoff is None:
+                            raise ValueError("body history did not cover IDR")
+                        handoffs[n] = handoff
+                        snapshot = handoff.admission.snapshot
+                        with handoff.history as prefix:
+                            copied = [memoryview(raw).tobytes() for raw in prefix.frames]
+                        delivered[n] = {"headers": [inspect_metadata(m) for m in
+                                                    (snapshot.hello, *snapshot.streams)],
+                                        "frames": copied}
             if admission is not None:
                 while not admission.queue.queue.empty():
                     with await admission.queue.receive() as delivery:
                         adapter.feed(delivery)
+            for n, handoff in handoffs.items():
+                while not handoff.admission.queue.queue.empty():
+                    with await handoff.receive() as delivery:
+                        raw = delivery.frame.raw
+                        collected = delivered[n]["frames"]
+                        if len(collected) >= 256 or sum(map(len, collected)) + len(raw) > 2 * 1024 * 1024:
+                            raise ValueError("finite handoff capture budget exceeded")
+                        collected.append(memoryview(raw).tobytes())
+                        ended = delivery.frame.metadata["type"] == "end"
+                        del raw
+                    if ended:
+                        handoff.finish()
         if adapter is None:
             raise ValueError("no late IDR admission")
         clip = adapter.finish()
         first_sequence = admission.snapshot.first_sequence
     finally:
-        if window is not None:
-            window.close()
         gate.close()
+    if gate.history.bytes or gate.history._bodies or gate.history._handoffs or gate.history._timer is not None:
+        raise ValueError("history owner did not release managed state")
     if pack_wire(frames) != original_wire:
         raise ValueError("private mux adapter mutated published source input")
     packets = [obj for obj in clip if obj["type"] == "packet"]
@@ -149,11 +166,15 @@ async def case(worker, sink, directory, media, generation, offset, pns):
     elif any(warmups[n]["different_samples"] == 0 for n in (1, 2, 4, 8)):
         raise ValueError("default-PNS fixture no longer demonstrates residual short-preroll differences")
     window_results = await output_windows(sink, directory, generation, frames, first_sequence,
-                                          plans, units, continuous, full_info, reference_video, pns)
+                                          plans, units, continuous, full_info, reference_video, pns, delivered)
     if pack_wire(frames) != original_wire:
         raise ValueError("window oracle mux changed source input")
     return {"generation": generation, "profile": clip[1]["profile"], "audio_offset": offset,
             "timestamp_windows": window_results,
+            "body_history": {"peak_bodies": gate.history.peak_bodies,
+                             "peak_owned_wire_bytes": gate.history.peak_bytes,
+                             "closed_owned_bytes": gate.history.bytes,
+                             "handoff_media_from_history_and_live_leases": True},
             "window_index": {"peak_records": window.peak_records,
                              "peak_represented_wire_bytes": window.peak_wire_bytes,
                              "evicted_records": window.evicted,

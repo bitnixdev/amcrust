@@ -65,6 +65,12 @@
           "actual_output_trimmed_or_padded": false
         }
       ],
+      "body_history": {
+        "peak_bodies": 11,
+        "peak_owned_wire_bytes": 4708,
+        "closed_owned_bytes": 0,
+        "handoff_media_from_history_and_live_leases": true
+      },
       "window_index": {
         "peak_records": 11,
         "peak_represented_wire_bytes": 4708,
@@ -211,6 +217,12 @@
           "actual_output_trimmed_or_padded": false
         }
       ],
+      "body_history": {
+        "peak_bodies": 11,
+        "peak_owned_wire_bytes": 4776,
+        "closed_owned_bytes": 0,
+        "handoff_media_from_history_and_live_leases": true
+      },
       "window_index": {
         "peak_records": 11,
         "peak_represented_wire_bytes": 4776,
@@ -357,6 +369,12 @@
           "actual_output_trimmed_or_padded": false
         }
       ],
+      "body_history": {
+        "peak_bodies": 11,
+        "peak_owned_wire_bytes": 4776,
+        "closed_owned_bytes": 0,
+        "handoff_media_from_history_and_live_leases": true
+      },
       "window_index": {
         "peak_records": 11,
         "peak_represented_wire_bytes": 4776,
@@ -503,6 +521,12 @@
           "actual_output_trimmed_or_padded": false
         }
       ],
+      "body_history": {
+        "peak_bodies": 11,
+        "peak_owned_wire_bytes": 4846,
+        "closed_owned_bytes": 0,
+        "handoff_media_from_history_and_live_leases": true
+      },
       "window_index": {
         "peak_records": 11,
         "peak_represented_wire_bytes": 4846,
@@ -592,5 +616,5 @@
     "ffmpeg": "9.0.2",
     "python": "3.14.10"
   },
-  "window_scope": "metadata-only planner and finite captured-oracle mux; no live media history or replay grant"
+  "window_scope": "source-owned AAC copies and charged history/live leases in finite replay; not continuous native acquisition or production recording"
 }

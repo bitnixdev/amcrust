@@ -120,7 +120,8 @@ tests and 61 Rust tests/doctests passed.
 A subsequent [timestamp-window proof](audio-window-proof.md) now distinguishes
 packet coverage from PCM exactness with a bounded metadata planner and finite mux
 controls retaining complete leading AUs. It is not an actual media-history store or
-live replay handoff. Body ownership/expiry and a production clip start/edit policy
-remain open. The observed PNS-dependent differences must remain explicit; these
+live replay handoff. The subsequent [owned-history proof](audio-history-proof.md)
+adds charged bodies and history/live leases in finite replay; paced native fault
+coverage and a production clip start/edit policy remain open. The observed PNS-dependent differences must remain explicit; these
 proofs authorize no generic preroll amount, arbitrary sample removal, production
 recording adapter, hardware support, or Apple live/HSV acceptance claim.
