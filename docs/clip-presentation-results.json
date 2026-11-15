@@ -1,0 +1,605 @@
+{
+  "environment": {
+    "os": "Darwin",
+    "architecture": "arm64",
+    "python": "3.14.10",
+    "ffmpeg": "9.0.2"
+  },
+  "scope": "private common-origin/edit diagnostics, not a production or Apple presentation policy",
+  "cases": [
+    {
+      "name": "main-delayed",
+      "cut_source_sequence": 87,
+      "video_frames": 9,
+      "aac_packets": 30,
+      "baseline_edits": {
+        "movie_timescale": 720000,
+        "tracks": [
+          {
+            "track_id": 1,
+            "timescale": 90000,
+            "edits": [
+              {
+                "duration": 720000,
+                "media_time": -1
+              },
+              {
+                "duration": 0,
+                "media_time": 0
+              }
+            ]
+          },
+          {
+            "track_id": 2,
+            "timescale": 48000,
+            "edits": [
+              {
+                "duration": 702240,
+                "media_time": -1
+              },
+              {
+                "duration": 0,
+                "media_time": 0
+              }
+            ]
+          }
+        ]
+      },
+      "leading_samples": 1184,
+      "alternatives": [
+        {
+          "policy": "earliest",
+          "origin_seconds": "1463/1500",
+          "tracks": [
+            {
+              "index": 0,
+              "packets": 9,
+              "first_pts": 2220,
+              "time_base": "1/90000",
+              "mux_timestamp_deltas": [
+                "0"
+              ],
+              "first_packet_side_data": [],
+              "discard_packet_indices": []
+            },
+            {
+              "index": 1,
+              "packets": 30,
+              "first_pts": 0,
+              "time_base": "1/48000",
+              "mux_timestamp_deltas": [
+                "0"
+              ],
+              "first_packet_side_data": [],
+              "discard_packet_indices": []
+            }
+          ],
+          "edits": {
+            "movie_timescale": 720000,
+            "tracks": [
+              {
+                "track_id": 1,
+                "timescale": 90000,
+                "edits": [
+                  {
+                    "duration": 17760,
+                    "media_time": -1
+                  },
+                  {
+                    "duration": 0,
+                    "media_time": 0
+                  }
+                ]
+              },
+              {
+                "track_id": 2,
+                "timescale": 48000,
+                "edits": [
+                  {
+                    "duration": 0,
+                    "media_time": 0
+                  }
+                ]
+              }
+            ]
+          },
+          "decoded_samples": 30720,
+          "versus_fresh_whole_window": {
+            "different_samples": 0,
+            "first": null,
+            "last": null,
+            "max_abs_s16_error": 0
+          },
+          "versus_fresh_from_video": {
+            "sample_counts": [
+              29536,
+              30720
+            ]
+          },
+          "versus_continuous_from_video": {
+            "sample_counts": [
+              29536,
+              30720
+            ]
+          }
+        },
+        {
+          "policy": "video",
+          "origin_seconds": "1",
+          "tracks": [
+            {
+              "index": 0,
+              "packets": 9,
+              "first_pts": 0,
+              "time_base": "1/90000",
+              "mux_timestamp_deltas": [
+                "0"
+              ],
+              "first_packet_side_data": [],
+              "discard_packet_indices": []
+            },
+            {
+              "index": 1,
+              "packets": 30,
+              "first_pts": -1184,
+              "time_base": "1/48000",
+              "mux_timestamp_deltas": [
+                "0"
+              ],
+              "first_packet_side_data": [
+                {
+                  "side_data_type": "Skip Samples",
+                  "skip_samples": 1184,
+                  "discard_padding": 0,
+                  "skip_reason": 0,
+                  "discard_reason": 0
+                }
+              ],
+              "discard_packet_indices": []
+            }
+          ],
+          "edits": {
+            "movie_timescale": 720000,
+            "tracks": [
+              {
+                "track_id": 1,
+                "timescale": 90000,
+                "edits": [
+                  {
+                    "duration": 0,
+                    "media_time": 0
+                  }
+                ]
+              },
+              {
+                "track_id": 2,
+                "timescale": 48000,
+                "edits": [
+                  {
+                    "duration": 0,
+                    "media_time": 1184
+                  }
+                ]
+              }
+            ]
+          },
+          "decoded_samples": 29536,
+          "versus_fresh_whole_window": {
+            "sample_counts": [
+              30720,
+              29536
+            ]
+          },
+          "versus_fresh_from_video": {
+            "different_samples": 0,
+            "first": null,
+            "last": null,
+            "max_abs_s16_error": 0
+          },
+          "versus_continuous_from_video": {
+            "different_samples": 662,
+            "first": 24,
+            "last": 29519,
+            "max_abs_s16_error": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "high-aligned",
+      "cut_source_sequence": 98,
+      "video_frames": 9,
+      "aac_packets": 30,
+      "baseline_edits": {
+        "movie_timescale": 720000,
+        "tracks": [
+          {
+            "track_id": 1,
+            "timescale": 90000,
+            "edits": [
+              {
+                "duration": 720000,
+                "media_time": -1
+              },
+              {
+                "duration": 0,
+                "media_time": 0
+              }
+            ]
+          },
+          {
+            "track_id": 2,
+            "timescale": 48000,
+            "edits": [
+              {
+                "duration": 691200,
+                "media_time": -1
+              },
+              {
+                "duration": 0,
+                "media_time": 0
+              }
+            ]
+          }
+        ]
+      },
+      "leading_samples": 1920,
+      "alternatives": [
+        {
+          "policy": "earliest",
+          "origin_seconds": "24/25",
+          "tracks": [
+            {
+              "index": 0,
+              "packets": 9,
+              "first_pts": 3600,
+              "time_base": "1/90000",
+              "mux_timestamp_deltas": [
+                "0"
+              ],
+              "first_packet_side_data": [],
+              "discard_packet_indices": []
+            },
+            {
+              "index": 1,
+              "packets": 30,
+              "first_pts": 0,
+              "time_base": "1/48000",
+              "mux_timestamp_deltas": [
+                "0"
+              ],
+              "first_packet_side_data": [],
+              "discard_packet_indices": []
+            }
+          ],
+          "edits": {
+            "movie_timescale": 720000,
+            "tracks": [
+              {
+                "track_id": 1,
+                "timescale": 90000,
+                "edits": [
+                  {
+                    "duration": 28800,
+                    "media_time": -1
+                  },
+                  {
+                    "duration": 0,
+                    "media_time": 0
+                  }
+                ]
+              },
+              {
+                "track_id": 2,
+                "timescale": 48000,
+                "edits": [
+                  {
+                    "duration": 0,
+                    "media_time": 0
+                  }
+                ]
+              }
+            ]
+          },
+          "decoded_samples": 30720,
+          "versus_fresh_whole_window": {
+            "different_samples": 0,
+            "first": null,
+            "last": null,
+            "max_abs_s16_error": 0
+          },
+          "versus_fresh_from_video": {
+            "sample_counts": [
+              28800,
+              30720
+            ]
+          },
+          "versus_continuous_from_video": {
+            "sample_counts": [
+              28800,
+              30720
+            ]
+          }
+        },
+        {
+          "policy": "video",
+          "origin_seconds": "1",
+          "tracks": [
+            {
+              "index": 0,
+              "packets": 9,
+              "first_pts": 0,
+              "time_base": "1/90000",
+              "mux_timestamp_deltas": [
+                "0"
+              ],
+              "first_packet_side_data": [],
+              "discard_packet_indices": []
+            },
+            {
+              "index": 1,
+              "packets": 30,
+              "first_pts": -1920,
+              "time_base": "1/48000",
+              "mux_timestamp_deltas": [
+                "0"
+              ],
+              "first_packet_side_data": [
+                {
+                  "side_data_type": "Skip Samples",
+                  "skip_samples": 1920,
+                  "discard_padding": 0,
+                  "skip_reason": 0,
+                  "discard_reason": 0
+                }
+              ],
+              "discard_packet_indices": []
+            }
+          ],
+          "edits": {
+            "movie_timescale": 720000,
+            "tracks": [
+              {
+                "track_id": 1,
+                "timescale": 90000,
+                "edits": [
+                  {
+                    "duration": 0,
+                    "media_time": 0
+                  }
+                ]
+              },
+              {
+                "track_id": 2,
+                "timescale": 48000,
+                "edits": [
+                  {
+                    "duration": 0,
+                    "media_time": 1920
+                  }
+                ]
+              }
+            ]
+          },
+          "decoded_samples": 28800,
+          "versus_fresh_whole_window": {
+            "sample_counts": [
+              30720,
+              28800
+            ]
+          },
+          "versus_fresh_from_video": {
+            "different_samples": 0,
+            "first": null,
+            "last": null,
+            "max_abs_s16_error": 0
+          },
+          "versus_continuous_from_video": {
+            "different_samples": 690,
+            "first": 57,
+            "last": 28729,
+            "max_abs_s16_error": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "main-delayed-no-pns",
+      "cut_source_sequence": 87,
+      "video_frames": 9,
+      "aac_packets": 30,
+      "baseline_edits": {
+        "movie_timescale": 720000,
+        "tracks": [
+          {
+            "track_id": 1,
+            "timescale": 90000,
+            "edits": [
+              {
+                "duration": 720000,
+                "media_time": -1
+              },
+              {
+                "duration": 0,
+                "media_time": 0
+              }
+            ]
+          },
+          {
+            "track_id": 2,
+            "timescale": 48000,
+            "edits": [
+              {
+                "duration": 702240,
+                "media_time": -1
+              },
+              {
+                "duration": 0,
+                "media_time": 0
+              }
+            ]
+          }
+        ]
+      },
+      "leading_samples": 1184,
+      "alternatives": [
+        {
+          "policy": "earliest",
+          "origin_seconds": "1463/1500",
+          "tracks": [
+            {
+              "index": 0,
+              "packets": 9,
+              "first_pts": 2220,
+              "time_base": "1/90000",
+              "mux_timestamp_deltas": [
+                "0"
+              ],
+              "first_packet_side_data": [],
+              "discard_packet_indices": []
+            },
+            {
+              "index": 1,
+              "packets": 30,
+              "first_pts": 0,
+              "time_base": "1/48000",
+              "mux_timestamp_deltas": [
+                "0"
+              ],
+              "first_packet_side_data": [],
+              "discard_packet_indices": []
+            }
+          ],
+          "edits": {
+            "movie_timescale": 720000,
+            "tracks": [
+              {
+                "track_id": 1,
+                "timescale": 90000,
+                "edits": [
+                  {
+                    "duration": 17760,
+                    "media_time": -1
+                  },
+                  {
+                    "duration": 0,
+                    "media_time": 0
+                  }
+                ]
+              },
+              {
+                "track_id": 2,
+                "timescale": 48000,
+                "edits": [
+                  {
+                    "duration": 0,
+                    "media_time": 0
+                  }
+                ]
+              }
+            ]
+          },
+          "decoded_samples": 30720,
+          "versus_fresh_whole_window": {
+            "different_samples": 0,
+            "first": null,
+            "last": null,
+            "max_abs_s16_error": 0
+          },
+          "versus_fresh_from_video": {
+            "sample_counts": [
+              29536,
+              30720
+            ]
+          },
+          "versus_continuous_from_video": {
+            "sample_counts": [
+              29536,
+              30720
+            ]
+          }
+        },
+        {
+          "policy": "video",
+          "origin_seconds": "1",
+          "tracks": [
+            {
+              "index": 0,
+              "packets": 9,
+              "first_pts": 0,
+              "time_base": "1/90000",
+              "mux_timestamp_deltas": [
+                "0"
+              ],
+              "first_packet_side_data": [],
+              "discard_packet_indices": []
+            },
+            {
+              "index": 1,
+              "packets": 30,
+              "first_pts": -1184,
+              "time_base": "1/48000",
+              "mux_timestamp_deltas": [
+                "0"
+              ],
+              "first_packet_side_data": [
+                {
+                  "side_data_type": "Skip Samples",
+                  "skip_samples": 1184,
+                  "discard_padding": 0,
+                  "skip_reason": 0,
+                  "discard_reason": 0
+                }
+              ],
+              "discard_packet_indices": []
+            }
+          ],
+          "edits": {
+            "movie_timescale": 720000,
+            "tracks": [
+              {
+                "track_id": 1,
+                "timescale": 90000,
+                "edits": [
+                  {
+                    "duration": 0,
+                    "media_time": 0
+                  }
+                ]
+              },
+              {
+                "track_id": 2,
+                "timescale": 48000,
+                "edits": [
+                  {
+                    "duration": 0,
+                    "media_time": 1184
+                  }
+                ]
+              }
+            ]
+          },
+          "decoded_samples": 29536,
+          "versus_fresh_whole_window": {
+            "sample_counts": [
+              30720,
+              29536
+            ]
+          },
+          "versus_fresh_from_video": {
+            "different_samples": 0,
+            "first": null,
+            "last": null,
+            "max_abs_s16_error": 0
+          },
+          "versus_continuous_from_video": {
+            "different_samples": 0,
+            "first": null,
+            "last": null,
+            "max_abs_s16_error": 0
+          }
+        }
+      ]
+    }
+  ]
+}

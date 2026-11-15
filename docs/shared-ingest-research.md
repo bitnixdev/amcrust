@@ -149,8 +149,11 @@ live-view input: that introduces fragment-duration latency.
    prepared cuts after retirement. Its whole-AU/common-epoch baseline retains measured
    AAC differences. An [owned concurrent output job](recording-output-proof.md) now
    exercises mux/delivery cancellation, native file-size limits and deterministic
-   cleanup. Production privacy/aggregate admission, presentation edits, duration
-   scheduling, broader clocks/codecs and finite AAC end-trimming remain open.
+   cleanup. [Common-origin presentation controls](clip-presentation-proof.md) now
+   preserve exact offsets and characterize front-edit skip signaling, without curing
+   default-PNS continuous-PCM differences. Production privacy/aggregate admission,
+   Apple presentation policy, duration scheduling, broader clocks/codecs and finite
+   AAC end-trimming remain open.
 2. **Synthetic RTSP fixture complete:** authentication, interleaved H.264/AAC,
    backward timestamps, silent socket stall, reconnect with changed SPS/PPS and late
    IDR video decoding. See [coverage and remaining cases](rtsp-ingest-proof.md),

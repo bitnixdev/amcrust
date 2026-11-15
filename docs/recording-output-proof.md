@@ -106,8 +106,9 @@ unretrieved asynchronous pipe/task exceptions. The fake sinks used for determini
 pipe/spawn boundaries are lifecycle controls, not codec evidence.
 
 Existing AAC startup/continuous-PCM differences and whole-AU/common-epoch presentation
-remain unchanged. Next: common-origin presentation/edit alternatives, keeping the
-exact-clock baseline and decoder differences explicit. Duration-driven/overlapping
+remain unchanged in this output job. A subsequent [presentation comparison](clip-presentation-proof.md)
+characterizes common-origin translations and actual front-edit decoder behavior while
+keeping this exact-clock baseline separate. Next: end-presentation controls. Duration-driven/overlapping
 cuts, aggregate output admission, real transport backpressure, production Rust
 supervision/privacy and physical-camera/Apple live/HSV acceptance remain open.
 No camera setting or production process was changed.

@@ -26,7 +26,7 @@ def sha(raw):
 
 
 async def case(worker, sink, directory, media, generation, offset, action, replacement=None,
-               output_factory=None, send_seconds=3.2):
+               output_factory=None, send_seconds=3.2, presentation_check=None):
     clock = ClockNormalizer(generation, report_timeout=Fraction(5, 4))
     source = HistorySource(generation)
     observer = recorder = process = None
@@ -217,6 +217,8 @@ async def case(worker, sink, directory, media, generation, offset, action, repla
                   audio_lead_seconds=str(Fraction(video[0]["pts"], 90000) - Fraction(audio[0]["pts"], 48000)),
                   audio_end_after_video_seconds=str(Fraction(audio[-1]["pts"] + audio[-1]["duration"], 48000) -
                                                    Fraction(video[-1]["pts"] + video[-1]["duration"], 90000)))
+    if presentation_check is not None:
+        result["presentation"] = await presentation_check(sink, directory, artifact, output, continuous)
     return result
 
 
