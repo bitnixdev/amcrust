@@ -101,7 +101,7 @@ impl Admission {
     }
 }
 
-fn nals(data: &[u8]) -> Result<Vec<&[u8]>, Terminal> {
+pub(crate) fn nals(data: &[u8]) -> Result<Vec<&[u8]>, Terminal> {
     let mut units = Vec::new();
     let mut start = None;
     let mut i = 0;

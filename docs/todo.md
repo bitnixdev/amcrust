@@ -24,7 +24,11 @@ milestone or add another parallel plan/proof document.
   no custom C shim, private FFmpeg structs or new relay dependency.
   - [x] Pin `ffmpeg-sys-next = 9.1.1` against Nix FFmpeg 9.0.2; compile public
     packet/RTCP SR, codec-parameter and interrupt APIs and read the real main stream.
-  - [ ] Exercise Rust muxing and AAC/Opus APIs; characterize real RTCP cadence/A/V clocks.
+  - [x] Exercise Rust-owned packet-copy muxing against the real camera, including
+    H.264/AAC and video-only output, downstream decoding and exact translated PTS/DTS.
+  - [ ] Exercise Rust AAC decode/Opus encode; characterize real RTCP cadence/A/V clocks.
+    The real mux sample has differing declared/container sample durations (Evidence);
+    decoded output and preserved PTS/DTS do not settle presentation acceptance.
 - [x] Replace the unfinished `src/ingest.rs` worker/IPC implementation with Rust-owned
   library acquisition. Reuse sound contracts, not its standalone-C process assumptions.
 - [x] Define owned packet/configuration/error types, reference lifetimes, thread-safety
@@ -40,8 +44,8 @@ milestone or add another parallel plan/proof document.
 |---|---|
 | `native/ingest.c` | **Removed.** `src/ingest.rs` owns libavformat open/read/interrupt/close, codec metadata and packet/side-data lifetimes; no production consumer is connected yet |
 | `probes/ingest_worker.c` | Production hook removed; historical fixture exporter remains until obsolete probe launchers are retired |
-| `native/output.c` | **Unused C draft removed.** Rust RTP and fMP4 consumers still need implementation/integration; historical mux behavior remains in `probes/mux_worker.c` |
-| `probes/mux_worker.c` | Carry required codec-parameter reconstruction, packet-copy mux and validation behavior into Rust; retire the historical C sink |
+| `native/output.c` | **Unused C draft removed.** `src/media/rtp.rs` packetizes H.264; `src/media/fmp4.rs` owns finite packet-copy mux jobs. Production transport/recording integration remains |
+| `probes/mux_worker.c` | Rust muxing now copies public codec parameters directly and owns packets/AVIO cleanup; historical C sink and dependent launchers still need retirement |
 | `probes/packet_wire.h` | Remove worker-only framing when typed Rust packets replace IPC; use a bounded Rust parser only if retained diagnostic artifacts need it |
 | `nix/packages/native-media.nix` | **Removed.** Application package and dev shell now supply FFmpeg libraries, pkg-config and bindgen dependencies |
 | `nix/packages/ingest-worker-probe.nix` | Retire obsolete C/probe build dependencies, including json-c where no longer used; do not add a replacement synthetic rollout gate |
@@ -103,14 +107,28 @@ This does not require rewriting FFmpeg itself.
 - [ ] `src/stream.rs`: remove direct RTSP opens for video and audio. Feed encoded H.264
   into Rust RTP packetization with the negotiated MTU/payload type and fresh per-viewer
   transport state. Keep existing `src/srtp.rs` encryption/control integration working.
+  - [x] Implement per-viewer single-NAL/FU-A packetization with independent sequence,
+    clock origin, SSRC/payload/MTU configuration, current in-band SPS/PPS and AU marker.
+    Two real-source plaintext RTP receivers decoded at 400-/1200-byte packet limits.
+  - [ ] Connect session transport, RTCP and SRTP/SRTCP; reserve authentication overhead
+    from the negotiated MTU and verify Home app playback.
 - [ ] Live audio: use shared AAC input; own FFmpeg-library decode/Opus encode in Rust.
   Pool only compatible negotiated settings and isolate encoder/subscriber failures.
 - [ ] `src/hsv/recording.rs` / `src/hsv/fmp4.rs`: remove the recording camera reader;
   consume generation-bound shared packets, mux through FFmpeg bindings and preserve
   correct initialization, prebuffer, actual-IDR start, historical/live order and cuts.
+  - [x] Implement a thread-bound finite Rust libavformat muxer, full parameter/side-data
+    copying, deterministic stream selection and exact common-origin translation.
+  - [ ] Add covering AAC/history selection and production fragment/prebuffer/HDS wiring.
+    Current mux input is an admitted live suffix, not a completed recording-cut policy.
 - [ ] Recording output: keep ownership through muxing and HDS delivery, including
   pending writes, timeout, cancellation, repeated cancellation and temporary storage.
   Separate accepted bytes, local finish/end-write and confirmed user-visible recording.
+  - [x] Bound finite mux input/output bytes, packets, chunks, lifetime and aggregate
+    job reservations; keep reservations and revocable grants with copied output chunks.
+    Real-source checks exercised cancellation, source revocation and local limits.
+  - [ ] Carry ownership through actual asynchronous HDS writes/completion and recording
+    history. Local mux finish and accepted AVIO bytes do not acknowledge a recording.
 - [ ] `src/accessory.rs`: connect HomeKit privacy/configuration transitions to source,
   session and output ownership; ensure disabling recording alone does not break live view.
 - [ ] `apply-settings --write`: exercise the replacement production recording path,

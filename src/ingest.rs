@@ -125,6 +125,11 @@ impl Drop for CodecParameters {
     }
 }
 impl CodecParameters {
+    // Only audited Rust FFI consumers may borrow this; never hand it to an API
+    // that mutates/frees the source parameters. Use avcodec_parameters_copy.
+    pub(crate) fn as_ptr(&self) -> *const av::AVCodecParameters {
+        self.0.as_ptr()
+    }
     pub fn dimensions(&self) -> (i32, i32) {
         unsafe { ((*self.0.as_ptr()).width, (*self.0.as_ptr()).height) }
     }
@@ -215,6 +220,10 @@ unsafe fn bytes<'a>(data: *const u8, size: usize) -> &'a [u8] {
     }
 }
 impl Packet {
+    // Consumers av_packet_ref into their own mutable packet before muxing.
+    pub(crate) fn as_ptr(&self) -> *const av::AVPacket {
+        self.raw.as_ptr()
+    }
     pub fn generation(&self) -> u64 {
         self.generation
     }

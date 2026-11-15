@@ -7,6 +7,8 @@
 //! cannot synchronously join async cleanup; no task is aborted during native I/O.
 mod admission;
 mod subscription;
+pub(crate) use admission::nals;
+pub(crate) use subscription::DeliveryGuard;
 pub use subscription::{Delivery, Subscription, SubscriptionLimits, Tracks};
 
 use crate::ingest::{self, CameraUrl, Cancellation, Packet, Reader, StreamConfiguration};

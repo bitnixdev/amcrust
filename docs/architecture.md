@@ -56,7 +56,8 @@ viewer, recording session or requested output format.
   wrappers may require a small audited **Rust FFI module**, not a project C shim or
   access to private FFmpeg structs. `ffmpeg-sys-next` is pinned to 9.1.1 against
   Nix FFmpeg 9.0.2. `src/ingest.rs` contains the acquisition FFI ownership boundary;
-  muxing/audio integration remains to be implemented.
+  `src/media/fmp4.rs` owns the finite output FFI boundary. Production mux integration
+  and Rust audio processing remain to be implemented.
 - Blocking I/O belongs off the async executor, with interruptible reads, deadlines and
   explicit shutdown/join. If process isolation proves necessary, use a Rust worker
   with owned lifetime; do not reinstate the standalone C-worker architecture.
@@ -93,6 +94,30 @@ checks and lease retirement are cooperative: already borrowed/copied bytes canno
 retracted. Transport write fences, recording history/copies, aggregate output-job
 limits and Prometheus wiring remain integration work. Logical charges are not a bound
 on FFmpeg internal allocations, allocator overhead or process RSS.
+
+## Implemented output-library boundary
+
+`media::rtp::H264` packetizes a charged source delivery into bounded caller-provided
+storage (single NAL or FU-A). Each viewer owns its sequence and RTP clock origin plus
+negotiated SSRC/payload type/plaintext packet limit. SPS/PPS accompany each IDR; the
+last packet alone carries the AU marker. Abandoning a partial AU fails that packetizer.
+Transport writes, RTCP and SRTP remain production-integration work; SRTP overhead must
+be reserved separately from the negotiated packet limit.
+
+`media::fmp4::Muxer` uses public FFmpeg parameter-copy, packet-reference and custom AVIO
+APIs for finite H.264/AAC or video-only output. Its first input must be the source-issued
+IDR used to create it. A single exact video-PTS origin shifts every track; unrepresentable
+shifts/rescales are refused. No guessed clocks or independent track zeroing are added.
+FFmpeg derives MP4 sample durations from DTS where the camera's declared durations
+conflict; the real check records this difference, not a presentation acceptance claim.
+Covering AAC history, decoder preroll, actual clip cuts and tail policy remain unresolved.
+
+Mux state is thread-bound and should run on a blocking media worker. A shared pool
+reserves finite input/output and chunk allowances before admission. Copied chunks keep
+the job reservation and source grant, rechecking cancellation, lifetime and generation
+before access. Abandonment is not finish; explicit finish is only local mux completion.
+These checks cannot retract already borrowed/copied bytes and do not yet fence HDS
+writes. Reservations are logical ownership bounds, not FFmpeg allocator/RSS measurements.
 
 ## Required invariants
 

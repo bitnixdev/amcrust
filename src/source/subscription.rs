@@ -114,7 +114,40 @@ impl Drop for Delivery {
             .remove(&self.packet.sequence());
     }
 }
+/// Internal output ownership token. It does not keep the first packet alive and
+/// identifies the actual subscription/generation allocations, not just a numeric
+/// generation (which can be equal for different encoders).
+#[derive(Clone)]
+pub(crate) struct DeliveryGuard {
+    generation: Arc<Generation>,
+    validity: Arc<Validity>,
+}
+impl DeliveryGuard {
+    pub(crate) fn check(&self) -> Result<(), Terminal> {
+        if let Some(reason) = self.validity.reason() {
+            return Err(reason);
+        }
+        self.generation.check()
+    }
+    pub(crate) fn accepts(&self, delivery: &Delivery) -> Result<(), Terminal> {
+        self.check()?;
+        delivery.check()?;
+        if !Arc::ptr_eq(&self.generation, &delivery.generation)
+            || !Arc::ptr_eq(&self.validity, &delivery.validity)
+        {
+            return Err(Terminal::Reconfigured);
+        }
+        Ok(())
+    }
+}
 impl Delivery {
+    pub(crate) fn guard(&self) -> Result<DeliveryGuard, Terminal> {
+        self.check()?;
+        Ok(DeliveryGuard {
+            generation: self.generation.clone(),
+            validity: self.validity.clone(),
+        })
+    }
     fn check(&self) -> Result<(), Terminal> {
         if self.packet.received_at().elapsed() >= self.budget.limits.residence {
             self.validity.retire(Terminal::Residence);

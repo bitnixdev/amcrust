@@ -81,6 +81,49 @@ application Rust tests** passed. Strict dependency-wide Clippy was blocked by ex
 library.
 No new synthetic camera/clock proof harness was added.
 
+### Rust packet-copy output increment
+
+`tests/camera_media_output.rs` consumed the real main encoder through the Rust source
+registry and exercised `media::rtp` and `media::fmp4`. FFmpeg/ffprobe subprocesses were
+**downstream diagnostic decoders/demuxers only**, with no camera credentials or direct
+camera reads. Media stayed in memory/pipes/loopback UDP; no capture was retained and
+no encoder settings were changed. This was not the production HomeKit bridge.
+
+The final roughly **11-second** run included a six-second admitted mux window:
+
+- H.264/AAC fMP4 accepted **1,296,340 bytes** into the Rust-owned AVIO callback and
+  retained **91 video / 283 AAC packets**. FFmpeg decoded all **91 video frames** and
+  the selected AAC track without diagnostic errors. Video-only muxing decoded the
+  same video count. Input payload hashes, PTS/DTS and flags were unchanged by muxing.
+- Demuxed PTS/DTS exactly matched the one common-origin translation for both tracks.
+  **90 video / 282 AAC packet durations differed** from source-declared durations.
+  The camera's nonuniform DTS steps disagree with its declared durations; FFmpeg's
+  MP4 sample timeline derives durations from DTS. This is an outstanding presentation
+  policy issue, not an implicit tolerance, continuous-decoder PCM comparison or HSV pass.
+- Two independent plaintext RTP viewers used **400-/1200-byte** packet limits and
+  different SSRC/payload settings. Each FFmpeg receiver decoded **30 frames**, while
+  packetizers constructed **3399 / 1148 datagrams** from 100 source frames each.
+  Sequence continuity, packet limits and one AU marker were checked. Counts vary with
+  real scene content; no first-picture latency or Home app acceptance was measured.
+- Real admitted packets exercised partial-AU abandonment, foreign-subscription refusal,
+  aggregate job admission and input-byte refusal. Finished copied chunks retained their
+  reservations, rejected access after cancellation or source disable, and released
+  reservations when dropped. These were not asynchronous HDS backpressure/write checks.
+
+An earlier decoder check reported duplicate output ticks because FFmpeg's default
+null-output clock quantized irregular camera video timestamps. The diagnostic now
+uses the demux time base and passthrough frame timing; encoded source timing is not
+rewritten. An initial 40-frame RTP sample timed out during receiver discovery; the
+check now sends 100 frames through a second IDR. Neither change establishes live-start
+latency or waives the recorded container-duration difference.
+
+All-target type-checking, `nix build .#amcrust --no-link`, the existing **44 application
+Rust tests**, formatting, and strict library-only Clippy passed. Remaining: Rust
+AAC-to-Opus processing, common A/V clock
+acceptance, recording history/cuts/presentation, session RTCP/SRTP integration, actual
+HDS ownership and the single production-reader cutover. Historical C probe retirement
+also remains on the TODO; no new C shim or synthetic media gate was introduced.
+
 ## Actual camera observation
 
 A bounded run of the native ingest reader connected to **10.76.14.10**, main encoder
