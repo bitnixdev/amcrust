@@ -32,6 +32,7 @@ pub enum Error {
     Native { operation: &'static str, code: i32 },
     UnsupportedLayout,
     PacketLimit,
+    ConfigurationChanged,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -41,6 +42,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Acquisition-only secret. Intentionally no Debug/Display implementation.
+#[derive(Clone)]
 pub struct CameraUrl(CString);
 impl CameraUrl {
     pub fn new(url: String) -> Result<Self, Error> {
@@ -133,6 +135,38 @@ impl CodecParameters {
                 (*self.0.as_ptr()).ch_layout.nb_channels,
             )
         }
+    }
+    /// Conservative charge for the public parameter allocation and owned buffers.
+    pub fn owned_bytes(&self) -> usize {
+        let p = unsafe { self.0.as_ref() };
+        let side = if p.nb_coded_side_data == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(p.coded_side_data, p.nb_coded_side_data as usize) }
+        };
+        std::mem::size_of::<av::AVCodecParameters>()
+            + self.extradata().len()
+            + side
+                .iter()
+                .map(|s| s.size + std::mem::size_of::<av::AVPacketSideData>())
+                .sum::<usize>()
+            + p.ch_layout.nb_channels.max(0) as usize * std::mem::size_of::<av::AVChannelCustom>()
+    }
+    fn matches(&self, other: &av::AVCodecParameters) -> bool {
+        let p = unsafe { self.0.as_ref() };
+        p.codec_id == other.codec_id
+            && p.codec_type == other.codec_type
+            && p.format == other.format
+            && p.profile == other.profile
+            && p.level == other.level
+            && p.width == other.width
+            && p.height == other.height
+            && p.sample_rate == other.sample_rate
+            && p.frame_size == other.frame_size
+            && p.video_delay == other.video_delay
+            && unsafe { av::av_channel_layout_compare(&p.ch_layout, &other.ch_layout) == 0 }
+            && self.extradata()
+                == unsafe { bytes(other.extradata, other.extradata_size.max(0) as usize) }
     }
     pub fn extradata(&self) -> &[u8] {
         let p = unsafe { self.0.as_ref() };
@@ -448,6 +482,30 @@ impl Reader {
             || packet.stream_index() >= self.streams.len()
         {
             return Err(Error::UnsupportedLayout);
+        }
+        // Public stream descriptors and explicit packet change notifications are
+        // generation boundaries, never silently applied to admitted consumers.
+        let input = unsafe { &*self.input };
+        if input.nb_streams as usize != self.streams.len() {
+            return Err(Error::ConfigurationChanged);
+        }
+        for saved in &self.streams {
+            let current = unsafe { &**input.streams.add(saved.index) };
+            if current.time_base.num != saved.time_base.numerator
+                || current.time_base.den != saved.time_base.denominator
+                || !saved.parameters.matches(unsafe { &*current.codecpar })
+            {
+                return Err(Error::ConfigurationChanged);
+            }
+        }
+        if packet.side_data().any(|(kind, _)| {
+            matches!(
+                kind,
+                av::AVPacketSideDataType::AV_PKT_DATA_NEW_EXTRADATA
+                    | av::AVPacketSideDataType::AV_PKT_DATA_PARAM_CHANGE
+            )
+        }) {
+            return Err(Error::ConfigurationChanged);
         }
         if packet.owned_bytes() > self.limits.packet_bytes {
             return Err(Error::PacketLimit);

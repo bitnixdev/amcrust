@@ -84,8 +84,9 @@ nix build .#amcrust
 ```
 
 The shell/package supplies FFmpeg 9 libraries, pkg-config and libclang/bindgen;
-`ffmpeg-sys-next` is pinned in Cargo. The Rust acquisition library is implemented
-but is not yet the production reader. The unused project C worker draft is removed.
+`ffmpeg-sys-next` is pinned in Cargo. The Rust acquisition library includes an
+encoder registry, joined reader supervision and bounded packet subscriptions, but
+is not yet the production reader. The unused project C worker draft is removed.
 No system-wide FFmpeg or compiler installation is needed with this workflow.
 
 ## Running

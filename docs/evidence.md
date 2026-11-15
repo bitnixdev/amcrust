@@ -45,6 +45,42 @@ NixOS MinIO module import. Still unexercised here: blocked/stalled-camera deadli
 Rust mux/audio processing, source supervision/fanout, production sockets/connection
 counts, Apple playback and privacy behavior. This is not a Rust-only bridge run.
 
+### Shared-source library increment
+
+`tests/shared_camera_source.rs` exercised the real main encoder and Sub Stream 2
+through `source::Registry`, without encoder writes or retained media. The final
+bounded check completed in about **11.2 seconds** on Darwin arm64:
+
+- Multiple main video subscribers and AAC input shared one acquisition. `lsof`
+  inspected this test process's established camera-port sockets: **one main RTSP
+  connection**, then **two** with Sub Stream 2 active. This was not process-count inference.
+- Two video subscribers received the same packet allocation and generation, starting
+  after the initial unclocked packet at admission's checked future IDR. No playback
+  decoder or Apple client was used.
+- The per-source subscriber cap refused another subscriber. A one-packet slow consumer
+  failed with `Budget`; its handed-out packet remained charged after queue retirement.
+  A 100-ms residence consumer failed with `Residence`. Healthy consumers continued.
+- Disable revoked both queued and held deliveries before returning from reader cleanup;
+  a prior `Budget` cause survived the later disable. Re-enable opened a new generation.
+- Owner URL replacement retired the main generation while Sub Stream 2 continued.
+  Dropping the final main subscriber stopped its reader. Repeated shutdown joined the
+  owners; logical byte charges returned to zero after remaining deliveries were dropped.
+- The main source reported **three generations/open attempts**, **zero source faults**
+  and **two skipped initial unclocked packets** in that final run. Counts varied slightly
+  across successful runs; none of these samples establishes a missing-clock repair.
+
+The source layer implements a capped retry/backoff circuit, but this check did not
+induce camera disconnects, stalls, authentication failures or actual encoder changes.
+It did not evaluate clock rollback/large jumps, RTCP cadence, AAC history, muxing,
+Opus, copied recording output, HomeKit privacy, decoded playback or production load.
+Library reset/disable is not evidence that the unchanged HomeKit paths are fenced.
+
+All-target type-checking, `nix build .#amcrust --no-link`, and the existing **44
+application Rust tests** passed. Strict dependency-wide Clippy was blocked by existing
+`hap` warnings; `cargo clippy --lib --no-deps -- -D warnings` passed for the application
+library.
+No new synthetic camera/clock proof harness was added.
+
 ## Actual camera observation
 
 A bounded run of the native ingest reader connected to **10.76.14.10**, main encoder

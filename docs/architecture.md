@@ -17,12 +17,13 @@ completed work and its limitations are in [Evidence](evidence.md). The
 | Live audio | Per-viewer FFmpeg AAC decode/Opus encode | Rust-owned FFmpeg-library audio processing shared where negotiated settings match |
 | Recording | Persistent FFmpeg reader/mux, Rust fMP4 prebuffer and HDS delivery | Shared packet subscriptions, Rust-owned mux/lifetimes, existing HomeKit/HDS integration |
 | Experiments | Python prototypes plus C FFmpeg wrappers | Behavioral evidence to carry forward, not a second production implementation |
-| Rust acquisition boundary | `src/ingest.rs` owns blocking libavformat reads and immutable packet/configuration lifetimes; unused `native/` draft removed | Connect a joined source supervisor, registry and bounded subscriptions to production consumers |
+| Rust acquisition boundary | `src/ingest.rs` owns libavformat; `src/source/` supplies an encoder registry, joined supervisors and bounded generation-scoped subscriptions | Connect the library owners to production live/audio/recording consumers |
 
 **The production acquisition cutover has not happened.** Previous packet, lifetime,
 mux and presentation experiments do not establish that the new Rust path is deployed
 or accepted by Apple clients. The unused C-based draft and packaging have been removed;
-the new Rust library reader is built but not connected to production consumers.
+the Rust library registry/fanout is built and exercised against the real camera, but
+not connected to production consumers.
 
 ## Intended data flow
 
@@ -66,6 +67,32 @@ viewer, recording session or requested output format.
 - Do not reimplement RTSP or MP4 from scratch. Keep video packet-copy. Rust should own
   session RTP packetization, lifecycle, cancellation, accounting and privacy fences.
 - Dependencies and native-library versions belong in Cargo/Nix, not global installs.
+
+## Implemented source-library boundary
+
+`source::Registry` registers camera/encoder identities once, retaining credentials in
+its supervisors. Consumer handles cannot retrieve URLs. An idle source has no reader;
+the first subscriber starts one blocking libavformat job, shared across requested
+tracks. Failure retires all old leases. New subscriptions observe bounded backoff and
+a consecutive-failure circuit breaker; they never resume inside an old generation.
+Explicit `Registry::shutdown` signals all owners before joining and can be awaited
+again if cancelled. Call it before dropping the Tokio runtime; Drop signals cleanup
+but cannot provide an async join by itself.
+
+Current admission supports Annex-B H.264 with one matching SPS/PPS pair and checked
+slice references. It waits for a future actual timestamped IDR, never a cached GOP or
+key flag alone. Initial unclocked packets are skipped, not repaired; later clock loss
+or non-increasing DTS is refused. Irregular steps are preserved. These decisions do
+not establish source A/V alignment, sender-report cadence or decoded presentation.
+AudioVideo subscriptions start at video admission, not at a covering historical AAC
+window; they are not a finished recording-cut implementation.
+
+Queue and held-delivery charges persist through retirement until owners drop. Source
+and registry budgets include bounded reader handoff and descriptor charges. Access
+checks and lease retirement are cooperative: already borrowed/copied bytes cannot be
+retracted. Transport write fences, recording history/copies, aggregate output-job
+limits and Prometheus wiring remain integration work. Logical charges are not a bound
+on FFmpeg internal allocations, allocator overhead or process RSS.
 
 ## Required invariants
 

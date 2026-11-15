@@ -32,7 +32,8 @@ milestone or add another parallel plan/proof document.
   credential-bearing URLs in native-library diagnostics as well as Rust logs.
   The blocking reader is thread-bound; immutable packet/configuration owners cross
   threads. Deadlines and sticky cancellation interrupt library I/O; Drop closes it.
-  A joined source supervisor and subscription/privacy ownership are still section 2 work.
+  `src/source/` now adds joined supervision and bounded subscriptions. Production
+  injection and copied-output/transport privacy are still section 2/3 work.
 - [ ] Complete every applicable row below; update Cargo/Nix and remove stale entrypoints.
 
 | Project C / related scaffolding | Required Rust replacement or removal |
@@ -55,18 +56,45 @@ This does not require rewriting FFmpeg itself.
 
 - [ ] Registry: one acquisition per active camera encoder, shared by all consumers
   needing it. Main audio/video/recording share one main source; Sub Stream 2 is separate.
+  - [x] Implement the encoder-keyed Rust registry and non-secret source handles.
+    Real library consumers shared one main RTSP socket; adding Sub Stream 2 used two.
+  - [ ] Inject that registry into the production consumers (section 3).
 - [ ] Supervisor: startup/read deadlines, bounded retry/backoff, generation reset,
   parameter changes, idle stop, cancellation and deterministic resource cleanup.
+  - [x] Own one blocking reader job per active source; revoke before interrupt/join;
+    idle-stop, disable/re-enable, owner URL replacement and repeatable joined shutdown.
+    Faults retire leases; subsequent subscriptions use capped exponential backoff and
+    a consecutive-failure circuit breaker, never splice a reconnect into old leases.
+  - [ ] Exercise real disconnect/stall/retry and changing camera parameters; connect
+    source recovery/configuration to production owners.
 - [ ] Device clocks: handle the observed missing first video PTS/DTS and irregular
   clock steps explicitly. Measure real RTCP cadence and A/V behavior; do not paste in
   fixture deadlines, invent reordered DTS, independently zero tracks or silently keep
   the old wall-clock/packet-order policies as though they were source-clock evidence.
+  - [x] Skip initial unclocked packets without repair; video waits for a subsequent
+    timestamped actual IDR. Preserve irregular signed clocks; later missing or
+    non-increasing DTS retires the generation. This is a refusal policy, not A/V proof.
 - [ ] Fanout: current-IDR/SPS/PPS admission, independent bounded subscriptions, charged
   outstanding deliveries, residence limits and first-cause terminal notification.
+  - [x] Implement Annex-B single-SPS/PPS slice-reference admission, no GOP replay,
+    packet/count/byte/per-track-span limits including handed-out deliveries, residence
+    expiry and first-cause terminal wakeups. Real slow/expired consumers failed locally.
+  - [ ] Integrate with transports and recording history; verify decoded-view behavior.
+    AudioVideo admission alone does not provide covering AAC history for recording.
 - [ ] Configuration/privacy: apply changes through the owner, retire affected generations
   before reopening, revoke cached/pinned/copied output, and stop transport work promptly.
+  - [x] Retire source grants and clear queued deliveries before awaited cleanup;
+    held deliveries reject access while retaining charges until dropped. Main source
+    replacement left Sub Stream 2 running in the real check.
+  - [ ] Fence actual transport writes and recording copies; borrowed/escaped data
+    cannot be retracted by this cooperative library layer.
 - [ ] Admission/resource limits: per-source, per-subscriber and aggregate job/byte caps;
   expose active source/subscriber counts, queue age/bytes, faults and recovery metrics.
+  - [x] Bound registry entries, subscriber slots, handoff/descriptor/delivery byte
+    charges per source and registry; expose typed source snapshots and aggregate bytes.
+    Charges are conservative logical ownership accounting, not allocator/RSS limits.
+  - [ ] Connect Prometheus metrics and recording-job/copy/history budgets; evaluate
+    aggregate pressure and matched real production workloads.
 
 ## 3. Wire consumers and remove direct camera readers
 
