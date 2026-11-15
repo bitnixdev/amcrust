@@ -99,9 +99,10 @@ cut/continued source operation, original counter isolation, newer queued data,
 retirement/cancellation/expiry precedence, finite-source-end refusal, foreign or
 outstanding receipts, invalid transitions and header/prefix/live/end budgets.
 
-Next: explicitly owned copied input/output with cancellation during asynchronous mux
-and delivery; common-origin presentation/edit alternatives must remain separate from
-this exact-clock baseline. Duration-driven cut scheduling, overlapping recording cuts,
+The subsequent [owned output lifecycle](recording-output-proof.md) now exercises
+asynchronous mux/delivery, cancellation and bounded output files while acquisition
+continues. Next: common-origin presentation/edit alternatives, kept separate from
+this exact-clock baseline and its remaining decoder-state differences. Duration-driven cut scheduling, overlapping recording cuts,
 long clips, output backpressure, general PCM-exact start/end behavior, production Rust
 supervision/privacy and physical-camera/Apple live/HSV acceptance remain open. No
 production process or camera setting was changed.

@@ -147,8 +147,10 @@ live-view input: that introduces fragment-duration latency.
    configuration refusal, early EOF, cancellation and serial restart. A subsequent
    [recording-local cut](recording-cut-proof.md) leaves acquisition active and denies
    prepared cuts after retirement. Its whole-AU/common-epoch baseline retains measured
-   AAC differences; copied-output privacy, presentation edits, duration scheduling,
-   broader clocks/codecs and finite AAC end-trimming remain open.
+   AAC differences. An [owned concurrent output job](recording-output-proof.md) now
+   exercises mux/delivery cancellation, native file-size limits and deterministic
+   cleanup. Production privacy/aggregate admission, presentation edits, duration
+   scheduling, broader clocks/codecs and finite AAC end-trimming remain open.
 2. **Synthetic RTSP fixture complete:** authentication, interleaved H.264/AAC,
    backward timestamps, silent socket stall, reconnect with changed SPS/PPS and late
    IDR video decoding. See [coverage and remaining cases](rtsp-ingest-proof.md),

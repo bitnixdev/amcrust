@@ -25,7 +25,8 @@ def sha(raw):
     return hashlib.sha256(raw).digest()
 
 
-async def case(worker, sink, directory, media, generation, offset, action, replacement=None):
+async def case(worker, sink, directory, media, generation, offset, action, replacement=None,
+               output_factory=None, send_seconds=3.2):
     clock = ClockNormalizer(generation, report_timeout=Fraction(5, 4))
     source = HistorySource(generation)
     observer = recorder = process = None
@@ -33,12 +34,13 @@ async def case(worker, sink, directory, media, generation, offset, action, repla
     ordinary_expected, ordinary_actual = hashlib.sha256(), hashlib.sha256()
     counts, received = [0, 0], 0
     artifact = None
+    output_job = output_task = None
     cut_at = prepared_at = None
     active_at_commit = denied = False
     failure = None
     mode = "parameter-change" if action == "source-failure" else "disconnect"
     async with CameraFixture(media, mode, clocked=True, audio_offset=offset,
-            staggered_reports=bool(offset), send_seconds=3.2, replacement_sps=replacement,
+            staggered_reports=bool(offset), send_seconds=send_seconds, replacement_sps=replacement,
             parameter_change_frame=30 if replacement else 15) as camera:
         try:
             process = await asyncio.create_subprocess_exec(str(worker), "--rtsp-fixture", str(camera.port),
@@ -97,7 +99,12 @@ async def case(worker, sink, directory, media, generation, offset, action, repla
                             active_at_commit = (source._gate._epoch.active and not source._gate._ended and
                                                 process.returncode is None and
                                                 not recorder._handoff.admission.queue.queue.empty())
-                            artifact = recorder.commit_cut()
+                            if output_factory is None:
+                                artifact = recorder.commit_cut()
+                            else:
+                                output_job = output_factory(recorder, lambda: (sum(counts),
+                                    source._gate._epoch.active, process.returncode is None))
+                                output_task = asyncio.create_task(output_job.run())
                     await asyncio.sleep(0)
                     del frame
         except ValueError as error:
@@ -106,6 +113,8 @@ async def case(worker, sink, directory, media, generation, offset, action, repla
             if expected_error not in failure:
                 raise
         finally:
+            if output_task is not None and not output_task.done():
+                output_job.cancel("source_failed")  # revoke before any awaited worker cleanup
             try:
                 try:
                     source.close("source_failed")
@@ -123,8 +132,14 @@ async def case(worker, sink, directory, media, generation, offset, action, repla
                     if recorder is not None and recorder.state != "committed":
                         recorder.abort()
                 finally:
-                    if process is not None:
-                        await stop_process(process)
+                    try:
+                        if process is not None:
+                            await stop_process(process)
+                    finally:
+                        if output_task is not None:
+                            if not output_task.done():
+                                output_job.cancel("source_failed")
+                            await asyncio.gather(output_task, return_exceptions=True)
         if (observer is None or recorder is None or cut_at is None or camera.connections != 1 or
                 camera.played != 1 or process.returncode is None or
                 received != sum(counts) - observer.snapshot.first_sequence or
@@ -148,6 +163,12 @@ async def case(worker, sink, directory, media, generation, offset, action, repla
         return result
     if not active_at_commit or sum(counts) - prepared_at < 20 or source._gate._ended:
         raise ValueError("cut did not leave native acquisition running")
+    if output_factory is not None:
+        if output_job is None or output_task is None or not output_task.done():
+            raise ValueError("missing settled concurrent output job")
+        result["output_state"] = output_job.state
+        result["output_reason"] = output_job.reason
+        return result
     packets = [obj for obj in artifact if obj["type"] == "packet"]
     if len(packets) != len(expected) or artifact[-1]["packets"] != len(expected):
         raise ValueError("private cut count differs from consumed input")
