@@ -1,0 +1,328 @@
+//! Opt-in real AAC -> Opus check. No synthetic media, retained capture, camera
+//! writes, external worker, transport-clock substitution or HomeKit acceptance.
+use amcrust::{
+    ingest::{CameraUrl, Cancellation},
+    media::{
+        Error,
+        audio::{Config, OpusPacket, Pool, Transcoder},
+    },
+    source::{Encoder, Limits, Registry, SourceKey, SubscriptionLimits, Tracks},
+};
+use ffmpeg_sys_next as av;
+use std::{ptr, time::Duration};
+
+// Independent downstream FFmpeg Opus decoder. Raw pointers stay private and are
+// freed on every path. This is test-only decode validation, not another camera reader.
+struct Decoder {
+    context: *mut av::AVCodecContext,
+    samples: u64,
+    frames: u64,
+}
+struct Frame(*mut av::AVFrame);
+impl Drop for Frame {
+    fn drop(&mut self) {
+        unsafe {
+            av::av_frame_free(&mut self.0);
+        }
+    }
+}
+struct Packet(*mut av::AVPacket);
+impl Drop for Packet {
+    fn drop(&mut self) {
+        unsafe {
+            av::av_packet_free(&mut self.0);
+        }
+    }
+}
+impl Drop for Decoder {
+    fn drop(&mut self) {
+        unsafe {
+            av::avcodec_free_context(&mut self.context);
+        }
+    }
+}
+impl Decoder {
+    fn new(first: &OpusPacket) -> Self {
+        // SAFETY: codec is checked; context owns a padded private extradata copy.
+        unsafe {
+            let codec = av::avcodec_find_decoder(av::AVCodecID::AV_CODEC_ID_OPUS);
+            assert!(!codec.is_null());
+            let mut result = Self {
+                context: av::avcodec_alloc_context3(codec),
+                samples: 0,
+                frames: 0,
+            };
+            assert!(!result.context.is_null());
+            let header = first.header().unwrap();
+            (*result.context).extradata =
+                av::av_mallocz(header.len() + av::AV_INPUT_BUFFER_PADDING_SIZE as usize).cast();
+            assert!(!(*result.context).extradata.is_null());
+            ptr::copy_nonoverlapping(header.as_ptr(), (*result.context).extradata, header.len());
+            (*result.context).extradata_size = header.len() as i32;
+            (*result.context).pkt_timebase = av::AVRational {
+                num: 1,
+                den: first.config().rate as i32,
+            };
+            (*result.context).thread_count = 1;
+            assert_eq!(av::avcodec_open2(result.context, codec, ptr::null_mut()), 0);
+            result.accept(first);
+            result
+        }
+    }
+    fn accept(&mut self, encoded: &OpusPacket) {
+        // SAFETY: all native allocations are guarded, payload/side data are deep
+        // copied, and send_packet retains its own reference while decoding.
+        unsafe {
+            let packet = Packet(av::av_packet_alloc());
+            assert!(!packet.0.is_null());
+            let data = encoded.data().unwrap();
+            assert_eq!(av::av_new_packet(packet.0, data.len() as i32), 0);
+            ptr::copy_nonoverlapping(data.as_ptr(), (*packet.0).data, data.len());
+            let (pts, duration) = encoded.codec_position().unwrap();
+            (*packet.0).pts = pts;
+            (*packet.0).dts = pts;
+            (*packet.0).duration = duration;
+            for (kind, bytes) in encoded.side_data().unwrap() {
+                let target = av::av_packet_new_side_data(packet.0, kind, bytes.len());
+                assert!(!target.is_null());
+                if !bytes.is_empty() {
+                    ptr::copy_nonoverlapping(bytes.as_ptr(), target, bytes.len());
+                }
+                if kind == av::AVPacketSideDataType::AV_PKT_DATA_SKIP_SAMPLES {
+                    // The native encoder's padding counts are at config.rate;
+                    // this independent decoder produces fixed-rate 48-kHz PCM.
+                    let skip = encoded.decoder_skip().unwrap().unwrap();
+                    let data = std::slice::from_raw_parts_mut(target, 10);
+                    data[..4].copy_from_slice(&skip.start.to_le_bytes());
+                    data[4..8].copy_from_slice(&skip.end.to_le_bytes());
+                    data[8] = skip.start_reason;
+                    data[9] = skip.end_reason;
+                }
+            }
+            assert_eq!(av::avcodec_send_packet(self.context, packet.0), 0);
+            self.drain(false);
+        }
+    }
+    fn drain(&mut self, finish: bool) {
+        loop {
+            unsafe {
+                let frame = Frame(av::av_frame_alloc());
+                assert!(!frame.0.is_null());
+                let code = av::avcodec_receive_frame(self.context, frame.0);
+                if code == av::AVERROR_EOF {
+                    assert!(finish);
+                    break;
+                }
+                if code < 0
+                    && std::io::Error::from_raw_os_error(-code).kind()
+                        == std::io::ErrorKind::WouldBlock
+                {
+                    assert!(!finish);
+                    break;
+                }
+                assert_eq!(code, 0, "Opus decode error");
+                assert_eq!((*frame.0).sample_rate, 48000);
+                assert!((*frame.0).nb_samples > 0 && (*frame.0).nb_samples <= 5760);
+                self.samples += (*frame.0).nb_samples as u64;
+                self.frames += 1;
+            }
+        }
+    }
+    fn finish(&mut self) {
+        unsafe {
+            assert_eq!(av::avcodec_send_packet(self.context, ptr::null()), 0);
+        }
+        self.drain(true);
+    }
+}
+fn consume(packet: &OpusPacket, decoder: &mut Option<Decoder>, refused: &mut u64) {
+    match packet.source_timestamp_48k() {
+        Ok(_) => (),
+        Err(Error::Clock | Error::Incomplete) => *refused += 1,
+        Err(error) => panic!("unexpected timestamp result: {error}"),
+    }
+    if let Some(decoder) = decoder {
+        decoder.accept(packet);
+    } else {
+        *decoder = Some(Decoder::new(packet));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires coordinated authorized camera access and existing credentials"]
+async fn real_aac_opus() {
+    tokio::time::timeout(Duration::from_secs(30), exercise())
+        .await
+        .expect("bounded audio check");
+}
+async fn exercise() {
+    dotenvy::dotenv().ok();
+    let user = std::env::var("AMCREST_USERNAME").expect("AMCREST_USERNAME required");
+    let password = std::env::var("AMCREST_PASSWORD").expect("AMCREST_PASSWORD required");
+    let url = CameraUrl::new(format!(
+        "rtsp://{user}:{password}@10.76.14.10:554/cam/realmonitor?channel=1&subtype=0"
+    ))
+    .unwrap();
+    let mut registry = Registry::new(Limits::default()).unwrap();
+    let source = registry
+        .register(
+            SourceKey {
+                camera: 1,
+                encoder: Encoder::Main,
+            },
+            url,
+        )
+        .unwrap();
+    let mut subscription = source
+        .subscribe(Tracks::Audio, SubscriptionLimits::default())
+        .await
+        .unwrap();
+    let first = subscription.recv().await.unwrap();
+    let pool = Pool::new(5, 12 * 1024 * 1024).unwrap();
+    let configs = [
+        Config {
+            rate: 48000,
+            bitrate: 32000,
+            fec: false,
+            expected_loss_percent: 0,
+            ..Default::default()
+        },
+        Config::default(),
+        Config {
+            rate: 24000,
+            frame_ms: 60,
+            bitrate: 32000,
+            ..Default::default()
+        },
+        Config {
+            rate: 8000,
+            frame_ms: 40,
+            bitrate: 16000,
+            vbr: false,
+            fec: false,
+            expected_loss_percent: 0,
+            ..Default::default()
+        },
+    ];
+    assert_ne!(configs[0], configs[1]);
+    let cancellations: Vec<_> = configs.iter().map(|_| Cancellation::default()).collect();
+    let mut encoders: Vec<_> = configs
+        .iter()
+        .zip(&cancellations)
+        .map(|(&config, cancel)| Transcoder::new(&first, config, &pool, cancel.clone()).unwrap())
+        .collect();
+    let mut failing =
+        Some(Transcoder::new(&first, configs[0], &pool, Cancellation::default()).unwrap());
+    assert!(matches!(
+        Transcoder::new(&first, configs[0], &pool, Cancellation::default()),
+        Err(Error::Limit)
+    ));
+    let mut held = Vec::new();
+    let mut fault_seen = false;
+    let mut decoders: Vec<Option<Decoder>> = (0..configs.len()).map(|_| None).collect();
+    let mut refused = vec![0; configs.len()];
+    let mut delivery = first;
+    for ordinal in 0..200 {
+        let original = (
+            delivery.packet().unwrap().pts(),
+            delivery.packet().unwrap().dts(),
+        );
+        for (index, encoder) in encoders.iter_mut().enumerate() {
+            for packet in encoder.push(&delivery).unwrap() {
+                consume(&packet, &mut decoders[index], &mut refused[index]);
+            }
+        }
+        if let Some(encoder) = &mut failing {
+            match encoder.push(&delivery) {
+                Ok(packets) => held.extend(packets),
+                Err(Error::Limit) => {
+                    fault_seen = true;
+                    assert!(
+                        held.iter()
+                            .all(|packet| matches!(packet.data(), Err(Error::Limit)))
+                    );
+                    failing.take();
+                    let reserved = pool.reserved_bytes();
+                    held.clear();
+                    assert!(pool.reserved_bytes() < reserved);
+                }
+                Err(error) => panic!("unexpected local encoder failure: {error}"),
+            }
+        }
+        assert_eq!(
+            original,
+            (
+                delivery.packet().unwrap().pts(),
+                delivery.packet().unwrap().dts()
+            )
+        );
+        drop(delivery);
+        if ordinal != 199 {
+            delivery = subscription.recv().await.unwrap();
+        } else {
+            break;
+        }
+    }
+    assert!(fault_seen);
+    let mut tails = Vec::new();
+    for (index, encoder) in encoders.iter_mut().enumerate() {
+        let packets = encoder.finish().unwrap();
+        for packet in &packets {
+            consume(packet, &mut decoders[index], &mut refused[index]);
+        }
+        let stats = encoder.stats();
+        let decoder = decoders[index].as_mut().unwrap();
+        decoder.finish();
+        assert_eq!(
+            decoder.samples,
+            stats.resampled_samples * (48000 / configs[index].rate) as u64,
+            "decoded Opus samples must account for actual resampler output and codec padding"
+        );
+        assert_eq!(stats.input_packets, 200);
+        assert_eq!(stats.decoded_samples, 200 * 1024);
+        if stats.clock_discontinuities > 0 {
+            assert!(refused[index] > 0);
+        }
+        eprintln!(
+            "Rust AAC/Opus rate={} frame_ms={} decoded_pcm={} converted_pcm={} opus_packets={} decoded_opus_48k={} clock_discontinuities={} first_mismatch={:?} step_error_range={:?}..{:?} timestamp_refusals={} SR_packets={}",
+            configs[index].rate,
+            configs[index].frame_ms,
+            stats.decoded_samples,
+            stats.resampled_samples,
+            stats.encoded_packets,
+            decoder.samples,
+            stats.clock_discontinuities,
+            stats.first_mismatch,
+            stats.minimum_step_error,
+            stats.maximum_step_error,
+            refused[index],
+            stats.sender_reports
+        );
+        assert!(!packets.is_empty());
+        tails.push(packets);
+    }
+    drop(encoders);
+    assert!(pool.reserved_bytes() > 0);
+    cancellations[0].cancel();
+    cancellations[0].cancel();
+    assert!(
+        tails[0]
+            .iter()
+            .all(|p| matches!(p.data(), Err(Error::Cancelled)))
+    );
+    assert!(tails[1].iter().all(|p| p.data().is_ok()));
+    assert_eq!(source.snapshot().open_attempts, 1);
+    source.set_enabled(false).await.unwrap();
+    assert!(
+        tails[1]
+            .iter()
+            .all(|p| matches!(p.data(), Err(Error::Source(_))))
+    );
+    drop(tails);
+    assert_eq!(pool.reserved_bytes(), 0);
+    drop(subscription);
+    registry.shutdown().await.unwrap();
+    eprintln!(
+        "Audio codec output decoded; source clock contradictions were refused, not repaired. Local encoder failure, repeated cancellation, source revocation and retained reservation release passed; no A/V or HomeKit acceptance claim."
+    );
+}

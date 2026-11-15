@@ -26,9 +26,12 @@ milestone or add another parallel plan/proof document.
     packet/RTCP SR, codec-parameter and interrupt APIs and read the real main stream.
   - [x] Exercise Rust-owned packet-copy muxing against the real camera, including
     H.264/AAC and video-only output, downstream decoding and exact translated PTS/DTS.
-  - [ ] Exercise Rust AAC decode/Opus encode; characterize real RTCP cadence/A/V clocks.
-    The real mux sample has differing declared/container sample durations (Evidence);
-    decoded output and preserved PTS/DTS do not settle presentation acceptance.
+  - [x] Exercise Rust AAC-LC decode, fixed-ratio resampling and libopus encode against
+    real input at 48/24/16/8 kHz, with 20/40/60-ms frames and padding-domain handling.
+  - [ ] Characterize real RTCP cadence/A/V clocks and settle the observed contradictions.
+    The real mux sample has differing declared/container sample durations; the audio
+    sample has 198 non-contiguous AAC clock steps out of 199 boundaries (Evidence).
+    Successful codec processing does not establish a usable transport/presentation clock.
 - [x] Replace the unfinished `src/ingest.rs` worker/IPC implementation with Rust-owned
   library acquisition. Reuse sound contracts, not its standalone-C process assumptions.
 - [x] Define owned packet/configuration/error types, reference lifetimes, thread-safety
@@ -114,6 +117,18 @@ This does not require rewriting FFmpeg itself.
     from the negotiated MTU and verify Home app playback.
 - [ ] Live audio: use shared AAC input; own FFmpeg-library decode/Opus encode in Rust.
   Pool only compatible negotiated settings and isolate encoder/subscriber failures.
+  - [x] Implement thread-bound AAC-LC -> S16 resampler/FIFO -> libopus processing,
+    with exact negotiated settings, bounded job/output ownership and explicit finish.
+    Real inputs exercised four configurations, local encoder failure, cancellation
+    and source retirement without stopping other processors.
+  - [x] Preserve original clocks separately from private codec sample ordinals;
+    retain contradiction evidence and refuse unsupported source-timestamp mapping.
+    Convert Opus skip/discard metadata exactly from encoder-rate to 48-kHz units.
+  - [ ] Settle an evidence-backed clock/priming policy for real live A/V. The current
+    camera's non-contiguous AAC PTS are NOT accepted as a continuous sample clock.
+  - [ ] Share processing only for matching source generation and negotiated settings;
+    the current audio pool bounds jobs, but does not yet deduplicate encoders.
+    Connect audio RTP/RTCP/SRTP and production lifecycle/metrics.
 - [ ] `src/hsv/recording.rs` / `src/hsv/fmp4.rs`: remove the recording camera reader;
   consume generation-bound shared packets, mux through FFmpeg bindings and preserve
   correct initialization, prebuffer, actual-IDR start, historical/live order and cuts.

@@ -1,0 +1,891 @@
+//! Thread-bound AAC-LC -> Opus through public FFmpeg codec/resampler APIs.
+//! Production owners must drive this from a blocking media worker, not an async
+//! executor task. No I/O, camera reader or detached worker is opened by this layer.
+//!
+//! Codec sample ordinals are PRIVATE encoder bookkeeping, not source clocks.
+//! Decoding/resampling/encoding never inserts silence, drops decoded samples or
+//! applies asynchronous clock compensation. Non-contiguous source timestamps are
+//! retained as evidence; `source_timestamp_48k` refuses them. Do not promote codec
+//! ordinals to RTP timestamps to work around that refusal.
+//!
+//! This is the processing boundary, not a production audio pool/transport. Config
+//! includes every currently supported compatibility setting for future pooling.
+use super::{Error, rescale};
+use crate::{
+    ingest::{Cancellation, Codec, SenderReport, TimeBase},
+    source::{Delivery, DeliveryGuard},
+};
+use ffmpeg_sys_next as av;
+use std::{
+    collections::VecDeque,
+    marker::PhantomData,
+    ptr,
+    rc::Rc,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+const FIFO_SAMPLES: i32 = 32768;
+const CONVERT_SAMPLES: i32 = 16384;
+const MAX_PACKET_BYTES: usize = 8192;
+const RESERVATION: usize = 2 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Config {
+    pub rate: u32,
+    pub channels: u8,
+    pub bitrate: u32,
+    pub frame_ms: u8,
+    pub vbr: bool,
+    pub fec: bool,
+    pub expected_loss_percent: u8,
+}
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            rate: 16000,
+            channels: 1,
+            bitrate: 24000,
+            frame_ms: 20,
+            vbr: true,
+            fec: true,
+            expected_loss_percent: 5,
+        }
+    }
+}
+impl Config {
+    fn valid(self) -> bool {
+        matches!(self.rate, 8000 | 16000 | 24000 | 48000)
+            && matches!(self.channels, 1 | 2)
+            && (16000..=64000).contains(&self.bitrate)
+            && matches!(self.frame_ms, 20 | 40 | 60)
+            && self.expected_loss_percent <= 100
+    }
+}
+#[derive(Clone)]
+pub struct Pool {
+    jobs: Arc<Semaphore>,
+    bytes: Arc<Semaphore>,
+    capacity: usize,
+}
+impl Pool {
+    pub fn new(jobs: usize, bytes: usize) -> Result<Self, Error> {
+        if jobs == 0 || jobs > 64 || bytes < RESERVATION || bytes > u32::MAX as usize {
+            return Err(Error::Configuration);
+        }
+        Ok(Self {
+            jobs: Arc::new(Semaphore::new(jobs)),
+            bytes: Arc::new(Semaphore::new(bytes)),
+            capacity: bytes,
+        })
+    }
+    pub fn reserved_bytes(&self) -> usize {
+        self.capacity - self.bytes.available_permits()
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClockMismatch {
+    /// Exact source-clock sample units, at the decoder's input sample rate.
+    pub expected: i64,
+    pub actual: i64,
+}
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Stats {
+    pub input_packets: u64,
+    /// Source-rate samples per channel, not a presentation-time counter.
+    pub decoded_samples: u64,
+    /// Target-rate samples per channel, including the resampler's finite tail.
+    pub resampled_samples: u64,
+    pub encoded_packets: u64,
+    pub payload_bytes: u64,
+    pub clock_discontinuities: u64,
+    pub first_mismatch: Option<ClockMismatch>,
+    pub minimum_step_error: Option<i128>,
+    pub maximum_step_error: Option<i128>,
+    pub sender_reports: u64,
+    pub last_sender_report: Option<SenderReport>,
+}
+struct Clock {
+    first_pts: Option<i64>,
+    previous_end: Option<i64>,
+    mismatch: Option<ClockMismatch>,
+    input_rate: u32,
+    converted_samples: u64,
+}
+struct Job {
+    source: DeliveryGuard,
+    cancellation: Cancellation,
+    failure: Mutex<Option<Error>>,
+    clock: Mutex<Clock>,
+    header: Vec<u8>,
+    config: Config,
+    initial_padding: i32,
+    outputs: Arc<Semaphore>,
+    _permits: Vec<OwnedSemaphorePermit>,
+}
+impl Job {
+    fn fail(&self, error: Error) -> Error {
+        *self
+            .failure
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_or_insert(error)
+    }
+    fn check(&self) -> Result<(), Error> {
+        if let Some(error) = *self.failure.lock().unwrap_or_else(|p| p.into_inner()) {
+            return Err(error);
+        }
+        let result = if self.cancellation.is_cancelled() {
+            Err(Error::Cancelled)
+        } else {
+            self.source.check().map_err(Error::from)
+        };
+        result.map_err(|e| self.fail(e))
+    }
+}
+
+/// Skip/discard counts in the Opus decoder's fixed 48-kHz sample domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecoderSkip {
+    pub start: u32,
+    pub end: u32,
+    pub start_reason: u8,
+    pub end_reason: u8,
+}
+
+/// Immutable encoded packet, including FFmpeg skip/discard side data. Holding it
+/// retains an output slot and the aggregate processing reservation after shutdown.
+/// Data access is cooperative; actual transport writes still need their own fence.
+pub struct OpusPacket {
+    raw: *mut av::AVPacket,
+    job: Arc<Job>,
+    born: Instant,
+    _slot: OwnedSemaphorePermit,
+}
+// SAFETY: the packet is private to avcodec_receive_packet until publication, then
+// immutable. All buffers/side data are owned; FFmpeg destruction has no affinity.
+unsafe impl Send for OpusPacket {}
+unsafe impl Sync for OpusPacket {}
+impl Drop for OpusPacket {
+    fn drop(&mut self) {
+        unsafe {
+            av::av_packet_free(&mut self.raw);
+        }
+    }
+}
+impl OpusPacket {
+    fn check(&self) -> Result<(), Error> {
+        self.job.check()?;
+        if self.born.elapsed() >= Duration::from_secs(2) {
+            return Err(Error::Deadline);
+        }
+        Ok(())
+    }
+    pub fn data(&self) -> Result<&[u8], Error> {
+        self.check()?;
+        let packet = unsafe { &*self.raw };
+        Ok(unsafe { std::slice::from_raw_parts(packet.data, packet.size as usize) })
+    }
+    pub fn header(&self) -> Result<&[u8], Error> {
+        self.check()?;
+        Ok(&self.job.header)
+    }
+    /// Native encoder side data. Skip/discard counts use config.rate sample units;
+    /// a direct 48-kHz Opus decoder needs decoder_skip(), not these counts verbatim.
+    pub fn side_data(
+        &self,
+    ) -> Result<impl Iterator<Item = (av::AVPacketSideDataType, &[u8])>, Error> {
+        self.check()?;
+        let p = unsafe { &*self.raw };
+        let side = if p.side_data_elems == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(p.side_data, p.side_data_elems as usize) }
+        };
+        Ok(side.iter().map(|s| {
+            (
+                s.type_,
+                if s.size == 0 {
+                    &[][..]
+                } else {
+                    unsafe { std::slice::from_raw_parts(s.data, s.size) }
+                },
+            )
+        }))
+    }
+    /// Convert codec padding metadata exactly between sample-rate domains. This
+    /// does not resample, add/remove source PCM, or repair source clock jitter.
+    pub fn decoder_skip(&self) -> Result<Option<DecoderSkip>, Error> {
+        for (kind, bytes) in self.side_data()? {
+            if kind != av::AVPacketSideDataType::AV_PKT_DATA_SKIP_SAMPLES {
+                continue;
+            }
+            if bytes.len() != 10 {
+                return Err(Error::Configuration);
+            }
+            let factor = 48000 / self.job.config.rate;
+            return Ok(Some(DecoderSkip {
+                start: u32::from_le_bytes(bytes[..4].try_into().unwrap())
+                    .checked_mul(factor)
+                    .ok_or(Error::Limit)?,
+                end: u32::from_le_bytes(bytes[4..8].try_into().unwrap())
+                    .checked_mul(factor)
+                    .ok_or(Error::Limit)?,
+                start_reason: bytes[8],
+                end_reason: bytes[9],
+            }));
+        }
+        Ok(None)
+    }
+    /// Encoder-private sample ordinal and duration at config.rate. NOT a source
+    /// timestamp, and deliberately not interchangeable with ingest::Packet.
+    pub fn codec_position(&self) -> Result<(i64, i64), Error> {
+        self.check()?;
+        let p = unsafe { &*self.raw };
+        Ok((p.pts, p.duration))
+    }
+    pub fn config(&self) -> Config {
+        self.job.config
+    }
+    /// Native encoder-rate samples; OpusHead separately stores pre-skip at 48 kHz.
+    pub fn encoder_initial_padding(&self) -> i32 {
+        self.job.initial_padding
+    }
+    /// Only map fully covered samples when every observed input AU has a known,
+    /// contiguous sample clock. Priming/tail padding and any clock contradiction
+    /// are explicit refusals, not independently zeroed/packet-order RTP clocks.
+    /// This local check alone does NOT establish common video/audio SR alignment.
+    pub fn source_timestamp_48k(&self) -> Result<i64, Error> {
+        self.check()?;
+        let clock = self.job.clock.lock().unwrap_or_else(|p| p.into_inner());
+        if clock.mismatch.is_some() {
+            return Err(Error::Clock);
+        }
+        let p = unsafe { &*self.raw };
+        if p.pts < 0
+            || p.duration <= 0
+            || p.pts as i128 + p.duration as i128 > clock.converted_samples as i128
+        {
+            return Err(Error::Incomplete);
+        }
+        let origin = rescale(
+            clock.first_pts.ok_or(Error::Clock)? as i128,
+            TimeBase {
+                numerator: 1,
+                denominator: clock.input_rate as i32,
+            },
+            TimeBase {
+                numerator: 1,
+                denominator: 48000,
+            },
+        )?;
+        let offset = rescale(
+            p.pts as i128,
+            TimeBase {
+                numerator: 1,
+                denominator: self.job.config.rate as i32,
+            },
+            TimeBase {
+                numerator: 1,
+                denominator: 48000,
+            },
+        )?;
+        origin
+            .checked_add(offset)
+            .filter(|v| *v != av::AV_NOPTS_VALUE)
+            .ok_or(Error::Clock)
+    }
+}
+
+struct Layout(av::AVChannelLayout);
+impl Layout {
+    fn copy(source: &av::AVChannelLayout) -> Result<Self, Error> {
+        // FFmpeg permits the all-zero (unspecified, zero-channel) layout as the
+        // destination for channel_layout_copy/uninit.
+        let mut layout = Self(unsafe { std::mem::zeroed() });
+        native(
+            unsafe { av::av_channel_layout_copy(&mut layout.0, source) },
+            "copy input layout",
+        )?;
+        Ok(layout)
+    }
+}
+impl Drop for Layout {
+    fn drop(&mut self) {
+        unsafe {
+            av::av_channel_layout_uninit(&mut self.0);
+        }
+    }
+}
+struct CodecContext(*mut av::AVCodecContext);
+impl Drop for CodecContext {
+    fn drop(&mut self) {
+        unsafe {
+            av::avcodec_free_context(&mut self.0);
+        }
+    }
+}
+struct Frame(*mut av::AVFrame);
+impl Frame {
+    fn new() -> Result<Self, Error> {
+        let p = unsafe { av::av_frame_alloc() };
+        if p.is_null() {
+            Err(Error::Allocation)
+        } else {
+            Ok(Self(p))
+        }
+    }
+}
+impl Drop for Frame {
+    fn drop(&mut self) {
+        unsafe {
+            av::av_frame_free(&mut self.0);
+        }
+    }
+}
+struct Packet(*mut av::AVPacket);
+impl Packet {
+    fn new() -> Result<Self, Error> {
+        let p = unsafe { av::av_packet_alloc() };
+        if p.is_null() {
+            Err(Error::Allocation)
+        } else {
+            Ok(Self(p))
+        }
+    }
+}
+impl Drop for Packet {
+    fn drop(&mut self) {
+        unsafe {
+            av::av_packet_free(&mut self.0);
+        }
+    }
+}
+struct Dictionary(*mut av::AVDictionary);
+impl Drop for Dictionary {
+    fn drop(&mut self) {
+        unsafe {
+            av::av_dict_free(&mut self.0);
+        }
+    }
+}
+impl Dictionary {
+    fn number(&mut self, key: &std::ffi::CStr, value: i64) -> Result<(), Error> {
+        native(
+            unsafe { av::av_dict_set_int(&mut self.0, key.as_ptr(), value, 0) },
+            "audio option",
+        )
+    }
+}
+fn native(code: i32, operation: &'static str) -> Result<(), Error> {
+    if code < 0 {
+        Err(Error::Native { operation, code })
+    } else {
+        Ok(())
+    }
+}
+fn again(code: i32) -> bool {
+    code.checked_neg().is_some_and(|errno| {
+        std::io::Error::from_raw_os_error(errno).kind() == std::io::ErrorKind::WouldBlock
+    })
+}
+
+pub struct Transcoder {
+    decoder: CodecContext,
+    encoder: CodecContext,
+    resampler: *mut av::SwrContext,
+    fifo: *mut av::AVAudioFifo,
+    job: Arc<Job>,
+    stream: usize,
+    input_clock: TimeBase,
+    input_rate: u32,
+    input_layout: Layout,
+    next_encoder_sample: i64,
+    first_sequence: u64,
+    sequence: Option<u64>,
+    pending_pts: VecDeque<i64>,
+    stats: Stats,
+    finished: bool,
+    _thread_bound: PhantomData<Rc<()>>,
+}
+impl Drop for Transcoder {
+    fn drop(&mut self) {
+        if !self.finished && self.job.check().is_ok() {
+            self.job.fail(Error::Incomplete);
+        }
+        unsafe {
+            av::swr_free(&mut self.resampler);
+            av::av_audio_fifo_free(self.fifo);
+        }
+    }
+}
+impl Transcoder {
+    /// Consume packets from one source-issued audio subscription. The first AAC
+    /// packet is not consumed here; push it next. No decoder state/clock guess is
+    /// transferred from another generation or an incompatible Config.
+    pub fn new(
+        first: &Delivery,
+        config: Config,
+        pool: &Pool,
+        cancellation: Cancellation,
+    ) -> Result<Self, Error> {
+        if !config.valid() {
+            return Err(Error::Configuration);
+        }
+        let permits = vec![
+            pool.jobs
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| Error::Limit)?,
+            pool.bytes
+                .clone()
+                .try_acquire_many_owned(RESERVATION as u32)
+                .map_err(|_| Error::Limit)?,
+        ];
+        let packet = first.packet()?;
+        let stream = &first.configuration()?[packet.stream_index()];
+        let parameters = unsafe { &*stream.parameters.as_ptr() };
+        if stream.codec != Codec::Aac
+            || stream.parameters.extradata().len() < 2
+            || stream.parameters.extradata()[0] >> 3 != 2
+            || !(8000..=96000).contains(&parameters.sample_rate)
+            || !(1..=2).contains(&parameters.ch_layout.nb_channels)
+        {
+            return Err(Error::Configuration);
+        }
+        let input_layout = Layout::copy(&parameters.ch_layout)?;
+        let decoder_codec = unsafe { av::avcodec_find_decoder(av::AVCodecID::AV_CODEC_ID_AAC) };
+        let encoder_codec = unsafe { av::avcodec_find_encoder_by_name(c"libopus".as_ptr()) };
+        if decoder_codec.is_null() || encoder_codec.is_null() {
+            return Err(Error::Configuration);
+        }
+        let decoder = CodecContext(unsafe { av::avcodec_alloc_context3(decoder_codec) });
+        let encoder = CodecContext(unsafe { av::avcodec_alloc_context3(encoder_codec) });
+        if decoder.0.is_null() || encoder.0.is_null() {
+            return Err(Error::Allocation);
+        }
+        native(
+            unsafe { av::avcodec_parameters_to_context(decoder.0, stream.parameters.as_ptr()) },
+            "AAC parameters",
+        )?;
+        unsafe {
+            (*decoder.0).pkt_timebase = av::AVRational {
+                num: stream.time_base.numerator,
+                den: stream.time_base.denominator,
+            };
+            (*decoder.0).thread_count = 1;
+        }
+        native(
+            unsafe { av::avcodec_open2(decoder.0, decoder_codec, ptr::null_mut()) },
+            "open AAC decoder",
+        )?;
+        unsafe {
+            (*encoder.0).sample_rate = config.rate as i32;
+            (*encoder.0).sample_fmt = av::AVSampleFormat::AV_SAMPLE_FMT_S16;
+            (*encoder.0).time_base = av::AVRational {
+                num: 1,
+                den: config.rate as i32,
+            };
+            (*encoder.0).bit_rate = config.bitrate as i64;
+            (*encoder.0).thread_count = 1;
+            av::av_channel_layout_default(&mut (*encoder.0).ch_layout, config.channels as i32);
+        }
+        let mut options = Dictionary(ptr::null_mut());
+        native(
+            unsafe {
+                av::av_dict_set(&mut options.0, c"application".as_ptr(), c"voip".as_ptr(), 0)
+            },
+            "Opus application",
+        )?;
+        options.number(c"frame_duration", config.frame_ms as i64)?;
+        options.number(c"vbr", i64::from(config.vbr))?;
+        options.number(c"fec", i64::from(config.fec))?;
+        options.number(c"packet_loss", config.expected_loss_percent as i64)?;
+        native(
+            unsafe { av::avcodec_open2(encoder.0, encoder_codec, &mut options.0) },
+            "open Opus encoder",
+        )?;
+        if !options.0.is_null() {
+            return Err(Error::Configuration);
+        }
+        let enc = unsafe { &*encoder.0 };
+        if enc.frame_size != (config.rate * config.frame_ms as u32 / 1000) as i32
+            || enc.extradata.is_null()
+            || enc.extradata_size <= 0
+            || enc.extradata_size > 4096
+            || unsafe {
+                (*encoder_codec).capabilities as u32 & av::AV_CODEC_CAP_SMALL_LAST_FRAME == 0
+            }
+        {
+            return Err(Error::Configuration);
+        }
+        let header =
+            unsafe { std::slice::from_raw_parts(enc.extradata, enc.extradata_size as usize) }
+                .to_vec();
+        let job = Arc::new(Job {
+            source: first.guard()?,
+            cancellation,
+            failure: Mutex::new(None),
+            clock: Mutex::new(Clock {
+                first_pts: None,
+                previous_end: None,
+                mismatch: None,
+                input_rate: parameters.sample_rate as u32,
+                converted_samples: 0,
+            }),
+            header,
+            config,
+            initial_padding: enc.initial_padding,
+            outputs: Arc::new(Semaphore::new(64)),
+            _permits: permits,
+        });
+        job.check()?;
+        let fifo = unsafe {
+            av::av_audio_fifo_alloc(
+                av::AVSampleFormat::AV_SAMPLE_FMT_S16,
+                config.channels as i32,
+                FIFO_SAMPLES,
+            )
+        };
+        if fifo.is_null() {
+            return Err(Error::Allocation);
+        }
+        Ok(Self {
+            decoder,
+            encoder,
+            resampler: ptr::null_mut(),
+            fifo,
+            job,
+            stream: stream.index,
+            input_clock: stream.time_base,
+            input_rate: parameters.sample_rate as u32,
+            input_layout,
+            next_encoder_sample: 0,
+            first_sequence: packet.sequence(),
+            sequence: None,
+            pending_pts: VecDeque::new(),
+            stats: Stats::default(),
+            finished: false,
+            _thread_bound: PhantomData,
+        })
+    }
+    pub fn stats(&self) -> Stats {
+        self.stats
+    }
+    pub fn push(&mut self, delivery: &Delivery) -> Result<Vec<OpusPacket>, Error> {
+        if self.finished {
+            return Err(Error::Closed);
+        }
+        let result = self.push_inner(delivery);
+        result.map_err(|e| self.job.fail(e))
+    }
+    fn push_inner(&mut self, delivery: &Delivery) -> Result<Vec<OpusPacket>, Error> {
+        self.job.check()?;
+        if self.finished {
+            return Err(Error::Closed);
+        }
+        self.job.source.accepts(delivery)?;
+        let packet = delivery.packet()?;
+        if packet.stream_index() != self.stream
+            || packet.data().len() > MAX_PACKET_BYTES
+            || (self.sequence.is_none() && packet.sequence() != self.first_sequence)
+            || self
+                .sequence
+                .is_some_and(|previous| packet.sequence() <= previous)
+        {
+            return Err(Error::Order);
+        }
+        if self.pending_pts.len() >= 8 {
+            return Err(Error::Limit);
+        }
+        let pts = packet.pts().ok_or(Error::Clock)?;
+        self.pending_pts.push_back(pts);
+        self.sequence = Some(packet.sequence());
+        self.stats.input_packets += 1;
+        if let Some(sr) = packet.sender_report() {
+            self.stats.sender_reports += 1;
+            self.stats.last_sender_report = Some(sr);
+        }
+        native(
+            unsafe { av::avcodec_send_packet(self.decoder.0, packet.as_ptr()) },
+            "send AAC",
+        )?;
+        let mut output = Vec::new();
+        self.decode(&mut output, false)?;
+        Ok(output)
+    }
+    fn decode(&mut self, output: &mut Vec<OpusPacket>, draining: bool) -> Result<(), Error> {
+        loop {
+            let frame = Frame::new()?;
+            let code = unsafe { av::avcodec_receive_frame(self.decoder.0, frame.0) };
+            if code == av::AVERROR_EOF {
+                return if draining {
+                    Ok(())
+                } else {
+                    Err(Error::Incomplete)
+                };
+            }
+            if again(code) {
+                return if draining {
+                    Err(Error::Incomplete)
+                } else {
+                    Ok(())
+                };
+            }
+            native(code, "receive AAC frame")?;
+            let f = unsafe { &*frame.0 };
+            if f.format != av::AVSampleFormat::AV_SAMPLE_FMT_FLTP as i32
+                || f.sample_rate != self.input_rate as i32
+                || f.nb_samples <= 0
+                || f.nb_samples > 2048
+                || unsafe { av::av_channel_layout_compare(&f.ch_layout, &self.input_layout.0) != 0 }
+                || self.pending_pts.pop_front() != Some(f.pts)
+            {
+                return Err(Error::Configuration);
+            }
+            let sample_pts = rescale(
+                f.pts as i128,
+                self.input_clock,
+                TimeBase {
+                    numerator: 1,
+                    denominator: self.input_rate as i32,
+                },
+            )?;
+            {
+                let mut clock = self.job.clock.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(expected) = clock.previous_end
+                    && expected != sample_pts
+                {
+                    let mismatch = ClockMismatch {
+                        expected,
+                        actual: sample_pts,
+                    };
+                    clock.mismatch.get_or_insert(mismatch);
+                    self.stats.first_mismatch.get_or_insert(mismatch);
+                    self.stats.clock_discontinuities += 1;
+                    let error = sample_pts as i128 - expected as i128;
+                    self.stats.minimum_step_error = Some(
+                        self.stats
+                            .minimum_step_error
+                            .map_or(error, |old| old.min(error)),
+                    );
+                    self.stats.maximum_step_error = Some(
+                        self.stats
+                            .maximum_step_error
+                            .map_or(error, |old| old.max(error)),
+                    );
+                }
+                clock.first_pts.get_or_insert(sample_pts);
+                clock.previous_end = Some(
+                    sample_pts
+                        .checked_add(f.nb_samples as i64)
+                        .ok_or(Error::Clock)?,
+                );
+            }
+            self.stats.decoded_samples += f.nb_samples as u64;
+            if self.resampler.is_null() {
+                native(
+                    unsafe {
+                        av::swr_alloc_set_opts2(
+                            &mut self.resampler,
+                            &(*self.encoder.0).ch_layout,
+                            av::AVSampleFormat::AV_SAMPLE_FMT_S16,
+                            self.job.config.rate as i32,
+                            &f.ch_layout,
+                            av::AVSampleFormat::AV_SAMPLE_FMT_FLTP,
+                            f.sample_rate,
+                            0,
+                            ptr::null_mut(),
+                        )
+                    },
+                    "allocate resampler",
+                )?;
+                native(
+                    unsafe { av::swr_init(self.resampler) },
+                    "initialize resampler",
+                )?;
+            }
+            self.convert(f.extended_data.cast(), f.nb_samples)?;
+            self.encode_ready(output, false)?;
+        }
+    }
+    fn audio_frame(&self, samples: i32) -> Result<Frame, Error> {
+        let frame = Frame::new()?;
+        unsafe {
+            (*frame.0).format = av::AVSampleFormat::AV_SAMPLE_FMT_S16 as i32;
+            (*frame.0).sample_rate = self.job.config.rate as i32;
+            (*frame.0).nb_samples = samples;
+            native(
+                av::av_channel_layout_copy(&mut (*frame.0).ch_layout, &(*self.encoder.0).ch_layout),
+                "frame channels",
+            )?;
+            native(av::av_frame_get_buffer(frame.0, 0), "allocate audio frame")?;
+        }
+        Ok(frame)
+    }
+    fn convert(&mut self, input: *const *const u8, samples: i32) -> Result<i32, Error> {
+        let capacity = unsafe { av::swr_get_out_samples(self.resampler, samples) };
+        if capacity < 0 {
+            return native(capacity, "resample capacity").map(|_| 0);
+        }
+        if capacity > CONVERT_SAMPLES {
+            return Err(Error::Limit);
+        }
+        let converted = self.audio_frame(capacity.max(1))?;
+        let count = unsafe {
+            av::swr_convert(
+                self.resampler,
+                (*converted.0).data.as_mut_ptr(),
+                capacity,
+                input,
+                samples,
+            )
+        };
+        native(count, "resample AAC")?;
+        if unsafe { av::av_audio_fifo_size(self.fifo) } + count > FIFO_SAMPLES {
+            return Err(Error::Limit);
+        }
+        if count > 0 {
+            let written = unsafe {
+                av::av_audio_fifo_write(self.fifo, (*converted.0).data.as_mut_ptr().cast(), count)
+            };
+            if written != count {
+                return Err(Error::Allocation);
+            }
+            self.stats.resampled_samples += count as u64;
+            self.job
+                .clock
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .converted_samples = self.stats.resampled_samples;
+        }
+        Ok(count)
+    }
+    fn encode_ready(&mut self, output: &mut Vec<OpusPacket>, tail: bool) -> Result<(), Error> {
+        let frame_size = unsafe { (*self.encoder.0).frame_size };
+        loop {
+            let available = unsafe { av::av_audio_fifo_size(self.fifo) };
+            if available == 0 || (!tail && available < frame_size) {
+                return Ok(());
+            }
+            let count = available.min(frame_size);
+            let frame = self.audio_frame(count)?;
+            let read = unsafe {
+                av::av_audio_fifo_read(self.fifo, (*frame.0).data.as_mut_ptr().cast(), count)
+            };
+            if read != count {
+                return Err(Error::Incomplete);
+            }
+            // Deliberately private codec sample ordinal. Never a source PTS or an
+            // async resampling policy; source timing is independently checked above.
+            unsafe {
+                (*frame.0).pts = self.next_encoder_sample;
+            }
+            self.next_encoder_sample = self
+                .next_encoder_sample
+                .checked_add(count as i64)
+                .ok_or(Error::Limit)?;
+            native(
+                unsafe { av::avcodec_send_frame(self.encoder.0, frame.0) },
+                "send Opus frame",
+            )?;
+            self.receive(output, false)?;
+        }
+    }
+    fn receive(&mut self, output: &mut Vec<OpusPacket>, draining: bool) -> Result<(), Error> {
+        loop {
+            let mut packet = Packet::new()?;
+            let code = unsafe { av::avcodec_receive_packet(self.encoder.0, packet.0) };
+            if code == av::AVERROR_EOF {
+                return if draining {
+                    Ok(())
+                } else {
+                    Err(Error::Incomplete)
+                };
+            }
+            if again(code) {
+                return if draining {
+                    Err(Error::Incomplete)
+                } else {
+                    Ok(())
+                };
+            }
+            native(code, "receive Opus packet")?;
+            let p = unsafe { &*packet.0 };
+            if p.size <= 0
+                || p.size as usize > MAX_PACKET_BYTES
+                || p.pts == av::AV_NOPTS_VALUE
+                || p.duration <= 0
+            {
+                return Err(Error::Configuration);
+            }
+            if output.len() >= 64 {
+                return Err(Error::Limit);
+            }
+            let slot = self
+                .job
+                .outputs
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| Error::Limit)?;
+            self.stats.encoded_packets += 1;
+            self.stats.payload_bytes += p.size as u64;
+            self.job.check()?;
+            output.push(OpusPacket {
+                raw: packet.0,
+                job: self.job.clone(),
+                born: Instant::now(),
+                _slot: slot,
+            });
+            packet.0 = ptr::null_mut(); // ownership transferred exactly once
+        }
+    }
+    /// Finite local codec completion only. Decoder/resampler/encoder tails are
+    /// flushed explicitly; libopus padding/skip metadata is retained. Camera EOF
+    /// and cancellation must retire the owner instead, never call finish implicitly.
+    pub fn finish(&mut self) -> Result<Vec<OpusPacket>, Error> {
+        if self.finished {
+            return Err(Error::Closed);
+        }
+        let result = self.finish_inner();
+        result.map_err(|e| self.job.fail(e))
+    }
+    fn finish_inner(&mut self) -> Result<Vec<OpusPacket>, Error> {
+        self.job.check()?;
+        if self.finished {
+            return Err(Error::Closed);
+        }
+        let mut output = Vec::new();
+        native(
+            unsafe { av::avcodec_send_packet(self.decoder.0, ptr::null()) },
+            "flush AAC",
+        )?;
+        self.decode(&mut output, true)?;
+        if !self.pending_pts.is_empty() || self.resampler.is_null() {
+            return Err(Error::Incomplete);
+        }
+        // swr_get_out_samples is bounded above; flushing cannot inject arbitrary
+        // silence or compensate timestamps. Drain only the filter's retained tail.
+        let mut drained = false;
+        for _ in 0..8 {
+            let count = self.convert(ptr::null(), 0)?;
+            self.encode_ready(&mut output, false)?;
+            if count == 0 {
+                drained = true;
+                break;
+            }
+        }
+        if !drained {
+            return Err(Error::Incomplete);
+        }
+        self.encode_ready(&mut output, true)?;
+        native(
+            unsafe { av::avcodec_send_frame(self.encoder.0, ptr::null()) },
+            "flush Opus",
+        )?;
+        self.receive(&mut output, true)?;
+        self.finished = true;
+        Ok(output)
+    }
+}

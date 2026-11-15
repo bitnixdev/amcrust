@@ -124,6 +124,55 @@ acceptance, recording history/cuts/presentation, session RTCP/SRTP integration, 
 HDS ownership and the single production-reader cutover. Historical C probe retirement
 also remains on the TODO; no new C shim or synthetic media gate was introduced.
 
+### Rust audio-processing increment
+
+`tests/camera_audio.rs` fed **200 real main-stream AAC packets** through Rust-owned
+FFmpeg AAC decode, fixed-ratio resampling/FIFO and libopus encode. Four processors
+consumed the same source subscription, and a separate FFmpeg-library Opus decoder
+checked each output. No C worker, external media process, camera write, capture file
+or synthesized camera input was used. All configurations were mono.
+
+The final run completed in about **4.45 seconds**. Each processor decoded **204800
+source samples** (per channel at 48 kHz):
+
+| Opus input rate / frame | Resampler samples | Opus packets | Decoded samples at 48 kHz | Source-timestamp refusals |
+|---|---:|---:|---:|---:|
+| 48 kHz / 20 ms | 204800 | 214 | 204800 | 213 |
+| 16 kHz / 20 ms | 68267 | 214 | 204801 | 213 |
+| 24 kHz / 60 ms | 102400 | 72 | 204800 | 72 |
+| 8 kHz / 40 ms | 34134 | 107 | 204804 | 107 |
+
+Decoded counts exactly matched the actual resampler output expressed in the decoder's
+48-kHz domain after codec padding removal. The 16-/8-kHz finite resampling tails have
+one/four additional 48-kHz-domain samples relative to the source count; these are
+recorded, not a claim of source PCM equality or an accepted recording-tail tolerance.
+The codecs are lossy and no listening/lip-sync or Apple-device evaluation was done.
+
+The first lower-rate check exposed a padding-domain mismatch: native libopus encoder
+skip/discard side data was in encoder-rate samples, while the downstream decoder used
+48-kHz samples. Exact metadata conversion fixed the count mismatch; native metadata
+is retained alongside the explicit decoder-domain accessor. No source clocks or PCM
+samples were altered to fix that diagnostic.
+
+All four processors observed **198 clock contradictions across 199 AAC boundaries**.
+The first expected next sample PTS was **2080**, but the actual PTS was **1680**; observed
+step errors ranged from **−400 to +128 source samples**. One AAC packet carried public
+RTCP SR metadata. These short samples do not establish RTCP cadence or long-term A/V
+mapping. The source-timestamp accessor refused contradictions/priming rather than using
+private encoder sample ordinals as a substitute source clock. Codec output exists;
+usable live audio transport timing remains unresolved.
+
+An additional processor was intentionally left with held output until its bounded
+packet allowance failed. That failure revoked its own outputs while the four healthy
+processors continued. Job admission, retained-output charges, repeated cancellation,
+source-disable revocation and final reservation release also passed. This checks
+processing ownership, not compatible-encoder sharing, network backpressure or HDS.
+
+All-target type-checking, `nix build .#amcrust --no-link`, the existing **44 application
+Rust tests**, formatting and strict library-only Clippy passed for this increment.
+The production audio reader/transport remains unchanged; clock acceptance and actual
+compatible-processing sharing are still open TODOs.
+
 ## Actual camera observation
 
 A bounded run of the native ingest reader connected to **10.76.14.10**, main encoder

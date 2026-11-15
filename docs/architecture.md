@@ -56,8 +56,8 @@ viewer, recording session or requested output format.
   wrappers may require a small audited **Rust FFI module**, not a project C shim or
   access to private FFmpeg structs. `ffmpeg-sys-next` is pinned to 9.1.1 against
   Nix FFmpeg 9.0.2. `src/ingest.rs` contains the acquisition FFI ownership boundary;
-  `src/media/fmp4.rs` owns the finite output FFI boundary. Production mux integration
-  and Rust audio processing remain to be implemented.
+  `src/media/fmp4.rs` owns the finite mux boundary and `src/media/audio.rs` owns
+  codec/resampler state. Production mux/audio integration remains to be implemented.
 - Blocking I/O belongs off the async executor, with interruptible reads, deadlines and
   explicit shutdown/join. If process isolation proves necessary, use a Rust worker
   with owned lifetime; do not reinstate the standalone C-worker architecture.
@@ -118,6 +118,31 @@ the job reservation and source grant, rechecking cancellation, lifetime and gene
 before access. Abandonment is not finish; explicit finish is only local mux completion.
 These checks cannot retract already borrowed/copied bytes and do not yet fence HDS
 writes. Reservations are logical ownership bounds, not FFmpeg allocator/RSS measurements.
+
+## Implemented audio-processing boundary
+
+`media::audio::Transcoder` owns AAC-LC decoding, fixed-ratio libswresample conversion,
+a bounded PCM FIFO and libopus encoding on one blocking media worker. Configuration
+covers rate, channels, bitrate, frame duration, VBR, FEC and expected loss; application
+mode is fixed to voice. The admission pool limits jobs and retained output, but does
+not yet share/deduplicate encoders with matching source/configuration. Native channel
+layout, rate and sample format changes are refused rather than reused in an old resampler.
+
+Decoder-frame PTS and sample counts are checked independently of private encoder sample
+ordinals. No asynchronous resampling, silence injection, source-sample dropping or
+wall-clock timestamp substitution is used. `source_timestamp_48k` refuses observed
+clock contradictions and uncovered priming/tail ranges. A locally contiguous sample
+clock alone still does not prove common video/audio sender-report alignment. Codec
+ordinals exposed for mux/decoder bookkeeping must not be promoted to transport clocks.
+
+Encoded Opus packets retain header/side data, cancellation/source grants and admission
+charges. Native encoder padding counts use the configured sample rate; `decoder_skip`
+converts them exactly to the Opus decoder's fixed 48-kHz domain. Output access has a
+two-second residence limit; reservations stay charged until held packets drop. Explicit
+finish flushes decoder, resampler and encoder tails; source EOF/cancellation is not
+finish. Codec decoding/count checks are not continuous-source PCM equality, listening
+acceptance or a production audio path. The observed real-camera clock contradictions
+remain a blocker for transport integration, not a reason to adopt packet-order clocks.
 
 ## Required invariants
 

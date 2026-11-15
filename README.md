@@ -86,8 +86,9 @@ nix build .#amcrust
 The shell/package supplies FFmpeg 9 libraries, pkg-config and libclang/bindgen;
 `ffmpeg-sys-next` is pinned in Cargo. The Rust media library includes an encoder
 registry, joined reader supervision, bounded packet subscriptions, per-viewer H.264
-RTP packetization and finite fMP4 mux jobs. These are not yet connected to the
-production HomeKit paths. The unused project C worker draft is removed.
+RTP packetization, finite fMP4 mux jobs and AAC-to-Opus processing. These are not yet
+connected to the production HomeKit paths; real-camera audio clock contradictions
+remain unresolved. The unused project C worker draft is removed.
 No system-wide FFmpeg or compiler installation is needed with this workflow.
 
 ## Running
