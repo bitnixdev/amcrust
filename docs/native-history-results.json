@@ -1,0 +1,660 @@
+{
+  "environment": {
+    "os": "Darwin",
+    "architecture": "arm64",
+    "python": "3.14.10",
+    "ffmpeg": "9.0.2"
+  },
+  "eight_second_primary_matrix": {
+    "cases": [
+      {
+        "generation": 1,
+        "mode": "disconnect",
+        "packets": [
+          120,
+          364
+        ],
+        "failure": "native source EOF",
+        "peers": {
+          "early": {
+            "received": 484,
+            "terminal": "source_failed",
+            "first_sequence": 0,
+            "first_video_pts": 0,
+            "video_config": [
+              77,
+              320,
+              180
+            ],
+            "peak_queue_bytes": 6594,
+            "peak_inflight_bytes": 6594,
+            "peak_inflight_frames": 1,
+            "exact_normalized_wire_hash": true
+          },
+          "history": {
+            "received": 435,
+            "terminal": "source_failed",
+            "first_sequence": 54,
+            "first_video_pts": 90000,
+            "video_config": [
+              77,
+              320,
+              180
+            ],
+            "peak_queue_bytes": 6594,
+            "peak_inflight_bytes": 6594,
+            "peak_inflight_frames": 1,
+            "exact_normalized_wire_hash": true,
+            "prefix_sequences": [
+              48,
+              49,
+              51,
+              52,
+              53
+            ],
+            "prefix_exact": true
+          },
+          "holding": {
+            "received": 5,
+            "terminal": "residence_expired",
+            "first_sequence": 54,
+            "first_video_pts": 90000,
+            "video_config": [
+              77,
+              320,
+              180
+            ],
+            "peak_queue_bytes": 19684,
+            "peak_inflight_bytes": 0,
+            "peak_inflight_frames": 0,
+            "exact_normalized_wire_hash": false,
+            "prefix_sequences": [
+              48,
+              49,
+              51,
+              52,
+              53
+            ],
+            "prefix_exact": true
+          }
+        },
+        "connections": 1,
+        "worker_reaped": true,
+        "worker_running_at_failure": false,
+        "owned_bytes_before_failure_close": 4560,
+        "peak_owned_bytes": 6769,
+        "peak_owned_bodies": 16,
+        "closed_owned_bytes": 0,
+        "held_prefix_at_close": false,
+        "peak_registered_owners": {
+          "frames": 19,
+          "ranges": 41,
+          "bodies": 16
+        },
+        "elapsed_seconds": 8.051964542013593
+      },
+      {
+        "generation": 2,
+        "mode": "clock-silent",
+        "packets": [
+          7,
+          12
+        ],
+        "failure": "sender report freshness expired (wall clock)",
+        "peers": {
+          "early": {
+            "received": 19,
+            "terminal": "source_failed",
+            "first_sequence": 0,
+            "first_video_pts": 0,
+            "video_config": [
+              100,
+              352,
+              198
+            ],
+            "peak_queue_bytes": 6618,
+            "peak_inflight_bytes": 6618,
+            "peak_inflight_frames": 1,
+            "exact_normalized_wire_hash": true
+          }
+        },
+        "connections": 1,
+        "worker_reaped": true,
+        "worker_running_at_failure": true,
+        "owned_bytes_before_failure_close": 0,
+        "peak_owned_bytes": 4776,
+        "peak_owned_bodies": 11,
+        "closed_owned_bytes": 0,
+        "held_prefix_at_close": false,
+        "peak_registered_owners": {
+          "frames": 1,
+          "ranges": 5,
+          "bodies": 11
+        },
+        "elapsed_seconds": 1.7307829589990433
+      },
+      {
+        "generation": 3,
+        "mode": "disconnect",
+        "packets": [
+          33,
+          92
+        ],
+        "failure": "native source EOF",
+        "peers": {
+          "early": {
+            "received": 125,
+            "terminal": "source_failed",
+            "first_sequence": 0,
+            "first_video_pts": 0,
+            "video_config": [
+              100,
+              352,
+              198
+            ],
+            "peak_queue_bytes": 7147,
+            "peak_inflight_bytes": 7147,
+            "peak_inflight_frames": 1,
+            "exact_normalized_wire_hash": true
+          },
+          "history": {
+            "received": 76,
+            "terminal": "source_failed",
+            "first_sequence": 54,
+            "first_video_pts": 90000,
+            "video_config": [
+              100,
+              352,
+              198
+            ],
+            "peak_queue_bytes": 7147,
+            "peak_inflight_bytes": 7147,
+            "peak_inflight_frames": 1,
+            "exact_normalized_wire_hash": true,
+            "prefix_sequences": [
+              48,
+              49,
+              51,
+              52,
+              53
+            ],
+            "prefix_exact": true
+          },
+          "holding": {
+            "received": 5,
+            "terminal": "residence_expired",
+            "first_sequence": 54,
+            "first_video_pts": 90000,
+            "video_config": [
+              100,
+              352,
+              198
+            ],
+            "peak_queue_bytes": 23215,
+            "peak_inflight_bytes": 0,
+            "peak_inflight_frames": 0,
+            "exact_normalized_wire_hash": false,
+            "prefix_sequences": [
+              48,
+              49,
+              51,
+              52,
+              53
+            ],
+            "prefix_exact": true
+          }
+        },
+        "connections": 1,
+        "worker_reaped": true,
+        "worker_running_at_failure": false,
+        "owned_bytes_before_failure_close": 4705,
+        "peak_owned_bytes": 6769,
+        "peak_owned_bodies": 16,
+        "closed_owned_bytes": 0,
+        "held_prefix_at_close": false,
+        "peak_registered_owners": {
+          "frames": 19,
+          "ranges": 41,
+          "bodies": 16
+        },
+        "elapsed_seconds": 2.267196166998474
+      },
+      {
+        "generation": 4,
+        "mode": "stall",
+        "packets": [
+          32,
+          92
+        ],
+        "failure": "sender report freshness expired (wall clock)",
+        "peers": {
+          "early": {
+            "received": 124,
+            "terminal": "source_failed",
+            "first_sequence": 0,
+            "first_video_pts": 0,
+            "video_config": [
+              100,
+              352,
+              198
+            ],
+            "peak_queue_bytes": 7147,
+            "peak_inflight_bytes": 7147,
+            "peak_inflight_frames": 1,
+            "exact_normalized_wire_hash": true
+          },
+          "history": {
+            "received": 75,
+            "terminal": "source_failed",
+            "first_sequence": 54,
+            "first_video_pts": 90000,
+            "video_config": [
+              100,
+              352,
+              198
+            ],
+            "peak_queue_bytes": 7147,
+            "peak_inflight_bytes": 7147,
+            "peak_inflight_frames": 1,
+            "exact_normalized_wire_hash": true,
+            "prefix_sequences": [
+              48,
+              49,
+              51,
+              52,
+              53
+            ],
+            "prefix_exact": true
+          },
+          "holding": {
+            "received": 5,
+            "terminal": "residence_expired",
+            "first_sequence": 54,
+            "first_video_pts": 90000,
+            "video_config": [
+              100,
+              352,
+              198
+            ],
+            "peak_queue_bytes": 23215,
+            "peak_inflight_bytes": 0,
+            "peak_inflight_frames": 0,
+            "exact_normalized_wire_hash": false,
+            "prefix_sequences": [
+              48,
+              49,
+              51,
+              52,
+              53
+            ],
+            "prefix_exact": true
+          }
+        },
+        "connections": 1,
+        "worker_reaped": true,
+        "worker_running_at_failure": true,
+        "owned_bytes_before_failure_close": 0,
+        "peak_owned_bytes": 6769,
+        "peak_owned_bodies": 16,
+        "closed_owned_bytes": 0,
+        "held_prefix_at_close": false,
+        "peak_registered_owners": {
+          "frames": 19,
+          "ranges": 41,
+          "bodies": 16
+        },
+        "elapsed_seconds": 3.3472555830085184
+      },
+      {
+        "generation": 5,
+        "mode": "parameter-change",
+        "packets": [
+          30,
+          86
+        ],
+        "failure": "clock admission failed: parameter sets changed within clock generation",
+        "peers": {
+          "early": {
+            "received": 116,
+            "terminal": "source_failed",
+            "first_sequence": 0,
+            "first_video_pts": 0,
+            "video_config": [
+              77,
+              320,
+              180
+            ],
+            "peak_queue_bytes": 5847,
+            "peak_inflight_bytes": 5847,
+            "peak_inflight_frames": 1,
+            "exact_normalized_wire_hash": true
+          },
+          "history": {
+            "received": 67,
+            "terminal": "source_failed",
+            "first_sequence": 54,
+            "first_video_pts": 90000,
+            "video_config": [
+              77,
+              320,
+              180
+            ],
+            "peak_queue_bytes": 5847,
+            "peak_inflight_bytes": 5847,
+            "peak_inflight_frames": 1,
+            "exact_normalized_wire_hash": true,
+            "prefix_sequences": [
+              48,
+              49,
+              51,
+              52,
+              53
+            ],
+            "prefix_exact": true
+          },
+          "holding": {
+            "received": 5,
+            "terminal": "residence_expired",
+            "first_sequence": 54,
+            "first_video_pts": 90000,
+            "video_config": [
+              77,
+              320,
+              180
+            ],
+            "peak_queue_bytes": 19684,
+            "peak_inflight_bytes": 0,
+            "peak_inflight_frames": 0,
+            "exact_normalized_wire_hash": false,
+            "prefix_sequences": [
+              48,
+              49,
+              51,
+              52,
+              53
+            ],
+            "prefix_exact": true
+          }
+        },
+        "connections": 1,
+        "worker_reaped": true,
+        "worker_running_at_failure": true,
+        "owned_bytes_before_failure_close": 4693,
+        "peak_owned_bytes": 6769,
+        "peak_owned_bodies": 16,
+        "closed_owned_bytes": 0,
+        "held_prefix_at_close": false,
+        "peak_registered_owners": {
+          "frames": 19,
+          "ranges": 41,
+          "bodies": 16
+        },
+        "elapsed_seconds": 2.1259193329897244
+      },
+      {
+        "generation": 6,
+        "mode": "disconnect",
+        "packets": [
+          18,
+          45
+        ],
+        "failure": "native source EOF",
+        "peers": {
+          "early": {
+            "received": 63,
+            "terminal": "source_failed",
+            "first_sequence": 0,
+            "first_video_pts": 0,
+            "video_config": [
+              77,
+              320,
+              180
+            ],
+            "peak_queue_bytes": 5847,
+            "peak_inflight_bytes": 5847,
+            "peak_inflight_frames": 1,
+            "exact_normalized_wire_hash": true
+          },
+          "history": {
+            "received": 14,
+            "terminal": "source_failed",
+            "first_sequence": 54,
+            "first_video_pts": 90000,
+            "video_config": [
+              77,
+              320,
+              180
+            ],
+            "peak_queue_bytes": 5847,
+            "peak_inflight_bytes": 5847,
+            "peak_inflight_frames": 1,
+            "exact_normalized_wire_hash": true,
+            "prefix_sequences": [
+              48,
+              49,
+              51,
+              52,
+              53
+            ],
+            "prefix_exact": true
+          },
+          "holding": {
+            "received": 5,
+            "terminal": "source_failed",
+            "first_sequence": 54,
+            "first_video_pts": 90000,
+            "video_config": [
+              77,
+              320,
+              180
+            ],
+            "peak_queue_bytes": 12370,
+            "peak_inflight_bytes": 0,
+            "peak_inflight_frames": 0,
+            "exact_normalized_wire_hash": false,
+            "prefix_sequences": [
+              48,
+              49,
+              51,
+              52,
+              53
+            ],
+            "prefix_exact": true
+          }
+        },
+        "connections": 1,
+        "worker_reaped": true,
+        "worker_running_at_failure": false,
+        "owned_bytes_before_failure_close": 4693,
+        "peak_owned_bytes": 4776,
+        "peak_owned_bodies": 11,
+        "closed_owned_bytes": 0,
+        "held_prefix_at_close": true,
+        "peak_registered_owners": {
+          "frames": 9,
+          "ranges": 21,
+          "bodies": 11
+        },
+        "elapsed_seconds": 1.2644583329965826
+      }
+    ],
+    "cancellation": {
+      "terminal": "cancelled",
+      "held_prefix_at_close": true,
+      "worker_reaped": true,
+      "peers_done": true,
+      "owned_bytes": 0,
+      "queue_bytes": 0,
+      "timer_cleared": true,
+      "candidate_timer_cleared": true,
+      "queue_timers_cleared": true
+    },
+    "final_registered_owners": {
+      "frames": 0,
+      "ranges": 0,
+      "bodies": 0
+    },
+    "scope": "paced synthetic native history lifecycle; bounded hash oracle, no accumulated media, decoder/performance or Apple claim"
+  },
+  "twenty_second_primary": {
+    "case": {
+      "generation": 1,
+      "mode": "disconnect",
+      "packets": [
+        300,
+        926
+      ],
+      "failure": "native source EOF",
+      "peers": {
+        "early": {
+          "received": 1226,
+          "terminal": "source_failed",
+          "first_sequence": 0,
+          "first_video_pts": 0,
+          "video_config": [
+            77,
+            320,
+            180
+          ],
+          "peak_queue_bytes": 6594,
+          "peak_inflight_bytes": 6594,
+          "peak_inflight_frames": 1,
+          "exact_normalized_wire_hash": true
+        },
+        "history": {
+          "received": 1177,
+          "terminal": "source_failed",
+          "first_sequence": 54,
+          "first_video_pts": 90000,
+          "video_config": [
+            77,
+            320,
+            180
+          ],
+          "peak_queue_bytes": 6594,
+          "peak_inflight_bytes": 6594,
+          "peak_inflight_frames": 1,
+          "exact_normalized_wire_hash": true,
+          "prefix_sequences": [
+            48,
+            49,
+            51,
+            52,
+            53
+          ],
+          "prefix_exact": true
+        },
+        "holding": {
+          "received": 5,
+          "terminal": "residence_expired",
+          "first_sequence": 54,
+          "first_video_pts": 90000,
+          "video_config": [
+            77,
+            320,
+            180
+          ],
+          "peak_queue_bytes": 19684,
+          "peak_inflight_bytes": 0,
+          "peak_inflight_frames": 0,
+          "exact_normalized_wire_hash": false,
+          "prefix_sequences": [
+            48,
+            49,
+            51,
+            52,
+            53
+          ],
+          "prefix_exact": true
+        }
+      },
+      "connections": 1,
+      "worker_reaped": true,
+      "worker_running_at_failure": false,
+      "owned_bytes_before_failure_close": 4572,
+      "peak_owned_bytes": 6769,
+      "peak_owned_bodies": 16,
+      "closed_owned_bytes": 0,
+      "held_prefix_at_close": false,
+      "peak_registered_owners": {
+        "frames": 19,
+        "ranges": 41,
+        "bodies": 16
+      },
+      "elapsed_seconds": 20.04498550001881
+    },
+    "additional_fault_generations": [
+      {
+        "generation": 2,
+        "mode": "clock-silent",
+        "packets": [
+          7,
+          12
+        ],
+        "closed_owned_bytes": 0,
+        "worker_reaped": true,
+        "held_prefix_at_close": false
+      },
+      {
+        "generation": 3,
+        "mode": "disconnect",
+        "packets": [
+          33,
+          92
+        ],
+        "closed_owned_bytes": 0,
+        "worker_reaped": true,
+        "held_prefix_at_close": false
+      },
+      {
+        "generation": 4,
+        "mode": "stall",
+        "packets": [
+          32,
+          92
+        ],
+        "closed_owned_bytes": 0,
+        "worker_reaped": true,
+        "held_prefix_at_close": false
+      },
+      {
+        "generation": 5,
+        "mode": "parameter-change",
+        "packets": [
+          30,
+          86
+        ],
+        "closed_owned_bytes": 0,
+        "worker_reaped": true,
+        "held_prefix_at_close": false
+      },
+      {
+        "generation": 6,
+        "mode": "disconnect",
+        "packets": [
+          18,
+          45
+        ],
+        "closed_owned_bytes": 0,
+        "worker_reaped": true,
+        "held_prefix_at_close": true
+      }
+    ],
+    "cancellation": {
+      "terminal": "cancelled",
+      "held_prefix_at_close": true,
+      "worker_reaped": true,
+      "peers_done": true,
+      "owned_bytes": 0,
+      "queue_bytes": 0,
+      "timer_cleared": true,
+      "candidate_timer_cleared": true,
+      "queue_timers_cleared": true
+    },
+    "final_registered_owners": {
+      "frames": 0,
+      "ranges": 0,
+      "bodies": 0
+    }
+  }
+}

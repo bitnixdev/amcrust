@@ -112,7 +112,8 @@ def sender_report(track, origin, elapsed, packets, octets):
 
 class CameraFixture:
     def __init__(self, media, mode="disconnect", *, clocked=False, audio_offset=0,
-                 staggered_reports=False, replacement_sps=None, send_seconds=2.2):
+                 staggered_reports=False, replacement_sps=None, send_seconds=2.2,
+                 parameter_change_frame=15):
         self.video, self.audio = media
         if type(send_seconds) not in (int, float) or not 0 < send_seconds <= 30:
             raise ValueError("unsupported fixture send duration")
@@ -126,6 +127,10 @@ class CameraFixture:
                 not 1 <= len(replacement_sps) <= 4096 or replacement_sps[0] & 31 != 7):
             raise ValueError("invalid replacement SPS")
         self.replacement_sps = replacement_sps
+        if (type(parameter_change_frame) is not int or not 15 <= parameter_change_frame <= 435 or
+                parameter_change_frame % 15 or (mode != "parameter-change" and parameter_change_frame != 15)):
+            raise ValueError("unsupported parameter-change frame")
+        self.parameter_change_frame = parameter_change_frame
         if audio_offset < 0 or audio_offset > 0.5 or (audio_offset and not clocked):
             raise ValueError("unsupported fixture audio offset")
         if mode in CLOCK_FAULTS and not clocked:
@@ -290,7 +295,7 @@ class CameraFixture:
                 timestamp = self.origins[0] + index * 6000
                 if self.mode == "rollback" and index >= 20:
                     timestamp -= 60000
-                if self.mode == "parameter-change" and index >= 15:
+                if self.mode == "parameter-change" and index >= self.parameter_change_frame:
                     au = [self.replacement_sps if nal[0] & 31 == 7 else nal for nal in au]
                 payloads = [part for nal in au for part in fragments(nal)]
             else:

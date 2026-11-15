@@ -1,5 +1,9 @@
 # Owned AAC history and leased history/live handoff
 
+This page records the initial ownership/replay milestone. The subsequent
+[paced native lifecycle proof](native-history-proof.md) uses the same owner without
+an accumulated native-output capture and exercises live faults and retirement.
+
 `scripts/audio_history.py` adds actual owned AAC wire bodies to the earlier
 [metadata-only window planner](audio-window-proof.md). This remains an opt-in
 Python experiment: normalized native captures are replayed through it, not a
@@ -120,8 +124,8 @@ tests/doctests passed. The retired old Nix worker path was unavailable; evidence
 rerun against the newly built worker and matching Nix FFmpeg/Python binaries, not
 credited from a failed invocation.
 
-Next: paced continuous native acquisition through this owner under stalls, slow
-prefix consumers, source/configuration failures and generation churn. Then specify
+Paced native acquisition, slow prefixes, idle stalls, configuration failure and
+serial generation churn are now covered by the linked follow-up. Next specify
 recording-specific cut/end and common clip presentation/edit semantics. Production
 Rust integration, privacy policy across consumers' copied output, both camera models,
 and Apple live/HSV acceptance remain open. No camera or production setting changed.

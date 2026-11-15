@@ -81,6 +81,7 @@ class Handoff:
             raise ValueError("handoffs require source selection")
         self._owner, self._admission = owner, admission
         self._closed, self._reason = False, None
+        self._closed_event = asyncio.Event()
         self._history = HistoryLease(self, records, _KEY)
 
     @property
@@ -117,6 +118,12 @@ class Handoff:
         self.admission.queue.detach(reason)
         self.history._release()
         self._owner._handoffs.discard(self)
+        self._closed_event.set()
+
+    async def wait_closed(self):
+        """Observe owner/handoff closure, including idle held-prefix expiry."""
+        await self._closed_event.wait()
+        return self.reason
 
     def finish(self):
         """Acknowledge a validated finite end only after all delivered leases drain."""

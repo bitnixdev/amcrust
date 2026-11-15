@@ -142,9 +142,10 @@ live-view input: that introduces fragment-duration latency.
    differences that rule out assuming a generic one-AU PCM-exact preroll contract.
    [Timestamp-selected window controls](audio-window-proof.md) restore packet coverage
    with complete leading AUs. [Owned AAC history](audio-history-proof.md) now supplies
-   actual charged bodies and historical/live leases in finite replay. Paced native
-   failure coverage, broader clocks/codecs, recording-start policy and finite AAC
-   end-trimming remain open.
+   actual charged bodies and historical/live leases. A [paced native lifecycle
+   matrix](native-history-proof.md) now covers idle stalls, held-prefix expiry,
+   configuration refusal, early EOF, cancellation and serial restart. Broader
+   clocks/codecs, recording-start/cut policy and finite AAC end-trimming remain open.
 2. **Synthetic RTSP fixture complete:** authentication, interleaved H.264/AAC,
    backward timestamps, silent socket stall, reconnect with changed SPS/PPS and late
    IDR video decoding. See [coverage and remaining cases](rtsp-ingest-proof.md),
