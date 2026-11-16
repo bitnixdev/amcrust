@@ -4,7 +4,8 @@ This is the consolidated record of work already done, **not a second backlog**.
 [Architecture](architecture.md) states the chosen design; [TODO](todo.md) is the only
 implementation sequence. Old per-milestone proof/research Markdown has been replaced
 by this summary. Numeric artifacts remain linked below; implementation details remain
-in the scripts/code and version control, not in a second archive of planning documents.
+in the Rust code and version control, not in a second archive of planning documents.
+Former experimental implementation names below are provenance, not current entrypoints.
 
 ## What is actually running
 
@@ -122,8 +123,9 @@ All-target type-checking, `nix build .#amcrust --no-link`, the existing **44 app
 Rust tests**, formatting, and strict library-only Clippy passed. Remaining: Rust
 AAC-to-Opus processing, common A/V clock
 acceptance, recording history/cuts/presentation, session RTCP/SRTP integration, actual
-HDS ownership and the single production-reader cutover. Historical C probe retirement
-also remains on the TODO; no new C shim or synthetic media gate was introduced.
+HDS ownership and the single production-reader cutover. C probe retirement was still
+pending at that increment and is completed below; no new C shim or synthetic media
+gate was introduced.
 
 ### Rust audio-processing increment
 
@@ -392,6 +394,33 @@ source-clock reports/control handling, receiver priming, sustained A/V qualifica
 source ownership and recording integration remain open in TODO. The native FFmpeg
 receivers here do not establish Apple client behavior or a HomeKit audio trim contract.
 
+### Retired experimental worker scaffolding
+
+The obsolete experimental harness is removed: both C probe workers, `packet_wire.h`,
+`nix/packages/ingest-worker-probe.nix`, and 52 Python fixture/AMC2/probe/helper/test
+files. This also removes the probe package's direct json-c and synthetic-check inputs.
+No project-owned `.c` or `.h` source remains. The Rust media library uses upstream
+FFmpeg bindings; no replacement IPC layer, fixture milestone or selectable backend
+was added.
+
+The six numeric JSON records below and the consolidated findings are retained unchanged.
+Historical script names identify the removed implementations; they are not runnable
+commands or links to current files. The independent read-only production workload
+sampler `scripts/ingest_baseline.py` remains, with its two existing contract checks
+extracted into `scripts/test_ingest_baseline.py` before removing the mixed probe suite.
+
+This completes the project-owned C/experimental-scaffolding cleanup only. Production
+FFmpeg camera readers, their clock/RTCP adapters and recording ownership remain until
+the Rust consumers replace them. No camera configuration or runtime media behavior
+was changed by this retirement, and it establishes no new playback acceptance.
+
+Checks passed: the two retained Python checks and a read-only sampler smoke check,
+**22 library + 43 application Rust tests**, all-target checking, strict library-only
+Clippy, formatting, offline flake checking and the Nix application build. Package-name
+evaluation on aarch64-darwin, aarch64-linux and x86_64-linux showed only the probe export
+removed; all six numeric records retained their original hashes. No camera check or
+synthetic media experiment was run for this deletion-only runtime increment.
+
 ## Actual camera observation
 
 A bounded run of the native ingest reader connected to **10.76.14.10**, main encoder
@@ -420,9 +449,11 @@ proofs for the replacement.
 
 The experiments used Python orchestration and small C wrappers around FFmpeg, usually
 FFmpeg 9.0.2 on Darwin arm64. They established useful contracts but did not implement
-the final Rust architecture. **Do not schedule more synthetic testing for the cutover.**
+the final Rust architecture. Their implementations have now been removed; the names
+in the table are historical provenance. **Do not schedule more synthetic testing for
+the cutover.**
 
-| Area | Established within the exercised cases | Important limit / implementation location |
+| Area | Established within the exercised cases | Important limit / former implementation (removed) |
 |---|---|---|
 | Container choice | NUT fanout decoded, but lost initial B-frame DTS and changed AAC metadata | NUT was rejected as the shared packet contract; `scripts/ingest_probe.py` |
 | Packet preservation | Native wrappers preserved tested payloads, clocks, flags, codec parameters and side data; bounded AMC2 binary framing replaced hex payloads | Same-library experimental ABI, not required Rust IPC; `probes/`, `scripts/packet_ingest_probe.py`, `packet_wire.py` |

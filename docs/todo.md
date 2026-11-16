@@ -13,7 +13,7 @@ milestone or add another parallel plan/proof document.
 - [x] A native reader sampled the authorized real camera. This was not a Rust-only
   bridge run, decoded-view acceptance or a production cutover.
 - [ ] Rust-only shared acquisition is implemented and connected to production.
-- [ ] All project-owned C required for the application is replaced; obsolete C is removed.
+- [x] All project-owned C required for the application is replaced; obsolete C is removed.
 - [ ] Real-device live/audio/HSV, privacy, recovery and resource acceptance pass.
 
 ## 1. Replace the C-based draft with Rust (start here)
@@ -44,23 +44,25 @@ milestone or add another parallel plan/proof document.
   threads. Deadlines and sticky cancellation interrupt library I/O; Drop closes it.
   `src/source/` now adds joined supervision and bounded subscriptions. Production
   injection and copied-output/transport privacy are still section 2/3 work.
-- [ ] Complete every applicable row below; update Cargo/Nix and remove stale entrypoints.
+- [x] Complete every applicable row below; update Cargo/Nix and remove stale entrypoints.
 
 | Project C / related scaffolding | Required Rust replacement or removal |
 |---|---|
 | `native/ingest.c` | **Removed.** `src/ingest.rs` owns libavformat open/read/interrupt/close, codec metadata and packet/side-data lifetimes; no production consumer is connected yet |
-| `probes/ingest_worker.c` | Production hook removed; historical fixture exporter remains until obsolete probe launchers are retired |
+| `probes/ingest_worker.c` | **Removed.** Retired the experimental fixture exporter; acquisition lives in the Rust library |
 | `native/output.c` | **Unused C draft removed.** `src/media/rtp.rs` packetizes H.264; `src/media/fmp4.rs` owns finite packet-copy mux jobs. Production transport/recording integration remains |
-| `probes/mux_worker.c` | Rust muxing now copies public codec parameters directly and owns packets/AVIO cleanup; historical C sink and dependent launchers still need retirement |
-| `probes/packet_wire.h` | Remove worker-only framing when typed Rust packets replace IPC; use a bounded Rust parser only if retained diagnostic artifacts need it |
+| `probes/mux_worker.c` | **Removed.** Rust muxing copies public codec parameters directly and owns packets/AVIO cleanup; the experimental sink and launchers are retired |
+| `probes/packet_wire.h` | **Removed.** Typed Rust packets replace worker IPC; retained numeric JSON evidence does not need an AMC2 parser |
 | `nix/packages/native-media.nix` | **Removed.** Application package and dev shell now supply FFmpeg libraries, pkg-config and bindgen dependencies |
-| `nix/packages/ingest-worker-probe.nix` | Retire obsolete C/probe build dependencies, including json-c where no longer used; do not add a replacement synthetic rollout gate |
-| Python worker launchers / unused AMC2 scaffolding | Remove or clearly retire obsolete worker entrypoints after their findings are preserved; do not leave the application dependent on the research harness |
+| `nix/packages/ingest-worker-probe.nix` | **Removed.** No probe package or direct json-c/probe-only dependency remains; no replacement synthetic rollout gate |
+| Python worker launchers / unused AMC2 scaffolding | **Removed.** Retired 52 experimental Python files; preserved findings/numeric records and the independent `ingest_baseline.py` workload sampler with its two existing checks |
 
 **Exit:** required media behavior is Rust application code using upstream libraries;
 no project-owned `.c`/`.h` is needed to build or run amcrust. Removing obsolete
 probe-only code is preferable to porting an unused IPC architecture just to keep it.
-This does not require rewriting FFmpeg itself.
+This does not require rewriting FFmpeg itself. The project-owned C/scaffolding cleanup
+is complete; the direct FFmpeg camera readers and unresolved media policies still need
+the production integration below. Removing probes is not the acquisition cutover.
 
 ## 2. Make shared acquisition the production owner
 

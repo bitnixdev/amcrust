@@ -16,12 +16,12 @@ completed work and its limitations are in [Evidence](evidence.md). The
 | Live video | FFmpeg packet copy/RTP followed by the shared, fenced Rust SRTP/SRTCP transport | Shared encoded H.264, Rust per-viewer packetization and existing encryption/control integration |
 | Live audio | Per-viewer FFmpeg AAC decode/Opus encode | Rust-owned FFmpeg-library audio processing shared where negotiated settings match |
 | Recording | Persistent FFmpeg reader/mux, Rust fMP4 prebuffer and HDS delivery | Shared packet subscriptions, Rust-owned mux/lifetimes, existing HomeKit/HDS integration |
-| Experiments | Python prototypes plus C FFmpeg wrappers | Behavioral evidence to carry forward, not a second production implementation |
+| Experiments | Retained numeric findings; obsolete C/Python fixture harness removed | Behavioral evidence to carry forward, not a second production implementation |
 | Rust acquisition boundary | `src/ingest.rs` owns libavformat; `src/source/` supplies an encoder registry, joined supervisors and bounded generation-scoped subscriptions | Connect the library owners to production live/audio/recording consumers |
 
 **The production acquisition cutover has not happened.** Previous packet, lifetime,
 mux and presentation experiments do not establish that the new Rust path is deployed
-or accepted by Apple clients. The unused C-based draft and packaging have been removed;
+or accepted by Apple clients. The project-owned C workers and probe packaging have been removed;
 the Rust library registry/fanout is built and exercised against the real camera, but
 not connected to production consumers.
 
@@ -63,8 +63,9 @@ viewer, recording session or requested output format.
   with owned lifetime; do not reinstate the standalone C-worker architecture.
 - Prefer reference-counted encoded packets and typed immutable metadata in Rust.
   Keep exact rational time bases and signed integer clocks; unknown timestamps are
-  distinct from zero. Experimental AMC2 JSON/blob IPC is not a required production boundary. Keep any
-  diagnostic parser separate from the data path; do not hex-serialize payloads per peer.
+  distinct from zero. The experimental AMC2 JSON/blob IPC and its fixture workers
+  have been removed. Typed packets are the in-process contract; do not hex-serialize
+  payloads per peer.
 - Do not reimplement RTSP or MP4 from scratch. Keep video packet-copy. Rust should own
   session RTP packetization, lifecycle, cancellation, accounting and privacy fences.
 - Dependencies and native-library versions belong in Cargo/Nix, not global installs.

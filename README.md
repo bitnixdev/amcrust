@@ -112,7 +112,11 @@ remains the default. Priming/tail contracts are explicit, not assumed to work ov
 HomeKit RTP.
 See the [clock decision and alternatives](docs/architecture.md#candidate-live-audio-decision-and-revisit-guide)
 for limits, acceptance work and symptoms that would require revisiting the choice.
-The unused project C worker draft is removed.
+All project-owned C workers and the obsolete Python/AMC2 fixture harness are removed;
+their findings and numeric records remain in [Evidence](docs/evidence.md). The read-only
+production workload sampler `scripts/ingest_baseline.py` is retained, along with its
+checks (`python3 -m unittest discover -s scripts -p 'test_*.py'`). This cleanup does not
+remove the production FFmpeg camera readers; shared-source integration remains open.
 No system-wide FFmpeg or compiler installation is needed with this workflow.
 
 ## Running
