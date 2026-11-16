@@ -1,13 +1,19 @@
-//! SRTP/SRTCP protection and HomeKit's negotiated Opus timestamp clock.
+//! SRTP/SRTCP primitives and the legacy FFmpeg-only timestamp adapter.
 
 use webrtc_srtp::context::Context;
 use webrtc_srtp::protection_profile::ProtectionProfile;
 
 /// Independent inbound and outbound cryptographic contexts for one HomeKit
 /// media session. RFC 3711 requires distinct state for the two directions.
+/// Feedback pins the first authenticated sender SSRC and uses a 128-packet replay
+/// window; another sender requires a new session. Use media::transport for bounded
+/// outgoing SSRCs, datagram sizes and actual socket-write ownership.
 pub struct SrtpSession {
     outbound: Context,
-    inbound: Context,
+    // Pin only the first authenticated feedback SSRC. Unauthenticated packets
+    // must not grow the upstream context's per-SSRC replay-state map.
+    inbound: Option<(u32, Context)>,
+    master: [u8; 30],
 }
 
 impl SrtpSession {
@@ -28,7 +34,8 @@ impl SrtpSession {
         };
         Some(Self {
             outbound: create()?,
-            inbound: create()?,
+            inbound: None,
+            master: master.try_into().ok()?,
         })
     }
 
@@ -41,11 +48,32 @@ impl SrtpSession {
     }
 
     pub fn unprotect_rtcp(&mut self, packet: &[u8]) -> Option<Vec<u8>> {
-        self.inbound.decrypt_rtcp(packet).ok().map(|v| v.to_vec())
+        if packet.len() < 22 {
+            return None;
+        }
+        let ssrc = u32::from_be_bytes(packet[4..8].try_into().ok()?);
+        if let Some((expected, context)) = &mut self.inbound {
+            if *expected != ssrc {
+                return None;
+            }
+            return context.decrypt_rtcp(packet).ok().map(|v| v.to_vec());
+        }
+        let mut context = Context::new(
+            &self.master[..16],
+            &self.master[16..],
+            ProtectionProfile::Aes128CmHmacSha1_80,
+            None,
+            Some(webrtc_srtp::option::srtcp_replay_protection(128)),
+        )
+        .ok()?;
+        let plain = context.decrypt_rtcp(packet).ok()?.to_vec();
+        self.inbound = Some((ssrc, context));
+        Some(plain)
     }
 }
 
-/// Rewrites FFmpeg's 48 kHz Opus timestamps to the clock selected by HomeKit.
+/// Legacy adapter only: rewrites FFmpeg's 48 kHz Opus timestamps to the clock
+/// selected by HomeKit. Do not apply this to the Rust audio presentation clock.
 /// Keeping a stable random output base also hides discontinuities in the
 /// camera's source timestamps.
 pub struct TimestampRescaler {

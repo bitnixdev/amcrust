@@ -102,7 +102,9 @@ This does not require rewriting FFmpeg itself.
     held deliveries reject access while retaining charges until dropped. Main source
     replacement left Sub Stream 2 running in the real check.
   - [ ] Fence actual transport writes and recording copies; borrowed/escaped data
-    cannot be retracted by this cooperative library layer.
+    cannot be retracted by this cooperative library layer. Session-owned live UDP
+    writes now have a revoke-before-join fence; coupling it to source-generation
+    retirement and fencing recording copies remain open.
 - [ ] Admission/resource limits: per-source, per-subscriber and aggregate job/byte caps;
   expose active source/subscriber counts, queue age/bytes, faults and recovery metrics.
   - [x] Bound registry entries, subscriber slots, handoff/descriptor/delivery byte
@@ -123,6 +125,15 @@ This does not require rewriting FFmpeg itself.
     Two real-source plaintext RTP receivers decoded at 400-/1200-byte packet limits.
   - [ ] Connect session transport, RTCP and SRTP/SRTCP; reserve authentication overhead
     from the negotiated MTU and verify Home app playback.
+    - [x] Route existing production video/audio adapters through the shared Rust
+      secure UDP transport; remove their inline encryption/socket-write path. Bound
+      protected datagrams, reserve SRTP overhead, authenticate/replay-check feedback
+      and revoke all affected tracks before awaited proxy abort/join.
+    - [x] Exercise real-source Rust H.264 directly through that transport: two FFmpeg
+      SRTP receivers decode 30 frames each at 400-/1200-byte protected datagram limits.
+    - [ ] Replace the FFmpeg-facing adapters with the Rust media producers and
+      source-clock RTCP generation/control owner, then verify Home app playback.
+      The transport does not supply a clock, pacing or an audio priming policy.
 - [ ] Live audio: use shared AAC input; own FFmpeg-library decode/Opus encode in Rust.
   Pool only compatible negotiated settings and isolate encoder/subscriber failures.
   - [x] Implement thread-bound AAC-LC -> S16 resampler/FIFO -> libopus processing,

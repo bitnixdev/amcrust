@@ -6,9 +6,11 @@ use amcrust::{
         Error,
         fmp4::{Limits as MuxLimits, Muxer, Pool},
         rtp::{Config, H264},
+        transport::{RTP_OVERHEAD, Transport},
     },
     source::{Encoder, Limits, Registry, SourceKey, Subscription, SubscriptionLimits, Tracks},
 };
+use base64::Engine;
 use sha2::{Digest, Sha256};
 use std::{
     net::{Ipv4Addr, SocketAddrV4},
@@ -93,6 +95,13 @@ impl<T> Drop for Task<T> {
 }
 
 async fn rtp_viewer(mut subscription: Subscription, config: Config) -> (usize, u64) {
+    let wire_mtu = config.packet_bytes;
+    let config = Config {
+        packet_bytes: wire_mtu - RTP_OVERHEAD,
+        ..config
+    };
+    let key: [u8; 30] = rand::random();
+    let inline_key = base64::engine::general_purpose::STANDARD.encode(key);
     // Reserve a local RTP/RTCP pair before giving it to the diagnostic decoder.
     let (reservation, control) = (0..32)
         .find_map(|_| {
@@ -105,7 +114,7 @@ async fn rtp_viewer(mut subscription: Subscription, config: Config) -> (usize, u
         .expect("local decoder ports");
     let port = reservation.local_addr().unwrap().port();
     let sdp = format!(
-        "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=Rust camera output check\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=video {port} RTP/AVP {}\r\na=rtpmap:{} H264/90000\r\na=fmtp:{} packetization-mode=1\r\n",
+        "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=Rust camera output check\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=video {port} RTP/SAVP {}\r\na=rtpmap:{} H264/90000\r\na=fmtp:{} packetization-mode=1\r\na=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:{inline_key}\r\n",
         config.payload_type, config.payload_type, config.payload_type
     );
     drop((reservation, control));
@@ -117,7 +126,7 @@ async fn rtp_viewer(mut subscription: Subscription, config: Config) -> (usize, u
             "error",
             "-xerror",
             "-protocol_whitelist",
-            "pipe,udp,rtp",
+            "pipe,udp,rtp,crypto",
             "-analyzeduration",
             "0",
             "-probesize",
@@ -146,6 +155,9 @@ async fn rtp_viewer(mut subscription: Subscription, config: Config) -> (usize, u
         .await
         .unwrap();
     let destination = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
+    let transport =
+        Transport::new(socket, destination.into(), &key, config.ssrc, wire_mtu).unwrap();
+    assert_eq!(transport.rtp_capacity(), config.packet_bytes);
     let first = subscription.recv().await.unwrap();
     let mut packetizer = H264::new(&first, config).unwrap();
     let mut delivery = first;
@@ -169,7 +181,10 @@ async fn rtp_viewer(mut subscription: Subscription, config: Config) -> (usize, u
                 }
                 last_sequence = Some(sequence);
                 markers += usize::from(buffer[1] & 0x80 != 0);
-                socket.send_to(&buffer[..size], destination).await.unwrap();
+                transport
+                    .send_rtp(&buffer[..size], || delivery.packet().is_ok())
+                    .await
+                    .unwrap();
             }
             assert_eq!(markers, 1);
         }
@@ -182,6 +197,11 @@ async fn rtp_viewer(mut subscription: Subscription, config: Config) -> (usize, u
         }
         delivery = subscription.recv().await.unwrap();
     }
+    transport.revoke();
+    assert!(matches!(
+        transport.send_rtp(&buffer, || true).await,
+        Err(amcrust::media::transport::Error::Closed)
+    ));
     let output = decoder.finish().await;
     let decoded = decoded_frames(&output);
     assert_eq!(decoded, 30);
@@ -466,7 +486,7 @@ async fn exercise() {
     drop(recording);
     registry.shutdown().await.unwrap();
     eprintln!(
-        "Real Rust outputs: fMP4 decoded={decoded} video packets={} AAC packets={} accepted_bytes={accepted}; exact shifted PTS/DTS preserved; MP4 duration differences video={} AAC={} (presentation policy unresolved); video-only mux decoded same count; RTP viewers decoded={}+{} packetized={}+{}; partial-AU refusal, job/input limits, copied output cancellation/source revocation and reservation release passed",
+        "Real Rust outputs: fMP4 decoded={decoded} video packets={} AAC packets={} accepted_bytes={accepted}; exact shifted PTS/DTS preserved; MP4 duration differences video={} AAC={} (presentation policy unresolved); video-only mux decoded same count; SRTP viewers decoded={}+{} packetized={}+{} (protected datagram limits 400/1200 bytes); partial-AU refusal, job/input limits, copied output cancellation/source revocation and reservation release passed",
         expected[0].len(),
         expected[1].len(),
         duration_changes[0],

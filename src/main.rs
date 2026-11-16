@@ -3,7 +3,6 @@ mod amcrest;
 mod hsv;
 mod metrics;
 mod motion;
-mod srtp;
 mod stream;
 mod tlv8;
 

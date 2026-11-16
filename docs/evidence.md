@@ -9,8 +9,9 @@ in the scripts/code and version control, not in a second archive of planning doc
 ## What is actually running
 
 The existing Rust bridge still opens separate FFmpeg camera readers for live video,
-live audio and recording. Its HomeKit features are not evidence that a shared-source
-replacement works. Production instrumentation added first RTP/IDR timing and recording
+live audio and recording. Production live video/audio now use the shared Rust secure
+UDP transport described below, but acquisition is unchanged. Its HomeKit features are
+not evidence that a shared-source replacement works. Production instrumentation added first RTP/IDR timing and recording
 delivery outcomes (`end_sent`, `cancelled`, `source_unavailable`, `write_error`).
 `end_sent` is a successful write, not confirmed iCloud storage. The process sampler in
 `scripts/ingest_baseline.py` avoids command lines/environment values; process counts
@@ -348,6 +349,48 @@ socket/lifecycle checks. The Nix application build passed with substitution disa
 for that invocation after the configured cache returned HTTP 500s/timeouts. The final
 matrix had twelve fully covered completions and the one explicitly refused finite
 shortfall. No HomeKit transport or legacy-reader removal is claimed by this increment.
+
+### Shared secure transport in the production live path
+
+`src/media/transport.rs` now replaces inline encryption/socket writes in both production
+live proxies. It is the same API used directly by Rust packetizers, with no runtime
+backend switch or fallback. Session end/replacement/suspend/shutdown revoke all affected
+track transports before awaiting proxy abort/join. The gate covers the actual nonblocking
+UDP write, not just an earlier buffer-access check. A producer predicate is rechecked at
+that point, but source-generation privacy still needs owner-level transport revocation;
+no source/recording privacy acceptance is inferred from a session fence.
+
+Outbound RTP/SRTCP sizes include their 10-/14-byte protection overhead. One pending
+send and one bounded feedback receive are allowed per transport, with no internal
+queue and a 250-ms write-readiness deadline. Feedback must come from the fixed peer,
+authenticate, pass a 128-packet replay window and retain the first authenticated sender
+SSRC. Unknown unauthenticated SSRCs do not grow retained state. A changed authenticated
+sender requires a new session rather than silently resetting replay protection.
+
+The existing read-only `real_camera_media_output` check now sends **SRTP directly**
+from two Rust H.264 packetizers to independent native FFmpeg decryptors/decoders with
+fresh per-viewer keys. At **400-/1200-byte protected datagram limits**, both decoded
+**30 frames**, from **3418/1136 RTP packets** over their admitted real-source windows.
+No camera settings were written or media retained. The same run retained the existing
+mux regressions: **91 video / 283 AAC packets**, **1,264,897 accepted AVIO bytes**, exact
+shifted PTS/DTS, video-only decoding and local cancellation/resource checks. The **90
+video / 282 AAC duration differences** remain unresolved presentation evidence, not
+an accepted tolerance.
+
+Focused checks passed: **22 library + 43 application tests**, all-target checking,
+strict library-only Clippy and formatting. These include exact encrypted wire size,
+RTP sequence rollover without timestamp changes, authenticated feedback/replay/peer
+isolation, producer recheck, repeatable revocation, receive wakeup, panic-safe stop,
+and the actual production adapter's legacy timestamp mapping, RTCP feedback forwarding
+and joined socket release. The legacy rescaler remains confined to that adapter;
+it must not be applied to the new Rust audio presentation clock. The Nix application
+build also passed with substitution disabled; bounded self-review found no issues.
+
+This is production **transport wiring**, not a deployed shared-reader replacement or
+Home app acceptance. FFmpeg still acquires video/audio and generates their RTCP; Rust
+source-clock reports/control handling, receiver priming, sustained A/V qualification,
+source ownership and recording integration remain open in TODO. The native FFmpeg
+receivers here do not establish Apple client behavior or a HomeKit audio trim contract.
 
 ## Actual camera observation
 

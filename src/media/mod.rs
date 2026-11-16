@@ -1,8 +1,10 @@
-//! Media output building blocks. Not yet connected to HomeKit transports.
+//! Rust media building blocks and the shared production SRTP/SRTCP boundary.
+//! Shared-source media producers are not yet connected to HomeKit.
 pub mod audio;
 mod audio_clock;
 pub mod fmp4;
 pub mod rtp;
+pub mod transport;
 
 use crate::{ingest::TimeBase, source::Terminal};
 

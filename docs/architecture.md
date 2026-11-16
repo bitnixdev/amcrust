@@ -13,7 +13,7 @@ completed work and its limitations are in [Evidence](evidence.md). The
 | Area | Current state | Destination |
 |---|---|---|
 | Camera acquisition | Live video, live audio and recording open their own FFmpeg RTSP readers | One Rust-owned libavformat acquisition per active encoder |
-| Live video | FFmpeg packet copy/RTP followed by Rust SRTP/SRTCP handling | Shared encoded H.264, Rust per-viewer packetization and existing encryption/control integration |
+| Live video | FFmpeg packet copy/RTP followed by the shared, fenced Rust SRTP/SRTCP transport | Shared encoded H.264, Rust per-viewer packetization and existing encryption/control integration |
 | Live audio | Per-viewer FFmpeg AAC decode/Opus encode | Rust-owned FFmpeg-library audio processing shared where negotiated settings match |
 | Recording | Persistent FFmpeg reader/mux, Rust fMP4 prebuffer and HDS delivery | Shared packet subscriptions, Rust-owned mux/lifetimes, existing HomeKit/HDS integration |
 | Experiments | Python prototypes plus C FFmpeg wrappers | Behavioral evidence to carry forward, not a second production implementation |
@@ -109,7 +109,7 @@ contradictions, including larger SR-boundary jumps, remain unresolved for live A
 Queue and held-delivery charges persist through retirement until owners drop. Source
 and registry budgets include bounded reader handoff and descriptor charges. Access
 checks and lease retirement are cooperative: already borrowed/copied bytes cannot be
-retracted. Transport write fences, recording history/copies, aggregate output-job
+retracted. Source-generation transport fences, recording history/copies, aggregate output-job
 limits and Prometheus wiring remain integration work. Logical charges are not a bound
 on FFmpeg internal allocations, allocator overhead or process RSS.
 
@@ -119,8 +119,9 @@ on FFmpeg internal allocations, allocator overhead or process RSS.
 storage (single NAL or FU-A). Each viewer owns its sequence and RTP clock origin plus
 negotiated SSRC/payload type/plaintext packet limit. SPS/PPS accompany each IDR; the
 last packet alone carries the AU marker. Abandoning a partial AU fails that packetizer.
-Transport writes, RTCP and SRTP remain production-integration work; SRTP overhead must
-be reserved separately from the negotiated packet limit.
+The shared secure transport below now owns production socket writes. Connecting this
+packetizer and source-derived RTCP generation to HomeKit sessions remains integration
+work; `Transport::rtp_capacity()` reserves the SRTP overhead from the wire limit.
 
 `media::fmp4::Muxer` uses public FFmpeg parameter-copy, packet-reference and custom AVIO
 APIs for finite H.264/AAC or video-only output. Its first input must be the source-issued
@@ -136,6 +137,40 @@ the job reservation and source grant, rechecking cancellation, lifetime and gene
 before access. Abandonment is not finish; explicit finish is only local mux completion.
 These checks cannot retract already borrowed/copied bytes and do not yet fence HDS
 writes. Reservations are logical ownership bounds, not FFmpeg allocator/RSS measurements.
+
+## Implemented secure transport boundary
+
+`media::transport::Transport` is now the **only production live SRTP/SRTCP socket-write
+path**, used by both FFmpeg adapters in `src/stream.rs` and available directly to Rust
+packetizers. It owns the UDP socket, fixed peer, outgoing SSRC and cryptographic state.
+It does not acquire media, pace packets, rescale timestamps or invent sender reports.
+The legacy timestamp adapter stays at the FFmpeg boundary only; Rust audio's 48-kHz
+presentation timestamps must not pass through it.
+
+Outgoing protected datagrams must fit the configured wire limit (maximum 2048 bytes), including
+10 bytes for SRTP or 14 for SRTCP. Production reserves SRTP overhead in FFmpeg's packet
+size, caps requested MTUs at 1378 bytes and refuses requests below 188 rather than
+sending beyond them; invalid audio MTU disables audio without stopping video.
+One send and one receive operation may be active per transport; concurrent calls are
+refused, not queued. A write has a 250-ms readiness budget. WouldBlock retries reuse
+ciphertext, not cryptographic counters. Feedback is bounded, restricted to the peer,
+authenticated and replay-protected with a 128-packet window. Only the first authenticated
+feedback SSRC is retained; a different sender requires a new session. Unauthenticated
+SSRCs cannot accumulate retained replay state.
+
+`revoke()` synchronously fences the nonblocking socket write under the same gate and
+wakes pending waits. Session replacement/end/suspend/shutdown revoke every affected
+track before the first awaited proxy cleanup, then abort/join proxy tasks. Drop revokes
+and aborts but cannot join. Already kernel-accepted datagrams cannot be retracted.
+The producer predicate is checked before encryption and immediately before writing,
+but **is not an atomic source-generation fence**: integrating source retirement/privacy
+still requires revoking its transports before acknowledging the transition. Aggregate
+source/output accounting, recording-copy fences and joined source owners remain TODO.
+
+Real-source H.264 from two Rust viewers decrypts/decodes through independent FFmpeg SRTP
+receivers. This is not Home app acceptance. Production still uses FFmpeg camera readers
+and their RTCP generation; source-clock RTCP, audio receiver priming and shared-acquisition
+injection remain required before those readers can be removed.
 
 ## Implemented audio-processing boundary
 

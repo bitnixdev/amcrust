@@ -102,7 +102,9 @@ The shell/package supplies FFmpeg 9 libraries, pkg-config and libclang/bindgen;
 `ffmpeg-sys-next` is pinned in Cargo. The Rust media library includes an encoder
 registry, joined reader supervision, bounded packet subscriptions and source-clock
 diagnostics, per-viewer H.264 RTP packetization, finite fMP4 mux jobs and AAC-to-Opus
-processing. These are not yet connected to the production HomeKit paths. An explicit
+processing. These media producers are not yet connected to the production HomeKit
+paths. The shared Rust secure UDP transport is already used by production video/audio
+proxies, with protected-datagram limits and revoke-before-join session shutdown. An explicit
 live-audio candidate anchors decoded-sample progression to 48-kHz AAC source timing
 and supports 8/16/24/48-kHz Opus output with 20/40/60-ms frames. It refuses excessive
 phase error, stale sender reports and uncovered finite endpoints; strict timing
@@ -242,7 +244,8 @@ src/
   accessory.rs  HomeKit accessory: stream management + motion sensor services
   stream.rs     SetupEndpoints/SelectedRTPStreamConfiguration TLV8 negotiation
                 and the ffmpeg RTSP→SRTP media pipeline
-  srtp.rs       per-session SRTP/SRTCP handling
+  srtp.rs       SRTP/SRTCP primitives and legacy FFmpeg timestamp adapter
+  media/transport.rs  shared secure UDP writes, feedback and session-stop fence
   hsv/          recording configuration, fMP4 prebuffer, HDS codec/framing/delivery
   metrics.rs    health, media metrics and delivery outcomes
   motion.rs     AI events → motion sensor characteristic updates
