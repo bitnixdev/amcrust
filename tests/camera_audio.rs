@@ -402,9 +402,62 @@ fn consume_candidate(
     Ok(())
 }
 
+// Constant-space diagnostic regression: phase in milliseconds against nominal
+// decoded-input seconds. This is NOT a measured oscillator rate or a clock grant.
+#[derive(Default)]
+struct PhaseTrend {
+    n: u64,
+    mean_x: f64,
+    mean_y: f64,
+    xx: f64,
+    xy: f64,
+}
+impl PhaseTrend {
+    fn observe(&mut self, sample_position: u64, phase_samples: i128) {
+        let x = sample_position as f64 / 48000.0;
+        let y = phase_samples as f64 / 48.0;
+        self.n += 1;
+        let dx = x - self.mean_x;
+        let dy = y - self.mean_y;
+        self.mean_x += dx / self.n as f64;
+        self.mean_y += dy / self.n as f64;
+        self.xx += dx * (x - self.mean_x);
+        self.xy += dx * (y - self.mean_y);
+    }
+    fn ms_per_second(&self) -> Option<f64> {
+        (self.n >= 2 && self.xx > 0.0).then(|| self.xy / self.xx)
+    }
+}
+#[test]
+fn phase_trend_is_diagnostic_ms_per_nominal_second() {
+    let mut trend = PhaseTrend::default();
+    assert_eq!(trend.ms_per_second(), None);
+    for second in 10..=20 {
+        trend.observe(second * 48000, second as i128 * 48);
+    }
+    assert_eq!(trend.ms_per_second(), Some(1.0));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires coordinated camera access; candidate 60-second window; run camera tests serially"]
+#[ignore = "requires coordinated camera access; default 60s, AMCRUST_CLOCK_SECONDS=1800 qualifies until first refusal; run serially"]
 async fn real_anchored_audio_clock() {
+    // Parse before dotenv: the window is an explicit invocation choice, not a
+    // credential-file setting. Never run indefinitely or silently shorten it.
+    let seconds = match std::env::var("AMCRUST_CLOCK_SECONDS") {
+        Ok(value) => value
+            .parse::<u64>()
+            .expect("AMCRUST_CLOCK_SECONDS must be an integer"),
+        Err(std::env::VarError::NotPresent) => 60,
+        Err(_) => panic!("AMCRUST_CLOCK_SECONDS must be valid text"),
+    };
+    assert!(
+        (60..=1800).contains(&seconds),
+        "clock window must be 60..=1800 seconds"
+    );
+    let qualification = seconds == 1800;
+    eprintln!(
+        "Candidate clock window: requested_seconds={seconds} qualification={qualification}; no reanchor or budget increase"
+    );
     dotenvy::dotenv().ok();
     let user = std::env::var("AMCREST_USERNAME").expect("AMCREST_USERNAME required");
     let password = std::env::var("AMCREST_PASSWORD").expect("AMCREST_PASSWORD required");
@@ -422,7 +475,8 @@ async fn real_anchored_audio_clock() {
             url,
         )
         .unwrap();
-    let result = tokio::time::timeout(Duration::from_secs(85), async {
+    let mut last_observation = None;
+    let result = tokio::time::timeout(Duration::from_secs(seconds + 25), async {
         let mut input = source.subscribe(Tracks::Audio, SubscriptionLimits::default()).await.map_err(Error::from)?;
         let first = loop {
             let packet = input.recv().await.map_err(Error::from)?;
@@ -441,7 +495,10 @@ async fn real_anchored_audio_clock() {
         let mut strict_refused = 0;
         let mut last = None;
         let mut budget_trip = false;
-        let until = tokio::time::Instant::now() + Duration::from_secs(60);
+        let started = tokio::time::Instant::now();
+        let until = started + Duration::from_secs(seconds);
+        let mut trend = PhaseTrend::default();
+        let mut next_trace = Duration::ZERO;
         loop {
             let delivery = if let Some(first) = next.take() { first } else {
                 tokio::select! {
@@ -464,20 +521,43 @@ async fn real_anchored_audio_clock() {
                     Err(error) => return Err(error),
                 }
             }
+            let position = candidate.clock_status().decoded_samples;
+            let report_boundary = delivery.packet()?.sender_report().is_some();
             match candidate.push(&delivery) {
-                Ok(packets) => for packet in packets {
-                    consume_candidate(&packet, &mut decoder, &mut end)?;
-                    last = Some(packet);
+                Ok(packets) => {
+                    trend.observe(position, candidate.clock_status().latest_phase_samples);
+                    for packet in packets {
+                        consume_candidate(&packet, &mut decoder, &mut end)?;
+                        last = Some(packet);
+                    }
                 },
                 Err(Error::Clock) => {
-                    assert!(candidate.clock_status().maximum_absolute_phase_samples > 4800);
+                    let status = candidate.clock_status();
+                    let phase_trip = status.maximum_absolute_phase_samples > 4800;
+                    let stale_report = status.last_report_age.is_some_and(|age| age >= Duration::from_secs(15));
+                    eprintln!("Candidate clock REFUSED: elapsed_seconds={:.3} phase_trip={phase_trip} stale_report={stale_report} status={status:?}", started.elapsed().as_secs_f64());
+                    assert!(phase_trip || stale_report, "unclassified clock refusal");
+                    if phase_trip { trend.observe(position, status.latest_phase_samples); }
                     assert!(last.as_ref().is_some_and(|p| p.data() == Err(Error::Clock)));
+                    assert!(matches!(candidate.finish(), Err(Error::Clock)));
                     budget_trip = true;
-                    break;
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    eprintln!("Candidate processing refused: elapsed_seconds={:.3} error={error:?} status={:?}", started.elapsed().as_secs_f64(), candidate.clock_status());
+                    return Err(error);
+                }
+            }
+            let elapsed = started.elapsed();
+            last_observation = Some((elapsed.as_secs_f64(), candidate.clock_status(), trend.ms_per_second()));
+            if report_boundary || budget_trip || elapsed >= next_trace {
+                let status = candidate.clock_status();
+                eprintln!("Candidate phase: elapsed_seconds={:.3} sample_position={position} report_boundary={report_boundary} phase_samples={} peak_samples={} report_age_ms={:?} ols_ms_per_second={:?}",
+                    elapsed.as_secs_f64(), status.latest_phase_samples, status.maximum_absolute_phase_samples,
+                    status.last_report_age.map(|age| age.as_millis()), trend.ms_per_second());
+                next_trace = elapsed + Duration::from_secs(5);
             }
             assert_eq!(original, (delivery.packet()?.pts(), delivery.packet()?.dts()));
+            if budget_trip { break; }
         }
         if !budget_trip {
             for packet in candidate.finish()? {
@@ -489,14 +569,20 @@ async fn real_anchored_audio_clock() {
         }
         assert!(strict_refused > 0);
         assert!(tight.is_none());
-        eprintln!("Candidate anchored clock: budget_trip={budget_trip} status={:?} input={:?} decoded_opus={} strict_refusals={strict_refused}",
-            candidate.clock_status(), candidate.stats(), decoder.as_ref().unwrap().samples);
+        eprintln!("Candidate anchored clock: requested_seconds={seconds} elapsed_seconds={:.3} budget_trip={budget_trip} ols_ms_per_second={:?} status={:?} input={:?} decoded_opus={} strict_refusals={strict_refused}",
+            started.elapsed().as_secs_f64(), trend.ms_per_second(), candidate.clock_status(), candidate.stats(), decoder.as_ref().unwrap().samples);
         assert_eq!(source.snapshot().open_attempts, 1);
+        eprintln!("Candidate window source clocks: {:?}", source.clock_snapshot());
         source.set_enabled(false).await.map_err(Error::from)?;
         assert!(last.as_ref().unwrap().data().is_err());
         drop((candidate, strict, last, held_tight));
         assert_eq!(pool.reserved_bytes(), 0);
         drop(input);
+        if qualification {
+            // One acquisition, no second window after a refusal. Cleanup still
+            // runs, but Cargo must not label the qualification as successful.
+            return if budget_trip { Err(Error::Clock) } else { Ok(()) };
+        }
         source.set_enabled(true).await.map_err(Error::from)?;
         let mut input = source.subscribe(Tracks::Audio, SubscriptionLimits::default()).await.map_err(Error::from)?;
         let first = loop {
@@ -517,9 +603,21 @@ async fn real_anchored_audio_clock() {
         Ok::<_, Error>(())
     }).await;
     registry.shutdown().await.unwrap();
+    eprintln!(
+        "Candidate final outcome: requested_seconds={seconds} result={result:?} last_observation={last_observation:?} source={:?} clocks={:?}",
+        source.snapshot(),
+        source.clock_snapshot()
+    );
+    if qualification {
+        assert_eq!(
+            source.snapshot().open_attempts,
+            1,
+            "qualification must not restart acquisition"
+        );
+    }
     result
         .expect("bounded candidate window")
-        .expect("candidate lifecycle/presentation check");
+        .expect("candidate clock/lifecycle check; a qualification refusal is not acceptance");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

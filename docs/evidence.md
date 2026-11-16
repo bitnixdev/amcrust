@@ -464,6 +464,59 @@ Final checks passed: **25 library + 43 application tests**, all-target checking,
 library-only Clippy, formatting and the Nix application build (substitution disabled).
 Bounded self-review found no issues.
 
+### Sustained clock attempt and first-failure provenance
+
+The explicit candidate check now accepts `AMCRUST_CLOCK_SECONDS=60..1800` (default
+60). The 1800-second mode is a **single acquisition, 30 minutes or first refusal**:
+no automatic reanchor/restart, unchanged 4800-sample/15-second guards, and a nonzero
+test result on a refusal. It skips the default check's separate fresh-generation
+lifecycle exercise. Cleanup/join still runs. Constant-space diagnostics log exact
+phase samples, report boundaries/age and an online least-squares phase slope against
+nominal decoded-input seconds. The floating-point slope is display-only, not an
+oscillator measurement, source-clock correction or accepted tolerance.
+
+The first 1800-second attempt **failed with `Source(Clock)` after 34.33 seconds total**
+(including admission and cleanup). The last periodic observation was at **29.071 s**
+inside the anchored window: **688 samples / 14⅓ ms**, a peak of **688 samples**, fresh
+report age about **2 ms**, and diagnostic slope **0.268577 ms per nominal second**.
+No candidate phase-budget trip was observed. This does **not** establish either that
+the fixed-rate candidate is wrong or that it is qualified: the source generation
+retired first. The original diagnostic collapsed metadata/admission clock refusals,
+so the exact offending packet/track/cause was not retained and cannot be recovered
+from that run. The qualification was not restarted or relabeled successful.
+
+`Source::clock_snapshot()` now retains one first-failure record per generation:
+metadata/admission fault kind, stream/sequence, original optional PTS/DTS, previous
+DTS, duration, flags, byte count and public SR/PRFT values. Missing media timestamps
+and non-increasing DTS receive distinct admission fault kinds. The record survives
+retirement, cannot be overwritten by cleanup, resets for a new generation and retains
+no packet bodies or credentials. Admission/retirement rules are unchanged. The
+camera check now prints terminal source and candidate observations even when input
+fails before the candidate processor, and asserts one acquisition in qualification mode.
+
+One **separate 60-second diagnostic**, not a qualification retry, passed after this
+instrumentation. It consumed **2821 AAC packets / 2,888,704 decoded samples**, emitted
+**3010 Opus packets**, and the independent decoder matched **2,888,704 audible samples**.
+Final phase was **256 samples / 5⅓ ms**, peak **864 / 18 ms**, and diagnostic slope
+**0.231726 ms per nominal second**; the strict parallel processor refused **3008**
+output timestamp mappings. No source fault occurred in that short window, so it did
+not identify the earlier failure. Its existing fresh-generation lifecycle check then
+opened a second generation and released all charges. This later short success does
+not replace the failed sustained attempt or establish physical A/V sync/PCM equality.
+
+The next decision needs a classified source refusal, not a larger audio budget or an
+unjustified switch to asynchronous resampling. Use the first-failure record to
+separate SR/PRFT provenance failures from actual missing/non-increasing timestamps;
+keep source-clock recovery and Apple presentation acceptance open in TODO. Both runs
+used 48-kHz AAC input and 48-kHz/20-ms Opus output, with coordinated read-only camera
+access and no encoder writes or retained captures. Other negotiated modes and physical
+A/V presentation are not qualified by these results.
+
+Implementation checks passed: **26 library + 43 application tests**, the diagnostic
+slope check, all-target checking, strict library-only Clippy, formatting and the Nix
+application build (substitution disabled). Bounded self-review found no issues. These
+checks and the separate short diagnostic do not turn the sustained refusal into a pass.
+
 ## Actual camera observation
 
 A bounded run of the native ingest reader connected to **10.76.14.10**, main encoder

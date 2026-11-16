@@ -672,14 +672,21 @@ impl Supervisor {
                     .ok_or(Terminal::Unsupported)?
                     .observe(&packet)
                     .map_err(|_| Terminal::Clock)?;
-                let Some(idr) = run
-                    .admission
-                    .as_mut()
-                    .ok_or(Terminal::Unsupported)?
-                    .inspect(&packet)?
-                else {
-                    self.metrics.missing_clocks.fetch_add(1, Ordering::Relaxed);
-                    return Ok(());
+                let admission = run.admission.as_mut().ok_or(Terminal::Unsupported)?;
+                let previous_dts = admission.previous_dts(packet.stream_index());
+                let idr = match admission.inspect(&packet) {
+                    Ok(Some(idr)) => idr,
+                    Ok(None) => {
+                        self.metrics.missing_clocks.fetch_add(1, Ordering::Relaxed);
+                        return Ok(());
+                    }
+                    Err(Terminal::Clock) => {
+                        if let Some(clock) = self.metrics.clock.lock().unwrap().as_mut() {
+                            clock.refused_admission(&packet, previous_dts);
+                        }
+                        return Err(Terminal::Clock);
+                    }
+                    Err(reason) => return Err(reason),
                 };
                 let configuration = run.configuration.as_ref().ok_or(Terminal::Unsupported)?;
                 let codec = configuration.streams[packet.stream_index()].codec;

@@ -101,7 +101,14 @@ is confined to diagnostics; original integer/rational metadata remains untouched
 
 Malformed SR/PRFT shapes are refused at acquisition. A report SSRC change,
 non-advancing/ambiguous report clock, or unexpected PRFT provenance retires the source
-before that packet is published. Modular wrapping is handled within the half-range
+before that packet is published. The generation snapshot retains one first-failure
+record: fault kind, stream/sequence, optional original PTS/DTS, previous DTS, duration,
+flags, byte count and public SR/PRFT metadata. Admission's later missing timestamps
+and non-increasing DTS now receive explicit fault kinds too. Metadata refusals retain
+the previous observed DTS; admission refusals retain the previous admitted DTS.
+No packet body, URL or credential is retained by this record; it survives retirement
+and is reset only for a new generation. Recording a reason does not change admission.
+Modular wrapping is handled within the half-range
 constraint; duplicates do not refresh report age. Retirement is explicit and a new
 reader gets fresh observations. No report-age deadline, drift tolerance or affine
 clock correction is inferred from the short device samples. The observed AAC clock
@@ -287,6 +294,16 @@ are converted exactly into the Opus decoder/RTP clock's fixed 48-kHz domain.
    refuses packets requiring trimming. A live RTP receiver does not automatically
    receive OpusHead/skip side data: transport integration must explicitly establish
    preroll/trim behavior or refuse the boundary, never drop a needed first packet.
+
+**Sustained qualification remains failed/unestablished.** The first requested
+30-minute-or-first-refusal run ended with `Source(Clock)` after 34.33 s total, before
+a candidate budget trip. Its last periodic observation was 688 samples/14.33 ms.
+The offending source packet was not captured by the then-existing diagnostics;
+new first-failure records make subsequent failures distinguishable. A separate
+60-second diagnostic passed but cannot erase that failure. Do not infer oscillator
+drift, select asynchronous resampling, increase tolerances or wire a production
+source clock from this result alone: first distinguish a metadata refusal from an
+actual missing/non-increasing media timestamp. No capture-clock repair is authorized.
 
 This is a **live-audio qualification candidate**, not an HSV edit/cut policy. It does
 not settle AAC decoder-history/PNS differences, capture-clock accuracy, controller

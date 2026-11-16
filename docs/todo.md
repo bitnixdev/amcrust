@@ -90,7 +90,9 @@ the production integration below. Removing probes is not the acquisition cutover
     Malformed public metadata, changed report SSRC and non-advancing/ambiguous report
     clocks are refused; retired observations are never reused for a new reader.
     Report age is diagnostic only: no fixture-derived freshness deadline or clock
-    correction is imposed. Common A/V timing and priming acceptance remain open.
+    correction is imposed. A bounded first-failure record now distinguishes metadata
+    refusal from missing/non-increasing media timestamps and survives retirement.
+    Common A/V timing and priming acceptance remain open.
 - [ ] Fanout: current-IDR/SPS/PPS admission, independent bounded subscriptions, charged
   outstanding deliveries, residence limits and first-cause terminal notification.
   - [x] Implement Annex-B single-SPS/PPS slice-reference admission, no GOP replay,
@@ -165,6 +167,15 @@ the production integration below. Removing probes is not the acquisition cutover
       actual first-onset and sustained A/V sync on paired clients, including stalls,
       SR boundaries and late joins. A persistent slope triggers clock-recovery review,
       not a larger phase limit. Keep the candidate opt-in until acceptance exists.
+      - [x] Attempt the 30-minute-or-first-refusal check with unchanged budgets:
+        **failed with `Source(Clock)` after 34.33 s total**, not a candidate phase trip.
+        Last periodic phase was 688 samples/14.33 ms. This is NOT qualification.
+        A separate instrumented 60-second diagnostic passed; it does not replace the
+        failed attempt or identify its offending packet retroactively (Evidence).
+      - [ ] Capture/classify the intermittent source-clock refusal using the new
+        first-failure metadata before choosing a source-clock recovery policy or
+        rerunning sustained qualification. Do not weaken DTS/SR checks or enlarge
+        the audio phase budget based on a later short successful run.
     - [x] Extend the candidate to 8/16/24/48-kHz output and 20/40/60-ms frames.
       Keep all timing/trims in the 48-kHz decoder domain; explicitly trim only a
       sub-encoder-sample finite excess. Undercoverage is refused, not padded or

@@ -42,6 +42,41 @@ pub enum Fault {
     ReportRtpNotAdvancing,
     ReportIntervalAmbiguous,
     UnsupportedProducerReference,
+    MissingMediaTimestamp,
+    NonIncreasingDts,
+}
+/// First offending packet metadata only: bounded, no payloads or credentials.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Failure {
+    pub kind: Fault,
+    pub stream_index: usize,
+    pub sequence: u64,
+    pub pts: Option<i64>,
+    pub dts: Option<i64>,
+    /// Previous observed DTS for metadata faults; last admitted DTS for admission faults.
+    pub previous_dts: Option<i64>,
+    pub duration: i64,
+    pub flags: i32,
+    pub packet_bytes: usize,
+    pub sender_report: Option<SenderReport>,
+    pub producer_reference: Option<crate::ingest::ProducerReference>,
+}
+impl Failure {
+    fn at(kind: Fault, packet: &Packet, previous_dts: Option<i64>) -> Self {
+        Self {
+            kind,
+            stream_index: packet.stream_index(),
+            sequence: packet.sequence(),
+            pts: packet.pts(),
+            dts: packet.dts(),
+            previous_dts,
+            duration: packet.duration(),
+            flags: packet.flags(),
+            packet_bytes: packet.data().len(),
+            sender_report: packet.sender_report(),
+            producer_reference: packet.producer_reference(),
+        }
+    }
 }
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Reports {
@@ -99,6 +134,7 @@ pub struct Snapshot {
     pub generation: u64,
     pub retired: bool,
     pub fault: Option<Fault>,
+    pub failure: Option<Failure>,
     pub epoch_reference_stream: Option<usize>,
     pub tracks: Vec<TrackSnapshot>,
 }
@@ -311,6 +347,7 @@ pub(super) struct Observations {
     born: Instant,
     retired: bool,
     fault: Option<Fault>,
+    failure: Option<Failure>,
     tracks: Vec<Track>,
 }
 impl Observations {
@@ -321,6 +358,7 @@ impl Observations {
             born,
             retired: false,
             fault: None,
+            failure: None,
             tracks: streams
                 .iter()
                 .map(|s| Track::new(s.index, s.codec, s.time_base))
@@ -331,6 +369,10 @@ impl Observations {
         if let Some(fault) = self.fault {
             return Err(fault);
         }
+        let previous_dts = self
+            .tracks
+            .get(packet.stream_index())
+            .and_then(|track| track.last_dts.map(|value| value.0));
         let result = if self.retired
             || packet.generation() != self.generation
             || packet.sequence() != self.next_sequence
@@ -343,9 +385,25 @@ impl Observations {
             self.tracks[packet.stream_index()].observe(packet, self.born)
         };
         if let Err(fault) = result {
-            self.fault = Some(fault);
+            self.record_failure(Failure::at(fault, packet, previous_dts));
         }
         result
+    }
+    fn record_failure(&mut self, failure: Failure) {
+        if self.failure.is_none() {
+            self.fault = Some(failure.kind);
+            self.failure = Some(failure);
+        }
+    }
+    /// Admission already refused this packet. Record its reason without changing
+    /// the admission rule or replacing any original timestamp.
+    pub(super) fn refused_admission(&mut self, packet: &Packet, previous_dts: Option<i64>) {
+        let kind = if packet.pts().is_none() || packet.dts().is_none() {
+            Fault::MissingMediaTimestamp
+        } else {
+            Fault::NonIncreasingDts
+        };
+        self.record_failure(Failure::at(kind, packet, previous_dts));
     }
     pub(super) fn retire(&mut self) {
         self.retired = true;
@@ -379,6 +437,7 @@ impl Observations {
             generation: self.generation,
             retired: self.retired,
             fault: self.fault,
+            failure: self.failure,
             epoch_reference_stream: reference.map(|(index, _)| index),
             tracks,
         }
@@ -406,6 +465,37 @@ mod tests {
             packets: 100,
             bytes: 10000,
         }
+    }
+
+    #[test]
+    fn first_failure_survives_retirement_but_not_a_new_generation() {
+        let now = Instant::now();
+        let mut observations = Observations::new(1, now, &[]);
+        let first = Failure {
+            kind: Fault::NonIncreasingDts,
+            stream_index: 1,
+            sequence: 10,
+            pts: Some(900),
+            dts: Some(900),
+            previous_dts: Some(1000),
+            duration: 1024,
+            flags: 0,
+            packet_bytes: 128,
+            sender_report: None,
+            producer_reference: None,
+        };
+        observations.record_failure(first);
+        observations.record_failure(Failure {
+            kind: Fault::MissingMediaTimestamp,
+            pts: None,
+            ..first
+        });
+        observations.retire();
+        let snapshot = observations.snapshot();
+        assert!(snapshot.retired);
+        assert_eq!(snapshot.fault, Some(first.kind));
+        assert_eq!(snapshot.failure, Some(first));
+        assert!(Observations::new(2, now, &[]).snapshot().failure.is_none());
     }
 
     #[test]

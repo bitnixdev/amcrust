@@ -47,6 +47,10 @@ impl Admission {
         })
     }
 
+    pub(super) fn previous_dts(&self, track: usize) -> Option<i64> {
+        self.last_dts.get(track).copied().flatten()
+    }
+
     /// None means an initial unclocked packet was deliberately not published.
     /// Known clocks are preserved even when steps differ from packet duration.
     pub(super) fn inspect(&mut self, packet: &Packet) -> Result<Option<bool>, Terminal> {

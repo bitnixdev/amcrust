@@ -114,6 +114,20 @@ remains the default. Priming/tail contracts are explicit, not assumed to work ov
 HomeKit RTP.
 See the [clock decision and alternatives](docs/architecture.md#candidate-live-audio-decision-and-revisit-guide)
 for limits, acceptance work and symptoms that would require revisiting the choice.
+The first sustained clock attempt failed with a source-clock refusal; a later short
+success is not qualification. The existing camera check supports an explicit bounded
+window (requires coordinated camera access and the existing credentials):
+
+```sh
+AMCRUST_CLOCK_SECONDS=1800 direnv exec . cargo test --test camera_audio \
+  real_anchored_audio_clock -- --ignored --nocapture --test-threads=1
+```
+
+This stops on the first refusal and reports failure, without restarting acquisition
+or increasing timing budgets. Source snapshots retain the first offending timing
+metadata; no captured media is saved. See [Evidence](docs/evidence.md#sustained-clock-attempt-and-first-failure-provenance)
+for the failed attempt and separate diagnostic outcome.
+
 All project-owned C workers and the obsolete Python/AMC2 fixture harness are removed;
 their findings and numeric records remain in [Evidence](docs/evidence.md). The read-only
 production workload sampler `scripts/ingest_baseline.py` is retained, along with its
