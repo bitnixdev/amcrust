@@ -33,6 +33,7 @@ pub enum Error {
     UnsupportedLayout,
     PacketLimit,
     ConfigurationChanged,
+    InvalidTimingMetadata,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -98,12 +99,13 @@ unsafe extern "C" fn interrupt(opaque: *mut std::ffi::c_void) -> i32 {
     i32::from(state.reason().is_some())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct TimeBase {
     pub numerator: i32,
     pub denominator: i32,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Codec {
     H264,
     Aac,
@@ -265,6 +267,17 @@ impl Packet {
             .map(|s| (s.type_, unsafe { bytes(s.data, s.size) }))
     }
     /// Public FFmpeg 9 metadata, not private RTSP demuxer internals.
+    fn timing_metadata_valid(&self) -> bool {
+        self.side_data().all(|(kind, data)| match kind {
+            av::AVPacketSideDataType::AV_PKT_DATA_RTCP_SR => {
+                data.len() == std::mem::size_of::<av::AVRTCPSenderReport>()
+            }
+            av::AVPacketSideDataType::AV_PKT_DATA_PRFT => {
+                data.len() == std::mem::size_of::<av::AVProducerReferenceTime>()
+            }
+            _ => true,
+        })
+    }
     pub fn sender_report(&self) -> Option<SenderReport> {
         self.side_data().find_map(|(kind, data)| {
             if kind != av::AVPacketSideDataType::AV_PKT_DATA_RTCP_SR
@@ -278,6 +291,26 @@ impl Packet {
                 ssrc: sr.ssrc,
                 ntp: sr.ntp_timestamp,
                 rtp: sr.rtp_timestamp,
+                packets: sr.sender_nb_packets,
+                bytes: sr.sender_nb_bytes,
+            })
+        })
+    }
+    /// Public producer-reference metadata. In the pinned RTSP demuxer flags=24
+    /// means an RTCP-SR-derived packet time, NOT the host's packet arrival time.
+    /// Its microsecond precision does not establish a continuous audio clock.
+    pub fn producer_reference(&self) -> Option<ProducerReference> {
+        self.side_data().find_map(|(kind, data)| {
+            if kind != av::AVPacketSideDataType::AV_PKT_DATA_PRFT
+                || data.len() != std::mem::size_of::<av::AVProducerReferenceTime>()
+            {
+                return None;
+            }
+            let reference =
+                unsafe { ptr::read_unaligned(data.as_ptr().cast::<av::AVProducerReferenceTime>()) };
+            Some(ProducerReference {
+                unix_micros: reference.wallclock,
+                flags: reference.flags,
             })
         })
     }
@@ -291,11 +324,18 @@ impl Packet {
                 .sum::<usize>()
     }
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct SenderReport {
     pub ssrc: u32,
     pub ntp: u64,
     pub rtp: u32,
+    pub packets: u32,
+    pub bytes: u32,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct ProducerReference {
+    pub unix_micros: i64,
+    pub flags: i32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -492,6 +532,9 @@ impl Reader {
         {
             return Err(Error::UnsupportedLayout);
         }
+        if !packet.timing_metadata_valid() {
+            return Err(Error::InvalidTimingMetadata);
+        }
         // Public stream descriptors and explicit packet change notifications are
         // generation boundaries, never silently applied to admitted consumers.
         let input = unsafe { &*self.input };
@@ -522,5 +565,87 @@ impl Reader {
         self.sequence = self.sequence.checked_add(1).ok_or(Error::PacketLimit)?;
         packet.received_at = Instant::now();
         Ok(Arc::new(packet))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn empty_packet() -> Packet {
+        Packet {
+            raw: NonNull::new(unsafe { av::av_packet_alloc() }).unwrap(),
+            generation: 1,
+            sequence: 0,
+            received_at: Instant::now(),
+        }
+    }
+    #[test]
+    fn public_clock_metadata_is_copied_without_retaining_native_storage() {
+        let packet = empty_packet();
+        assert!(packet.timing_metadata_valid());
+        assert!(packet.producer_reference().is_none());
+        let sr = av::AVRTCPSenderReport {
+            ssrc: 7,
+            ntp_timestamp: 10u64 << 32,
+            rtp_timestamp: 90000,
+            sender_nb_packets: 123,
+            sender_nb_bytes: 456,
+        };
+        let prft = av::AVProducerReferenceTime {
+            wallclock: 1_000_000,
+            flags: 24,
+        };
+        unsafe {
+            let data = av::av_packet_new_side_data(
+                packet.raw.as_ptr(),
+                av::AVPacketSideDataType::AV_PKT_DATA_RTCP_SR,
+                std::mem::size_of_val(&sr),
+            );
+            assert!(!data.is_null());
+            ptr::write_unaligned(data.cast(), sr);
+            let data = av::av_packet_new_side_data(
+                packet.raw.as_ptr(),
+                av::AVPacketSideDataType::AV_PKT_DATA_PRFT,
+                std::mem::size_of_val(&prft),
+            );
+            assert!(!data.is_null());
+            ptr::write_unaligned(data.cast(), prft);
+        }
+        assert!(packet.timing_metadata_valid());
+        let report = packet.sender_report().unwrap();
+        let reference = packet.producer_reference().unwrap();
+        drop(packet);
+        assert_eq!(
+            report,
+            SenderReport {
+                ssrc: 7,
+                ntp: 10u64 << 32,
+                rtp: 90000,
+                packets: 123,
+                bytes: 456
+            }
+        );
+        assert_eq!(
+            reference,
+            ProducerReference {
+                unix_micros: 1_000_000,
+                flags: 24
+            }
+        );
+    }
+    #[test]
+    fn malformed_clock_metadata_is_not_treated_as_absent() {
+        for kind in [
+            av::AVPacketSideDataType::AV_PKT_DATA_RTCP_SR,
+            av::AVPacketSideDataType::AV_PKT_DATA_PRFT,
+        ] {
+            let packet = empty_packet();
+            assert!(
+                !unsafe { av::av_packet_new_side_data(packet.raw.as_ptr(), kind, 1) }.is_null()
+            );
+            assert!(!packet.timing_metadata_valid());
+            assert!(packet.sender_report().is_none());
+            assert!(packet.producer_reference().is_none());
+        }
     }
 }

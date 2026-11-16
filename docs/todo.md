@@ -28,10 +28,13 @@ milestone or add another parallel plan/proof document.
     H.264/AAC and video-only output, downstream decoding and exact translated PTS/DTS.
   - [x] Exercise Rust AAC-LC decode, fixed-ratio resampling and libopus encode against
     real input at 48/24/16/8 kHz, with 20/40/60-ms frames and padding-domain handling.
-  - [ ] Characterize real RTCP cadence/A/V clocks and settle the observed contradictions.
-    The real mux sample has differing declared/container sample durations; the audio
-    sample has 198 non-contiguous AAC clock steps out of 199 boundaries (Evidence).
-    Successful codec processing does not establish a usable transport/presentation clock.
+  - [x] Characterize real sender-report cadence and public packet clock metadata in
+    the Rust source owner. Two read-only 60-/20-second generation pairs exposed
+    report-boundary AAC jumps, variable duration debt and SR/PRFT provenance (Evidence).
+  - [ ] Settle the observed clock contradictions and recording presentation policy.
+    AAC duration debt reached 30–73 ms at the sampled window ends; report-derived
+    PRFT is not an independent capture clock. Codec success and a common-looking
+    epoch do not establish a usable continuous transport/presentation clock.
 - [x] Replace the unfinished `src/ingest.rs` worker/IPC implementation with Rust-owned
   library acquisition. Reuse sound contracts, not its standalone-C process assumptions.
 - [x] Define owned packet/configuration/error types, reference lifetimes, thread-safety
@@ -81,6 +84,11 @@ This does not require rewriting FFmpeg itself.
   - [x] Skip initial unclocked packets without repair; video waits for a subsequent
     timestamped actual IDR. Preserve irregular signed clocks; later missing or
     non-increasing DTS retires the generation. This is a refusal policy, not A/V proof.
+  - [x] Expose bounded generation-scoped SR/PRFT and duration-debt observations.
+    Malformed public metadata, changed report SSRC and non-advancing/ambiguous report
+    clocks are refused; retired observations are never reused for a new reader.
+    Report age is diagnostic only: no fixture-derived freshness deadline or clock
+    correction is imposed. Common A/V timing and priming acceptance remain open.
 - [ ] Fanout: current-IDR/SPS/PPS admission, independent bounded subscriptions, charged
   outstanding deliveries, residence limits and first-cause terminal notification.
   - [x] Implement Annex-B single-SPS/PPS slice-reference admission, no GOP replay,
@@ -126,6 +134,8 @@ This does not require rewriting FFmpeg itself.
     Convert Opus skip/discard metadata exactly from encoder-rate to 48-kHz units.
   - [ ] Settle an evidence-backed clock/priming policy for real live A/V. The current
     camera's non-contiguous AAC PTS are NOT accepted as a continuous sample clock.
+    Larger AAC jumps occur on SR-bearing packets in the longer observations; simply
+    replacing timestamps with PRFT or smoothing packet order would hide the problem.
   - [ ] Share processing only for matching source generation and negotiated settings;
     the current audio pool bounds jobs, but does not yet deduplicate encoders.
     Connect audio RTP/RTCP/SRTP and production lifecycle/metrics.

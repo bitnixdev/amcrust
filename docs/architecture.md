@@ -84,9 +84,27 @@ Current admission supports Annex-B H.264 with one matching SPS/PPS pair and chec
 slice references. It waits for a future actual timestamped IDR, never a cached GOP or
 key flag alone. Initial unclocked packets are skipped, not repaired; later clock loss
 or non-increasing DTS is refused. Irregular steps are preserved. These decisions do
-not establish source A/V alignment, sender-report cadence or decoded presentation.
+not establish source A/V alignment or decoded presentation.
 AudioVideo subscriptions start at video admission, not at a covering historical AAC
 window; they are not a finished recording-cut implementation.
+
+`Source::clock_snapshot` exposes bounded, numeric per-generation observations of
+public RTCP SR and producer-reference (PRFT) side data, timestamp/duration differences,
+report ages and relative epoch spread. It retains no media or URLs. SR metadata is
+attached to a following media packet, not necessarily one sampled at the SR instant.
+In pinned FFmpeg 9.0.2, PRFT is derived from the packet RTP timestamp and latest SR;
+it is not an independent capture clock or the host's arrival time. The demuxer also
+uses the latest SR to map multi-track PTS. These observations never rewrite PTS/DTS,
+repair missing clocks, change resampling, or grant transport timing. Display rounding
+is confined to diagnostics; original integer/rational metadata remains untouched.
+
+Malformed SR/PRFT shapes are refused at acquisition. A report SSRC change,
+non-advancing/ambiguous report clock, or unexpected PRFT provenance retires the source
+before that packet is published. Modular wrapping is handled within the half-range
+constraint; duplicates do not refresh report age. Retirement is explicit and a new
+reader gets fresh observations. No report-age deadline, drift tolerance or affine
+clock correction is inferred from the short device samples. The observed AAC clock
+contradictions, including larger SR-boundary jumps, remain unresolved for live A/V.
 
 Queue and held-delivery charges persist through retirement until owners drop. Source
 and registry budgets include bounded reader handoff and descriptor charges. Access

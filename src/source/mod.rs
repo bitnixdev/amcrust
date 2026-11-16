@@ -6,6 +6,7 @@
 //! Call Registry::shutdown before dropping the runtime. Drop signals shutdown but
 //! cannot synchronously join async cleanup; no task is aborted during native I/O.
 mod admission;
+pub mod clock;
 mod subscription;
 pub(crate) use admission::nals;
 pub(crate) use subscription::DeliveryGuard;
@@ -129,6 +130,7 @@ struct Metrics {
     subscribers: AtomicUsize,
     missing_clocks: AtomicU64,
     oldest_ms: AtomicU64,
+    clock: Mutex<Option<clock::Observations>>,
 }
 #[derive(Debug, Clone, Copy)]
 pub struct Snapshot {
@@ -194,6 +196,17 @@ impl Source {
             .await
             .map_err(|_| Terminal::Shutdown)?;
         answer.await.map_err(|_| Terminal::Shutdown)
+    }
+    /// Numeric, bounded metadata for the current/latest generation. None while
+    /// opening; retired observations are never reused by a replacement reader.
+    /// This is diagnostic evidence, not A/V clock or transport admission.
+    pub fn clock_snapshot(&self) -> Option<clock::Snapshot> {
+        self.metrics
+            .clock
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(clock::Observations::snapshot)
     }
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
@@ -572,6 +585,8 @@ impl Supervisor {
             .checked_add(1)
             .ok_or(Terminal::RetryExhausted)?;
         let generation = self.generation;
+        *self.metrics.clock.lock().unwrap() = None;
+        let born = Instant::now();
         let url = self.url.clone();
         let limits = self.limits.reader;
         let cancel = Cancellation::default();
@@ -613,7 +628,7 @@ impl Supervisor {
             events,
             configuration: None,
             admission: None,
-            born: Instant::now(),
+            born,
         });
         self.metrics.active.store(true, Ordering::Release);
         self.metrics.generation.store(generation, Ordering::Relaxed);
@@ -629,6 +644,11 @@ impl Supervisor {
                     charges,
                 } = configuration;
                 run.admission = Some(Admission::new(&streams)?);
+                *self.metrics.clock.lock().unwrap() = Some(clock::Observations::new(
+                    self.generation,
+                    run.born,
+                    &streams,
+                ));
                 for client in &self.clients {
                     if let Some(queue) = client.queue.upgrade()
                         && !queue.tracks.supported(&streams)
@@ -644,6 +664,14 @@ impl Supervisor {
             }
             Event::Packet(charged) => {
                 let packet = charged.value;
+                self.metrics
+                    .clock
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .ok_or(Terminal::Unsupported)?
+                    .observe(&packet)
+                    .map_err(|_| Terminal::Clock)?;
                 let Some(idr) = run
                     .admission
                     .as_mut()
@@ -685,6 +713,9 @@ impl Supervisor {
         Ok(())
     }
     fn revoke(&mut self, reason: Terminal) {
+        if let Some(clock) = self.metrics.clock.lock().unwrap().as_mut() {
+            clock.retire();
+        }
         if let Some(configuration) = self.running.as_ref().and_then(|r| r.configuration.as_ref()) {
             configuration.retire(reason);
         }

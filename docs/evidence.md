@@ -173,6 +173,74 @@ Rust tests**, formatting and strict library-only Clippy passed for this incremen
 The production audio reader/transport remains unchanged; clock acceptance and actual
 compatible-processing sharing are still open TODOs.
 
+### Rust source-clock characterization
+
+`src/source/clock.rs` now observes each shared-source generation before packet
+admission. `src/ingest.rs` exposes public `AVProducerReferenceTime` plus all five
+`AVRTCPSenderReport` fields. The bounded snapshot contains numeric counters/ranges,
+not retained media, URLs or a replacement clock. Malformed metadata is refused;
+changed report SSRC, non-advancing/ambiguous report clocks and unexpected PRFT flags
+retire the source before publication. Duplicate reports do not refresh report age.
+
+`tests/camera_clock.rs` made **two read-only 60-/20-second generation pairs** against
+**10.76.14.10**, main H.264 90-kHz / mono AAC 48-kHz source, on Darwin arm64 with the
+same pinned bindings/libraries. Each pair disabled/joined its reader before reopening,
+then joined shutdown even on a returned error/timeout. No camera writes, retained
+captures, synthetic camera input, production consumer or Apple client was involved.
+The physical model was not independently identified by this check.
+
+| Run / window | Source AAC packets | Decoded AAC packets / samples | Distinct SRs per track | Final AAC duration debt |
+|---|---:|---:|---:|---:|
+| A / 60 s | 2822 | 2822 / 2889728 | 13 | 3504 ticks = 73 ms |
+| A / fresh 20 s | 949 | 949 / 971776 | 5 | 1456 ticks = 30⅓ ms |
+| B / 60 s | 2822 | 2820 / 2887680 | 13 | 1824 ticks = 38 ms |
+| B / fresh 20 s | 949 | 949 / 971776 | 5 | 2512 ticks = 52⅓ ms |
+
+Duration debt is **demux DTS elapsed minus accumulated declared durations**, not
+measured lip-sync error or independent capture time. Actual decoding still yielded
+exactly **1024 samples per consumed AAC packet**. Source-observation and consumer
+windows need not have identical endpoints. Audio transport-timestamp assignment
+continued to refuse contradictions/priming; no sample-count clock was substituted.
+
+- Sender NTP report intervals spanned **4.144–5.060 s** across the four generations.
+  Packet-attachment gaps spanned approximately **3.884–5.077 s**, including reader
+  buffering/scheduling, not raw network RTCP arrival times. First attached metadata
+  appeared **379–509 ms** after the open attempt; this is not startup/playback latency.
+- Nominal RTP elapsed minus NTP elapsed between reports ranged approximately
+  **−77 to +10 ms for video**, **−47 to +7 ms for audio**. Sender packet/byte counters
+  are modular observations, not a loss count or proof of one RTP packet per AAC AU.
+- In run B, AAC step errors on packets **without** SR metadata were **−400 to +128
+  samples** in both windows. On SR-bearing packets they were **−160 to +656** in
+  the 60-second window and **−160 to +2384** in the fresh 20-second window. Thus the
+  largest observed AAC jumps there coincide with report boundaries; treating all
+  errors as harmless millisecond rounding is not supported.
+- PRFT appeared on every observed packet, including initially unclocked video.
+  The inferred `(PRFT − PTS)` epoch spread was **0–1 μs for video** and approximately
+  **333–334 μs for audio**; the first audio/video epoch difference was about **333 μs**.
+  These are public-metadata relationships, not an independent A/V sync measurement
+  or authorization to reconstruct missing PTS/DTS.
+
+The pinned upstream implementation explains the provenance: in FFmpeg 9.0.2,
+[`rtp_set_prft` / `finalize_packet`](https://github.com/FFmpeg/FFmpeg/blob/n9.0.2/libavformat/rtpdec.c)
+use the latest SR and packet RTP timestamp for PRFT (`flags=24`) and multi-track PTS;
+[`ff_rtsp_fetch_packet`](https://github.com/FFmpeg/FFmpeg/blob/n9.0.2/libavformat/rtsp.c)
+propagates the initial NTP origin between tracks. An SR is attached to a following
+packet, not a packet necessarily sampled at its RTP/NTP instant. Replacing PTS with
+PRFT would therefore reuse the same evidence, not solve the continuous-audio problem.
+No private FFmpeg structure is read by application code.
+
+The owner now exposes report age, phase/rate observations and generation retirement,
+but chooses **no freshness timeout, drift tolerance, smoothing or priming policy**
+from these short samples. Clock-policy acceptance and recording presentation remain
+unchecked in the TODO. Production readers/transports are unchanged.
+
+All-target type-checking, **8 clock/metadata library tests + 44 existing application
+tests**, formatting, strict library-only Clippy and the Nix application build passed.
+The existing real acquisition, shared-source lifecycle, AAC/Opus and RTP/fMP4 checks
+also passed with the new observer. The AAC regression saw a further **+3296-sample
+step error** in its short window, reinforcing that observed maxima are not a chosen
+tolerance. The unrelated `AtomicU64::fetch_update` deprecation warning remains.
+
 ## Actual camera observation
 
 A bounded run of the native ingest reader connected to **10.76.14.10**, main encoder
