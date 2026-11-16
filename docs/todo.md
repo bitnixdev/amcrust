@@ -196,6 +196,8 @@ not the physical camera: coordinate any existing instance controlling that encod
   with useful diagnostics; no unsupported case receives guessed timing/admission.
 - [ ] Nix package/service and the documented Cargo workflow provide the Rust library
   dependencies, without project C workers or system-wide tool installation.
+  - [x] Check in `.envrc` so direnv loads the pinned native build dependencies; ignore
+    its local cache and document approval plus hook-free Cargo commands.
 - [ ] README accurately describes the implemented pipeline and operating requirements.
   Remove obsolete research entrypoints when no longer useful; retain compact findings
   and raw numeric artifacts only where they still explain a decision.

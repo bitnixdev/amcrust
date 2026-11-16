@@ -1,9 +1,11 @@
 result
 target
+.direnv/
 secrets.env
 .env
 .env.*
 !.env.example
+!.envrc
 data/
 *.jpg
 .DS_Store

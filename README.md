@@ -73,15 +73,30 @@ not project-owned C workers, MediaMTX, or a selectable legacy-reader fallback.
 
 ## Building
 
-Use the repository-pinned Nix environment for Cargo builds:
+Cargo needs the repository-pinned Nix environment for the native FFmpeg libraries
+and build tools. With direnv's shell hook enabled, approve the checked-in `.envrc`
+once; entering the repository then loads that environment automatically:
 
 ```sh
-nix develop
+direnv allow
 cargo check --all-targets
 cargo build --release
+```
+
+For shells or editor tasks without a direnv hook, use `direnv exec . cargo check
+--all-targets` (after approval), or run Cargo explicitly through Nix:
+
+```sh
+nix develop --command cargo check --all-targets
+nix develop --command cargo build --release
 # Or build the packaged application:
 nix build .#amcrust
 ```
+
+A bare Cargo command outside this environment cannot discover the Nix FFmpeg
+libraries and may report missing `pkg-config` or `libavutil`. Do not install a
+separate system FFmpeg to work around that. `.envrc` does not load camera credentials;
+the application continues to read them from `.env` or its existing environment.
 
 The shell/package supplies FFmpeg 9 libraries, pkg-config and libclang/bindgen;
 `ffmpeg-sys-next` is pinned in Cargo. The Rust media library includes an encoder
