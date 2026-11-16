@@ -527,6 +527,7 @@ async fn real_anchored_audio_clock() {
                 }
             };
             let original = (delivery.packet()?.pts(), delivery.packet()?.dts());
+            let sequence = delivery.packet()?.sequence();
             for packet in strict.push(&delivery)? {
                 strict_refused += u64::from(packet.source_timestamp_48k().is_err());
             }
@@ -573,6 +574,8 @@ async fn real_anchored_audio_clock() {
                 eprintln!("Candidate phase: elapsed_seconds={:.3} sample_position={position} report_boundary={report_boundary} phase_samples={} peak_samples={} report_age_ms={:?} ols_ms_per_second={:?}",
                     elapsed.as_secs_f64(), status.latest_phase_samples, status.maximum_absolute_phase_samples,
                     status.last_report_age.map(|age| age.as_millis()), trend.ms_per_second());
+                let progress = source.clock_snapshot().and_then(|s| s.tracks.into_iter().find_map(|t| t.audio_progress));
+                eprintln!("Candidate progress: processed_sequence={sequence} source_observed={progress:?}; source may be ahead of decoder");
                 next_trace = elapsed + Duration::from_secs(5);
             }
             assert_eq!(original, (delivery.packet()?.pts(), delivery.packet()?.dts()));

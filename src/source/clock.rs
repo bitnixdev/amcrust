@@ -4,7 +4,7 @@
 //! the SR's RTP/NTP instant. PRFT in the pinned RTSP demuxer is derived from the SR
 //! and the packet RTP timestamp; it is not an independent camera capture clock.
 use super::audio_timing::Tracker;
-pub use super::audio_timing::{MappingStep, Point};
+pub use super::audio_timing::{MappingStep, Point, Progress};
 use crate::ingest::{Codec, Packet, SenderReport, StreamConfiguration, TimeBase};
 use serde::Serialize;
 use std::time::{Duration, Instant};
@@ -130,6 +130,7 @@ pub struct TrackSnapshot {
     pub pts_epoch_spread_ns: Option<i128>,
     pub first_epoch_difference_ns: Option<i128>,
     pub reports: Reports,
+    pub audio_progress: Option<Progress>,
     pub mapping_steps: u64,
     pub bounded_mapping_steps: u64,
     pub first_mapping_step: Option<MappingStep>,
@@ -183,6 +184,7 @@ impl Track {
                 pts_epoch_spread_ns: None,
                 first_epoch_difference_ns: None,
                 reports: Reports::default(),
+                audio_progress: None,
                 mapping_steps: 0,
                 bounded_mapping_steps: 0,
                 first_mapping_step: None,
@@ -256,12 +258,14 @@ impl Track {
         if self.snapshot.codec == Codec::Aac
             && self.snapshot.time_base.numerator == 1
             && self.snapshot.time_base.denominator == 48000
-            && let Some(step) = self.audio_timing.observe(packet)
         {
-            self.snapshot.mapping_steps += 1;
-            self.snapshot.bounded_mapping_steps += u64::from(step.bounded_remapping);
-            self.snapshot.first_mapping_step.get_or_insert(step);
-            self.snapshot.last_mapping_step = Some(step);
+            if let Some(step) = self.audio_timing.observe(packet) {
+                self.snapshot.mapping_steps += 1;
+                self.snapshot.bounded_mapping_steps += u64::from(step.bounded_remapping);
+                self.snapshot.first_mapping_step.get_or_insert(step);
+                self.snapshot.last_mapping_step = Some(step);
+            }
+            self.snapshot.audio_progress = self.audio_timing.progress;
         }
         self.record_dts(
             packet.dts(),

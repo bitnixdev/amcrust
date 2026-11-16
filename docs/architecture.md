@@ -150,8 +150,24 @@ rather than receiving an exception. Initial-clock/IDR and queue budgets are unch
 This handles a narrow, explainable discontinuity; it is not loss detection, capture
 clock qualification, an adaptive resampler or a recording edit policy. The real camera
 also exceeded the candidate's cumulative phase budget independently of rollback.
-See Evidence for failed/inconclusive hardware windows; do not describe them as a
-successful sustained qualification or silently widen the endpoint budget.
+A subsequent real window exercised the bounded exception: strict audio stopped while
+candidate audio/video continued until a later 276-ms shift retired the generation.
+This establishes isolation, not successful sustained qualification.
+
+`audio_progress` separates elapsed reconstructed RTP, mapped PTS and declared AAC
+sample duration over one explicitly identified prefix. It records exact duration
+debts, total mapping change, the sum of rounded SR-predicted mapping changes and the
+remaining unexplained residual. No floating-point fitting participates in this
+accounting or in admission. Missing/unusable evidence freezes the prefix with a
+sequence marker; it never silently reanchors. Measurable mapping residuals are retained,
+not repaired or used to relax the separate one-tick rollback classifier. Counter
+rounding is not capture-clock evidence. Source observations can run ahead of decoded
+input, so compare endpoint sequences/counts and anchors before equating their phases.
+A real matched endpoint had 1456 ticks of reconstructed RTP duration debt, 144 ticks
+of SR shift and 16 unexplained ticks: all three sum to the 1616-tick processor phase.
+Removing SR updates alone therefore does not solve that window's discrepancy. This
+does not distinguish oscillator error, producer timestamp jitter or missing media;
+clock recovery still requires explicit policy and physical A/V qualification.
 
 Queue and held-delivery charges persist through retirement until owners drop. Source
 and registry budgets include bounded reader handoff and descriptor charges. Access

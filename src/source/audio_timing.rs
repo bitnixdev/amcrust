@@ -28,10 +28,91 @@ pub struct MappingStep {
     pub previous_report_age_ms: u128,
     pub bounded_remapping: bool,
 }
+/// Exact diagnostic accounting in 48-kHz ticks, not a replacement media clock.
+/// Missing/unusable evidence freezes the prefix; never reanchors. Unexplained
+/// mapping residuals are retained as diagnostics, not accepted as clock evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Progress {
+    pub first_sequence: u64,
+    pub last_sequence: u64,
+    pub first_pts: i64,
+    pub packets: u64,
+    pub declared_elapsed: i128,
+    pub reconstructed_rtp_elapsed: i128,
+    pub mapped_elapsed: i128,
+    pub rtp_duration_debt: i128,
+    pub mapped_duration_debt: i128,
+    pub mapping_shift: i128,
+    /// Sum of nearest-tick SR mapping updates; individual rounding errors can accumulate.
+    pub report_mapping_shift: i128,
+    /// Difference not explained by that sum, retained rather than repaired.
+    pub mapping_residual: i128,
+    /// Largest absolute residual for a single step, not a cumulative maximum.
+    pub maximum_absolute_mapping_residual: u128,
+    pub broken_at: Option<u64>,
+    /// Reconstructed RTP and mapped PTS steps when a computed step broke the prefix.
+    pub broken_step: Option<(i32, i128)>,
+}
+impl Progress {
+    fn new(point: Point) -> Self {
+        Self {
+            first_sequence: point.sequence,
+            last_sequence: point.sequence,
+            first_pts: point.pts,
+            packets: 1,
+            declared_elapsed: 0,
+            reconstructed_rtp_elapsed: 0,
+            mapped_elapsed: 0,
+            rtp_duration_debt: 0,
+            mapped_duration_debt: 0,
+            mapping_shift: 0,
+            report_mapping_shift: 0,
+            mapping_residual: 0,
+            maximum_absolute_mapping_residual: 0,
+            broken_at: None,
+            broken_step: None,
+        }
+    }
+    fn advance(&mut self, old: Point, point: Point) {
+        if self.broken_at.is_some() {
+            return;
+        }
+        let raw = point.reconstructed_rtp.wrapping_sub(old.reconstructed_rtp) as i32;
+        let mapped = point.pts as i128 - old.pts as i128;
+        let ntp = point.report.ntp.wrapping_sub(old.report.ntp) as i64;
+        let rtp = point.report.rtp.wrapping_sub(old.report.rtp) as i32;
+        let shift = nearest(ntp as i128 * 48000, 1_i128 << 32) - rtp as i128;
+        let same_report = point.report == old.report;
+        if old.sequence != self.last_sequence
+            || point.sequence <= old.sequence
+            || old.report.ssrc != point.report.ssrc
+            || !(1..=4800).contains(&raw)
+            || (!same_report && (ntp <= 0 || rtp <= 0))
+        {
+            self.broken_at = Some(point.sequence);
+            self.broken_step = Some((raw, mapped));
+            return;
+        }
+        self.packets += 1;
+        self.last_sequence = point.sequence;
+        self.declared_elapsed += old.duration as i128;
+        self.reconstructed_rtp_elapsed += raw as i128;
+        self.mapped_elapsed += mapped;
+        self.rtp_duration_debt = self.reconstructed_rtp_elapsed - self.declared_elapsed;
+        self.mapped_duration_debt = self.mapped_elapsed - self.declared_elapsed;
+        self.mapping_shift = self.mapped_elapsed - self.reconstructed_rtp_elapsed;
+        self.report_mapping_shift += shift;
+        self.mapping_residual = self.mapping_shift - self.report_mapping_shift;
+        self.maximum_absolute_mapping_residual = self
+            .maximum_absolute_mapping_residual
+            .max((mapped - raw as i128 - shift).unsigned_abs());
+    }
+}
 #[derive(Default)]
 pub(super) struct Tracker {
     report: Option<(SenderReport, Instant)>,
     previous: Option<(Point, Instant)>,
+    pub(super) progress: Option<Progress>,
 }
 fn nearest(n: i128, d: i128) -> i128 {
     n.signum() * ((n.abs() + d / 2) / d)
@@ -81,18 +162,49 @@ impl Tracker {
             self.report = Some((report, at));
         }
         let previous = self.previous.take();
-        let (report, report_at) = self.report?;
-        let reference = reference?;
-        let point = Point {
-            sequence,
-            pts: pts?,
-            dts: dts?,
-            duration,
-            flags,
-            reference,
-            report,
-            reconstructed_rtp: reconstruct(report, reference)?,
+        let point = (|| {
+            let (report, report_at) = self.report?;
+            let reference = reference?;
+            Some((
+                Point {
+                    sequence,
+                    pts: pts?,
+                    dts: dts?,
+                    duration,
+                    flags,
+                    reference,
+                    report,
+                    reconstructed_rtp: reconstruct(report, reference)?,
+                },
+                report_at,
+            ))
+        })();
+        let Some((point, report_at)) = point else {
+            if let Some(progress) = &mut self.progress {
+                progress.broken_at.get_or_insert(sequence);
+            }
+            return None;
         };
+        if point.pts != point.dts
+            || point.duration != 1024
+            || point.flags & 2 != 0
+            || at.saturating_duration_since(report_at) >= Duration::from_secs(15)
+            || previous.is_some_and(|(_, at_report)| {
+                at.saturating_duration_since(at_report) >= Duration::from_secs(15)
+            })
+        {
+            if let Some(progress) = &mut self.progress {
+                progress.broken_at.get_or_insert(sequence);
+            }
+        } else if let Some(progress) = &mut self.progress {
+            if let Some((old, _)) = previous {
+                progress.advance(old, point);
+            } else {
+                progress.broken_at.get_or_insert(sequence);
+            }
+        } else {
+            self.progress = Some(Progress::new(point));
+        }
         self.previous = Some((point, report_at));
         let (old, old_report_at) = previous?;
         if point.dts > old.dts {
@@ -261,6 +373,16 @@ mod tests {
                 now + Duration::from_millis(4987),
             )
             .unwrap();
+        let progress = t.progress.unwrap();
+        assert_eq!(progress.broken_at, None);
+        assert_eq!(progress.packets, 2);
+        assert_eq!(progress.rtp_duration_debt, 128);
+        assert_eq!(progress.mapped_duration_debt, -7168);
+        assert_eq!(progress.mapping_shift, -7296);
+        assert_eq!(
+            progress.mapped_duration_debt,
+            progress.rtp_duration_debt + progress.mapping_shift
+        );
         assert_eq!(step.mapped_step, -6144);
         assert_eq!(step.reconstructed_rtp_step, 1152);
         assert_eq!(step.report_mapping_shift, -7296);
@@ -305,6 +427,9 @@ mod tests {
             now + Duration::from_secs(14),
         );
         assert!(t.previous.is_none());
+        let frozen = t.progress.unwrap();
+        assert_eq!(frozen.broken_at, Some(3));
+        assert_eq!(frozen.packets, 2);
         assert!(
             t.sample(
                 4,
@@ -318,6 +443,76 @@ mod tests {
             )
             .is_none()
         );
+        assert_eq!(t.progress, Some(frozen));
+    }
+
+    #[test]
+    fn progress_separates_media_drift_from_forward_report_updates() {
+        let now = Instant::now();
+        let old = sr();
+        let new = SenderReport {
+            ntp: old.ntp + (5_u64 << 32),
+            rtp: old.rtp.wrapping_add(240000 - 2400),
+            ..old
+        };
+        let mut t = Tracker::default();
+        t.sample(
+            1,
+            Some(0),
+            Some(0),
+            1024,
+            1,
+            Some(old),
+            Some(prft(old, 239000)),
+            now,
+        );
+        // Normal forward RTP jitter: +1152 instead of the declared +1024.
+        t.sample(
+            2,
+            Some(1152),
+            Some(1152),
+            1024,
+            1,
+            None,
+            Some(prft(old, 240152)),
+            now,
+        );
+        // Raw progression +1024, but the SR moves mapped PTS forward 50 ms.
+        t.sample(
+            4,
+            Some(2176 + 2400),
+            Some(2176 + 2400),
+            1024,
+            1,
+            Some(new),
+            Some(prft(new, 3576)),
+            now + Duration::from_secs(5),
+        );
+        let p = t.progress.unwrap();
+        assert_eq!(p.broken_at, None);
+        assert_eq!(p.rtp_duration_debt, 128);
+        assert_eq!(p.mapping_shift, 2400);
+        assert_eq!(p.mapped_duration_debt, 2528);
+        let mut broken = p;
+        let old_point = t.previous.unwrap().0;
+        let mut inconsistent = old_point;
+        inconsistent.sequence += 1;
+        inconsistent.pts += 1024;
+        inconsistent.dts += 1024;
+        inconsistent.reconstructed_rtp = inconsistent.reconstructed_rtp.wrapping_add(1000);
+        broken.advance(old_point, inconsistent);
+        // Diagnostics retain unexplained mapping differences; they do NOT relax
+        // the separate rollback admission classifier's one-tick check.
+        assert_eq!(broken.broken_at, None);
+        assert_eq!(broken.mapping_residual, 24);
+        assert_eq!(broken.maximum_absolute_mapping_residual, 24);
+        let mut reset = inconsistent;
+        reset.sequence += 1;
+        reset.reconstructed_rtp = reset.reconstructed_rtp.wrapping_sub(1);
+        broken.advance(inconsistent, reset);
+        assert_eq!(broken.broken_at, Some(reset.sequence));
+        assert_eq!(broken.last_sequence, inconsistent.sequence);
+        assert!(Tracker::default().progress.is_none());
     }
 
     #[test]

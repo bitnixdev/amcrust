@@ -613,10 +613,10 @@ Additional hardware outcomes, recorded as separate attempts:
   reported an inconclusive timeout rather than a successful exercise of the new
   exception. No audio processing/presentation was qualified by that metadata check.
 
-Thus the classifier and subscription isolation have local regression coverage,
-including captured real metadata, but the final live exception still needs an actual
-rollback occurrence. The camera evidence also exposes an independent cumulative
-phase problem; repeated short successes do not solve it. No camera writes, captured
+At that checkpoint the classifier and subscription isolation had local regression
+coverage, including captured real metadata, but the live exception still needed an
+actual rollback occurrence. The subsequent section records that later occurrence.
+The camera evidence also exposes an independent cumulative phase problem; repeated short successes do not solve it. No camera writes, captured
 media, phase/freshness budget enlargement, automatic reanchor or production acquisition
 cutover occurred. The next work remains in TODO, not a parallel experiment plan.
 
@@ -624,6 +624,69 @@ Implementation checks passed: **32 library + 43 application tests**, the phase-t
 check, all-target checking, strict library-only Clippy, formatting and the Nix build
 (substitution disabled). Bounded self-review found no issues. These checks do not
 replace the missing live rollback occurrence or resolve the failed phase qualification.
+
+#### Live isolation and decomposition of accumulated phase
+
+A subsequent real-camera 1800-second-or-first-refusal attempt **failed after
+144.92 seconds total**, but exercised the bounded exception before that failure:
+
+- At global sequence **5859**, AAC DTS repeated **4,548,864** while reconstructed
+  RTP advanced **1152 ticks / 24 ms**. The report mapping shift was **−1152 ticks**,
+  with **zero residual**. The strict Audio sibling terminated with Clock after
+  **4440 packets**, last sequence **5858**, and its held delivery was revoked.
+- Candidate audio continued, reaching **6,944,768 decoded samples**; video continued
+  through sequence **8950**, on the **same generation and single acquisition**.
+  Candidate output continuity was checked with the existing independent decoder.
+  No physical playback/lip-sync acceptance follows from this.
+- At sequence **8951**, mapped AAC DTS stepped **−12096 ticks / −252 ms** while
+  reconstructed RTP advanced **+1152 / +24 ms**. The SR mapping shift was
+  **−13248 / −276 ms**, residual zero: outside the unchanged **200-ms step cap**.
+  The source correctly retired; last processed candidate phase was **3936 / 82 ms**,
+  peak **4176 / 87 ms**, below its independent 100-ms endpoint limit. Final state
+  was one acquisition, one fault, no subscribers and zero charged bytes.
+
+This closes the previously unobserved live-isolation behavior, not sustained clock
+qualification. The prior 300-second no-event check remains inconclusive in its own
+right; the later occurrence is separate evidence, not a relabeling of that check.
+
+Added constant-space `audio_progress` accounting to separate reconstructed media
+RTP progression from mapped PTS and declared AAC duration. Fields identify the first
+anchor and last sequence, packet count, elapsed values, duration debts, total mapping
+change, rounded SR-predicted changes and unexplained residual. Missing/unusable
+metadata freezes the prefix and records the first break; there is no automatic
+reanchor. The initial diagnostic in the 144.92-second run froze at sequence 1, so it
+supplies no usable long-window decomposition. The refined diagnostic retains
+unexplained mapping residuals instead of demanding that all changes be SR-explained.
+This is observational only: the runtime rollback classifier and all limits are unchanged.
+
+A separate **60-second real diagnostic passed** with **2826 AAC packets / 2,893,824
+samples**, **3015 Opus packets**, and **2,893,824 independently decoded audible samples**.
+Its matched final endpoint used anchor **32**, source sequence **3728** and the same
+2826 input packets as the processor; the source was not ahead at that endpoint:
+
+| Diagnostic, 48-kHz ticks | Value |
+|---|---:|
+| Declared elapsed duration (between first/last packet starts) | 2,892,800 |
+| Reconstructed RTP elapsed | 2,894,256 |
+| Mapped PTS elapsed | 2,894,416 |
+| Reconstructed RTP duration debt | **1456 / 30⅓ ms** |
+| Rounded SR mapping changes | **144 / 3 ms** |
+| Unexplained mapping residual | **16 / ⅓ ms** |
+| Total mapped debt / candidate endpoint phase | **1616 / 33⅔ ms** |
+
+The exact identity is **1456 + 144 + 16 = 1616**. Peak candidate phase was
+**2496 / 52 ms**, diagnostic slope **0.272190 ms per nominal decoded second**,
+with no mapping rollback in this short window; its separate fresh-generation
+lifecycle check also completed. These are dependent metadata observations, not a
+measured ADC oscillator rate or proof that no source audio was lost. They show that
+SR updates alone do not explain this window's discrepancy; neither deleting SR
+updates nor increasing the phase limit is a justified fix. All hardware checks were
+read-only, serially coordinated, with no retained media or camera configuration writes.
+
+Implementation checks passed: **33 library + 43 application tests**, the phase-trend
+check, all-target checking, strict library-only Clippy, formatting and the Nix build
+(substitution disabled). Bounded self-review found no issues. No clock policy or
+admission budget changed in this increment.
 
 ## Actual camera observation
 

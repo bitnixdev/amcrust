@@ -132,8 +132,10 @@ The source now offers explicit audio-only `Tracks::AudioSampleClock` subscriptio
 for classified, bounded AAC sender-report remapping. Original timestamps stay intact;
 strict audio/recording subscriptions fail locally instead of stopping video for that
 case. The processor still enforces its original ±100-ms phase and 15-second freshness
-budgets. This is not production clock qualification: real runs also exposed excess
-cumulative phase, and the final live-remapping check was inconclusive (no event).
+budgets. Real input has now exercised that isolation, but this is not production
+clock qualification: larger mapping shifts and excess cumulative phase still stop
+unsupported intervals. Diagnostics now separate reconstructed RTP duration debt,
+SR mapping changes and unexplained residuals rather than blaming all drift on SRs.
 
 All project-owned C workers and the obsolete Python/AMC2 fixture harness are removed;
 their findings and numeric records remain in [Evidence](docs/evidence.md). The read-only

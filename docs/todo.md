@@ -187,9 +187,16 @@ the production integration below. Removing probes is not the acquisition cutover
         retain video, and leave the processor's ±100-ms/15-s limits unchanged.
         A mapping step may span the window's 200-ms diameter; it does not authorize
         either endpoint beyond 100 ms. Unknown/reset/missing timing still retires.
-      - [ ] Observe the final bounded-remapping path on a live rollback: the focused
-        300-second run saw no rollback and was inconclusive, not a pass. Captured
-        real metadata and isolation are covered locally; physical playback is not.
+      - [x] Observe bounded remapping on live input: sequence 5859 repeated AAC DTS
+        while reconstructed RTP advanced 1152 ticks, with a matching −1152-tick SR
+        shift. Strict audio revoked; candidate audio and video continued in the same
+        generation until a later 276-ms shift exceeded the bound. This establishes
+        live subscription isolation, not sustained clock or physical playback acceptance.
+      - [x] Separate reconstructed RTP duration debt from SR mapping and unexplained
+        residuals in constant-space source diagnostics. A real 60-second endpoint
+        showed 1456 ticks of RTP debt + 144 ticks of report shift + 16 unexplained
+        ticks = 1616 ticks of candidate phase. SR updates alone do not explain this
+        window; the values are not independent capture/oscillator measurements.
       - [ ] Resolve sustained drift/clock recovery: the candidate independently hit
         4816 samples/100⅓ ms at 97.36 s. Do not increase its phase budget or reanchor
         to conceal this. Choose/qualify the next clock policy before production use.
