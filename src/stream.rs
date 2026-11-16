@@ -13,6 +13,7 @@ use tokio::sync::Mutex;
 use crate::amcrest::VideoProfile;
 use crate::metrics::{ErrorSubsystem, Metrics};
 use crate::tlv8;
+use amcrust::media::rtcp;
 use amcrust::media::transport::{Error as TransportError, RTP_OVERHEAD, Transport};
 
 struct MediaProxy {
@@ -95,6 +96,7 @@ struct Session {
     audio_key: Vec<u8>,
     video_ssrc: u32,
     audio_ssrc: u32,
+    rtcp_identity: [u8; 16],
     video_out_socket: Option<tokio::net::UdpSocket>,
     audio_out_socket: Option<tokio::net::UdpSocket>,
 }
@@ -259,6 +261,7 @@ impl StreamManager {
             audio_key: srtp_key(&audio_srtp),
             video_ssrc,
             audio_ssrc,
+            rtcp_identity: rand::random(),
             video_out_socket: Some(video_out_socket),
             audio_out_socket: Some(audio_out_socket),
         };
@@ -493,6 +496,7 @@ impl StreamManager {
             session.video_port,
             session.video_key.clone(),
             session.video_ssrc,
+            session.rtcp_identity,
             wire_mtu,
             1,
             self.metrics.clone(),
@@ -633,6 +637,7 @@ impl StreamManager {
                                 session.audio_port,
                                 session.audio_key.clone(),
                                 session.audio_ssrc,
+                                session.rtcp_identity,
                                 audio_wire_mtu,
                                 48000 / audio_rate_hz.max(1),
                                 self.metrics.clone(),
@@ -746,6 +751,7 @@ fn spawn_media_proxy(
     controller_port: u16,
     key: Vec<u8>,
     ssrc: u32,
+    rtcp_identity: [u8; 16],
     wire_mtu: usize,
     ratio: u32,
     metrics: Arc<Metrics>,
@@ -756,6 +762,7 @@ fn spawn_media_proxy(
     // Legacy FFmpeg adapter only. Rust packetizers must pass their clock unchanged.
     let mut rescaler = amcrust::srtp::TimestampRescaler::new(ratio);
     let sender = transport.clone();
+    let reports = rtcp::Sender::new(ssrc, rtcp_identity);
     let task = tokio::spawn(async move {
         let mut rtp_buf = [0u8; 2048];
         let mut rtcp_buf = [0u8; 2048];
@@ -797,17 +804,38 @@ fn spawn_media_proxy(
                     ffmpeg_rtcp_peer = Some(peer);
                     let packet = &mut rtcp_buf[..n];
                     rescaler.rescale_rtcp(packet);
-                    if let Err(error) = sender.send_rtcp(packet, || true).await {
-                        if !matches!(error, TransportError::Closed) {
+                    let control = match rtcp::local_control(packet, ssrc) {
+                        Ok(control) => control,
+                        Err(error) => {
                             metrics.error(ErrorSubsystem::LiveStream);
-                            warn!("{label} RTCP transport stopped: {error:?}");
+                            warn!("{label} producer RTCP refused: {error}");
+                            break;
                         }
-                        break;
+                    };
+                    if let Some(clock) = control.clock {
+                        // Preserve only the explicit legacy clock pair. Counters
+                        // describe accepted encrypted writes, and CNAME is ours.
+                        let mut compound = [0u8; 80];
+                        compound[..72].copy_from_slice(&reports.report(clock, sender.rtp_counts()));
+                        let size = if control.bye {
+                            compound[72..].copy_from_slice(&reports.bye());
+                            80
+                        } else { 72 };
+                        if let Err(error) = sender.send_rtcp(&compound[..size], || true).await {
+                            if !matches!(error, TransportError::Closed) {
+                                metrics.error(ErrorSubsystem::LiveStream);
+                                warn!("{label} RTCP transport stopped: {error:?}");
+                            }
+                            break;
+                        }
+                        sent_rtcp += 1;
+                        if sent_rtcp == 1 {
+                            debug!("{label} proxy: first Rust SRTCP sender report → {dest}");
+                        }
                     }
-                    sent_rtcp += 1;
-                    if sent_rtcp == 1 {
-                        debug!("{label} proxy: first SRTCP sender report → {dest}");
-                    }
+                    // A bare BYE terminates locally; do not invent a clock to
+                    // build a new compound report or emit unnegotiated reduced RTCP.
+                    if control.bye { break; }
                 }
                 result = sender.feedback() => {
                     match result {
@@ -1023,6 +1051,7 @@ mod tests {
             controller.local_addr().unwrap().port(),
             vec![7; 30],
             42,
+            [9; 16],
             188,
             3,
             metrics.clone(),
@@ -1056,6 +1085,10 @@ mod tests {
         producer.send_to(&report, rtcp_address).await.unwrap();
         let control = crypto.decrypt_rtcp(&receive(&controller).await).unwrap();
         assert_eq!(&control[16..20], &second[4..8]);
+        assert_eq!(control.len(), 72);
+        assert_eq!(&control[8..16], &report[8..16]);
+        assert_eq!(&control[20..28], &[0, 0, 0, 2, 0, 0, 0, 2]);
+        assert_eq!(&control[38..70], b"09090909090909090909090909090909");
         let feedback = [0x80, 201, 0, 1, 0, 0, 0, 99];
         let encrypted = crypto.encrypt_rtcp(&feedback).unwrap();
         controller.send_to(&encrypted, out_address).await.unwrap();

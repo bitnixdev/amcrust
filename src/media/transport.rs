@@ -3,6 +3,7 @@
 //! Session revoke is a synchronous socket-write fence, not a retraction of datagrams
 //! already accepted by the kernel. Source-generation privacy additionally requires
 //! its owner to revoke these transports before acknowledging the transition.
+use super::rtcp::{Counts, payload_octets};
 use crate::srtp::SrtpSession;
 use std::{net::SocketAddr, sync::Mutex, time::Duration};
 use tokio::{
@@ -36,6 +37,7 @@ impl std::error::Error for Error {}
 struct State {
     closed: bool,
     crypto: SrtpSession,
+    counts: Counts,
 }
 pub struct Transport {
     socket: UdpSocket,
@@ -72,11 +74,18 @@ impl Transport {
             state: Mutex::new(State {
                 closed: false,
                 crypto: SrtpSession::new(key)?,
+                counts: Counts::default(),
             }),
             closed: watch::channel(false).0,
             send_slot: AsyncMutex::new(()),
             receive_slot: AsyncMutex::new(()),
         })
+    }
+    /// Snapshot of kernel-accepted RTP, retained after revocation. Not receiver
+    /// acknowledgments. A session actor must serialize snapshot/report generation
+    /// with its sends to associate the counters with the supplied clock pair.
+    pub fn rtp_counts(&self) -> Counts {
+        self.lock_state().counts
     }
     pub fn rtp_capacity(&self) -> usize {
         self.wire_mtu - RTP_OVERHEAD
@@ -131,6 +140,11 @@ impl Transport {
         {
             return Err(Error::Packet);
         }
+        let octets = if rtcp {
+            None
+        } else {
+            Some(payload_octets(packet).map_err(|_| Error::Packet)?)
+        };
         let protected = {
             let mut state = self.lock_state();
             if state.closed {
@@ -159,7 +173,7 @@ impl Transport {
             }
             // No await while holding the gate. Reuse the SAME ciphertext on
             // WouldBlock: re-encrypting would advance SRTCP/rollover state twice.
-            let state = self.lock_state();
+            let mut state = self.lock_state();
             if state.closed {
                 return Err(Error::Closed);
             }
@@ -167,7 +181,12 @@ impl Transport {
                 return Err(Error::Revoked);
             }
             match self.socket.try_send_to(&protected, self.peer) {
-                Ok(n) if n == protected.len() => return Ok(()),
+                Ok(n) if n == protected.len() => {
+                    if let Some(octets) = octets {
+                        state.counts.accepted(octets);
+                    }
+                    return Ok(());
+                }
                 Ok(_) => return Err(Error::Packet),
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => (),
                 Err(e) => return Err(Error::Io(e)),
@@ -269,6 +288,13 @@ mod tests {
             assert_eq!(encrypted.len(), 96);
             assert_eq!(decoder.decrypt_rtp(&encrypted).unwrap().as_ref(), plain);
         }
+        assert_eq!(
+            sender.rtp_counts(),
+            Counts {
+                packets: 3,
+                octets: 222
+            }
+        );
         let plain = report(42);
         sender.send_rtcp(&plain, || true).await.unwrap();
         let encrypted = receive(&peer).await;
@@ -283,6 +309,13 @@ mod tests {
             Err(Error::Packet)
         ));
         no_packet(&peer).await;
+        assert_eq!(
+            sender.rtp_counts(),
+            Counts {
+                packets: 3,
+                octets: 222
+            }
+        );
     }
     #[tokio::test]
     async fn feedback_authentication_peer_binding_replay_and_ssrc_bounds() {
@@ -336,6 +369,7 @@ mod tests {
             Err(Error::Revoked)
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(sender.rtp_counts(), Counts::default());
         no_packet(&peer).await;
         let waiting = sender.clone();
         let task = tokio::spawn(async move { waiting.feedback().await });

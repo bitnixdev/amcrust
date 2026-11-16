@@ -11,7 +11,7 @@ Former experimental implementation names below are provenance, not current entry
 
 The existing Rust bridge still opens separate FFmpeg camera readers for live video,
 live audio and recording. Production live video/audio now use the shared Rust secure
-UDP transport described below, but acquisition is unchanged. Its HomeKit features are
+UDP transport and Rust-formatted sender reports described below, but acquisition is unchanged. Its HomeKit features are
 not evidence that a shared-source replacement works. Production instrumentation added first RTP/IDR timing and recording
 delivery outcomes (`end_sent`, `cancelled`, `source_unavailable`, `write_error`).
 `end_sent` is a successful write, not confirmed iCloud storage. The process sampler in
@@ -420,6 +420,49 @@ Clippy, formatting, offline flake checking and the Nix application build. Packag
 evaluation on aarch64-darwin, aarch64-linux and x86_64-linux showed only the probe export
 removed; all six numeric records retained their original hashes. No camera check or
 synthetic media experiment was run for this deletion-only runtime increment.
+
+### Rust-owned outbound RTCP reports
+
+`media::rtcp::Sender` now builds the production adapters' compound SR/SDES packets
+instead of forwarding FFmpeg's report payloads verbatim. A fresh random identity per
+prepared viewer session gives both tracks the same CNAME without exposing host/camera
+names or the HAP session ID. SSRCs and accepted-write counters remain per track.
+The NTP/RTP clock pair and report cadence still come from the legacy producer;
+formatting preserves those bits and does not invent a source-to-NTP mapping.
+
+`Transport::rtp_counts()` updates under the actual successful nonblocking write gate.
+It excludes RTP headers, CSRCs, extensions, padding and protection overhead, wraps
+counters modulo 2^32, and does not count refused or unsent packets. These are kernel
+acceptance counts, not controller acknowledgments. Bounded local control parsing
+rejects malformed compound/SR/BYE shapes, wrong sender SSRCs and ambiguous duplicate
+reports. Other framed blocks, including FFmpeg's SDES, are not forwarded. BYE is
+appended to an accompanying report; a bare BYE retires locally without fabricating a
+clock or emitting unnegotiated reduced-size RTCP. Authenticated controller feedback
+still returns to the legacy producer.
+
+The production-adapter check decrypts the new report and verifies its explicit clock,
+actual two-packet/two-payload-byte counts, session CNAME, feedback forwarding and joined
+shutdown. Protocol checks cover counter rollover, header/extension/padding accounting,
+compound lengths, common versus fresh identities and terminal BYE.
+
+The existing real-camera SRTP regression passed with **30 + 30 decoded frames**,
+**3402 / 1127 accepted RTP packets** at protected limits of **400 / 1200 bytes**;
+accepted packet/payload counters matched the sent real-source RTP data. It also
+retained the mux regression (**91 video / 285 AAC packets**, **1,252,367 AVIO bytes**,
+exact shifted PTS/DTS, **90 / 284 duration differences** still unresolved). The first
+attempt failed before decoding with a local FFmpeg UDP bind collision. The diagnostic
+now reserves both viewers' even RTP/odd RTCP pairs and sender sockets before either
+decoder starts, avoiding its own port competition during handoff; external port races
+remain possible. No camera settings were written or media retained.
+
+This is outbound report ownership, not source-clock qualification. The real-source
+viewer check does not yet originate source-clock RTCP. Shared-source injection,
+qualified NTP mapping/report scheduling, Rust feedback handling and audio priming still
+block removal of the legacy adapters/readers. No Home app or A/V acceptance is claimed.
+
+Final checks passed: **25 library + 43 application tests**, all-target checking, strict
+library-only Clippy, formatting and the Nix application build (substitution disabled).
+Bounded self-review found no issues.
 
 ## Actual camera observation
 

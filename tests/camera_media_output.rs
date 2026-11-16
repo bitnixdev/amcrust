@@ -94,7 +94,40 @@ impl<T> Drop for Task<T> {
     }
 }
 
-async fn rtp_viewer(mut subscription: Subscription, config: Config) -> (usize, u64) {
+struct ViewerPorts {
+    reservation: std::net::UdpSocket,
+    control: std::net::UdpSocket,
+    sender: tokio::net::UdpSocket,
+}
+impl ViewerPorts {
+    fn reserve() -> Self {
+        let (reservation, control) = (0..64)
+            .find_map(|_| {
+                let socket = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).ok()?;
+                let port = socket.local_addr().ok()?.port();
+                if port % 2 != 0 {
+                    return None;
+                }
+                let control =
+                    std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, port.checked_add(1)?)).ok()?;
+                Some((socket, control))
+            })
+            .expect("local decoder ports");
+        let sender = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        sender.set_nonblocking(true).unwrap();
+        Self {
+            reservation,
+            control,
+            sender: tokio::net::UdpSocket::from_std(sender).unwrap(),
+        }
+    }
+}
+
+async fn rtp_viewer(
+    mut subscription: Subscription,
+    config: Config,
+    ports: ViewerPorts,
+) -> (usize, u64) {
     let wire_mtu = config.packet_bytes;
     let config = Config {
         packet_bytes: wire_mtu - RTP_OVERHEAD,
@@ -102,16 +135,11 @@ async fn rtp_viewer(mut subscription: Subscription, config: Config) -> (usize, u
     };
     let key: [u8; 30] = rand::random();
     let inline_key = base64::engine::general_purpose::STANDARD.encode(key);
-    // Reserve a local RTP/RTCP pair before giving it to the diagnostic decoder.
-    let (reservation, control) = (0..32)
-        .find_map(|_| {
-            let socket = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).ok()?;
-            let port = socket.local_addr().ok()?.port();
-            let control =
-                std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, port.checked_add(1)?)).ok()?;
-            Some((socket, control))
-        })
-        .expect("local decoder ports");
+    let ViewerPorts {
+        reservation,
+        control,
+        sender: socket,
+    } = ports;
     let port = reservation.local_addr().unwrap().port();
     let sdp = format!(
         "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=Rust camera output check\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=video {port} RTP/SAVP {}\r\na=rtpmap:{} H264/90000\r\na=fmtp:{} packetization-mode=1\r\na=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:{inline_key}\r\n",
@@ -151,9 +179,6 @@ async fn rtp_viewer(mut subscription: Subscription, config: Config) -> (usize, u
     );
     decoder.write(sdp.as_bytes()).await;
     decoder.input.take();
-    let socket = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
     let destination = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
     let transport =
         Transport::new(socket, destination.into(), &key, config.ssrc, wire_mtu).unwrap();
@@ -164,6 +189,7 @@ async fn rtp_viewer(mut subscription: Subscription, config: Config) -> (usize, u
     let mut buffer = vec![0; config.packet_bytes];
     let mut last_sequence = None;
     let mut source_frames = 0;
+    let mut payload_octets = 0u32;
     loop {
         {
             let mut unit = packetizer.begin(&delivery).unwrap();
@@ -185,6 +211,7 @@ async fn rtp_viewer(mut subscription: Subscription, config: Config) -> (usize, u
                     .send_rtp(&buffer[..size], || delivery.packet().is_ok())
                     .await
                     .unwrap();
+                payload_octets = payload_octets.wrapping_add((size - 12) as u32);
             }
             assert_eq!(markers, 1);
         }
@@ -197,6 +224,13 @@ async fn rtp_viewer(mut subscription: Subscription, config: Config) -> (usize, u
         }
         delivery = subscription.recv().await.unwrap();
     }
+    assert_eq!(
+        transport.rtp_counts(),
+        amcrust::media::rtcp::Counts {
+            packets: u32::try_from(packetizer.packetized()).unwrap(),
+            octets: payload_octets,
+        }
+    );
     transport.revoke();
     assert!(matches!(
         transport.send_rtp(&buffer, || true).await,
@@ -231,6 +265,11 @@ async fn exercise() {
     let one = source.subscribe(Tracks::Video, limits).await.unwrap();
     let two = source.subscribe(Tracks::Video, limits).await.unwrap();
     let mut other_subscription = source.subscribe(Tracks::Video, limits).await.unwrap();
+    // Reserve BOTH receiver pairs and sender sockets before either decoder starts.
+    // Otherwise our own ephemeral sender/second viewer can steal a released port
+    // while FFmpeg is still starting. External port races remain environmental.
+    let ports_one = ViewerPorts::reserve();
+    let ports_two = ViewerPorts::reserve();
     let mut viewer_one = Task(tokio::spawn(rtp_viewer(
         one,
         Config {
@@ -238,6 +277,7 @@ async fn exercise() {
             payload_type: 96,
             packet_bytes: 400,
         },
+        ports_one,
     )));
     let mut viewer_two = Task(tokio::spawn(rtp_viewer(
         two,
@@ -246,6 +286,7 @@ async fn exercise() {
             payload_type: 97,
             packet_bytes: 1200,
         },
+        ports_two,
     )));
     let first = recording.recv().await.unwrap();
     let foreign = other_subscription.recv().await.unwrap();

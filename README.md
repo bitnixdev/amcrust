@@ -104,7 +104,9 @@ registry, joined reader supervision, bounded packet subscriptions and source-clo
 diagnostics, per-viewer H.264 RTP packetization, finite fMP4 mux jobs and AAC-to-Opus
 processing. These media producers are not yet connected to the production HomeKit
 paths. The shared Rust secure UDP transport is already used by production video/audio
-proxies, with protected-datagram limits and revoke-before-join session shutdown. An explicit
+proxies, with protected-datagram limits and revoke-before-join session shutdown.
+Outbound RTCP reports are built in Rust from accepted-write counts and a session CNAME;
+the legacy adapters still supply their clock pairs and report cadence. An explicit
 live-audio candidate anchors decoded-sample progression to 48-kHz AAC source timing
 and supports 8/16/24/48-kHz Opus output with 20/40/60-ms frames. It refuses excessive
 phase error, stale sender reports and uncovered finite endpoints; strict timing
@@ -249,7 +251,8 @@ src/
   stream.rs     SetupEndpoints/SelectedRTPStreamConfiguration TLV8 negotiation
                 and the ffmpeg RTSP→SRTP media pipeline
   srtp.rs       SRTP/SRTCP primitives and legacy FFmpeg timestamp adapter
-  media/transport.rs  shared secure UDP writes, feedback and session-stop fence
+  media/transport.rs  shared secure UDP writes, accepted counts and session-stop fence
+  media/rtcp.rs  compound sender reports, session CNAME and legacy control parsing
   hsv/          recording configuration, fMP4 prebuffer, HDS codec/framing/delivery
   metrics.rs    health, media metrics and delivery outcomes
   motion.rs     AI events → motion sensor characteristic updates

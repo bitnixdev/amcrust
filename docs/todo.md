@@ -133,9 +133,14 @@ the production integration below. Removing probes is not the acquisition cutover
       and revoke all affected tracks before awaited proxy abort/join.
     - [x] Exercise real-source Rust H.264 directly through that transport: two FFmpeg
       SRTP receivers decode 30 frames each at 400-/1200-byte protected datagram limits.
-    - [ ] Replace the FFmpeg-facing adapters with the Rust media producers and
-      source-clock RTCP generation/control owner, then verify Home app playback.
-      The transport does not supply a clock, pacing or an audio priming policy.
+    - [x] Build outbound SR/SDES in Rust using kernel-accepted RTP packet/payload
+      counts and a fresh session CNAME shared by audio/video. Replace verbatim
+      forwarding of FFmpeg reports; preserve only their explicit clock pair/cadence
+      in the legacy adapter. Validate compound framing and propagate terminal BYE.
+    - [ ] Replace the FFmpeg-facing adapters with Rust media producers, a qualified
+      source-to-NTP mapping, report scheduling and receiver-feedback handling, then
+      verify Home app playback. Report formatting alone does not supply a source
+      clock, pacing, source-generation fence or audio priming policy.
 - [ ] Live audio: use shared AAC input; own FFmpeg-library decode/Opus encode in Rust.
   Pool only compatible negotiated settings and isolate encoder/subscriber failures.
   - [x] Implement thread-bound AAC-LC -> S16 resampler/FIFO -> libopus processing,

@@ -170,8 +170,39 @@ source/output accounting, recording-copy fences and joined source owners remain 
 
 Real-source H.264 from two Rust viewers decrypts/decodes through independent FFmpeg SRTP
 receivers. This is not Home app acceptance. Production still uses FFmpeg camera readers
-and their RTCP generation; source-clock RTCP, audio receiver priming and shared-acquisition
-injection remain required before those readers can be removed.
+and their RTCP clock pairs/cadence; Rust now formats the outbound reports below.
+Source-clock RTCP, audio receiver priming and shared-acquisition injection remain
+required before those readers can be removed.
+
+### Rust-owned outbound sender reports
+
+`media::rtcp::Sender` formats compound SR/SDES from an **explicit NTP/RTP clock pair**
+and accepted RTP counts. It never substitutes arrival time, zeroes tracks or infers
+capture time. The NTP fractional bits and supplied RTP timestamp are preserved exactly.
+One fresh random identity per prepared viewer session provides a common audio/video
+CNAME without exposing the host name, camera address or HAP session ID. A new session
+gets a new identity, and each track retains its independent SSRC and counters.
+
+`Transport::rtp_counts()` counts successful nonblocking UDP writes under the send gate.
+Octets exclude RTP headers, CSRCs, extensions, padding and SRTP overhead; malformed
+lengths are refused before encryption. Counters wrap modulo 2^32 as required by RTCP.
+They are kernel acceptance, **not receiver acknowledgment**. The session actor must
+serialize its count snapshot/report construction with its sends; the production proxy
+already does this in one task.
+
+Production no longer forwards the FFmpeg sender-report payload verbatim. Its adapter
+validates bounded compound framing and SR/BYE shapes, extracts the existing rescaled
+clock pair and builds Rust SR/SDES with actual accepted counts. The legacy clock and
+report cadence are unchanged. Other framed blocks, including FFmpeg's host-derived
+SDES, are not forwarded. BYE accompanying an SR is appended to that compound; a bare
+BYE retires the adapter without inventing a clock or sending unnegotiated reduced-size
+RTCP. Controller feedback still goes to the legacy producer after authentication.
+
+**Remaining integration:** qualify the source-to-NTP mapping, own report scheduling
+and receiver-feedback handling in the Rust session actor, and connect source retirement.
+A report formatter is not a clock policy or an audio preroll/trim contract. Neither
+this API nor the accepted-write counters establishes Apple playback or common A/V
+capture-clock accuracy.
 
 ## Implemented audio-processing boundary
 

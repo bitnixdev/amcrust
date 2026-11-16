@@ -3,6 +3,7 @@
 pub mod audio;
 mod audio_clock;
 pub mod fmp4;
+pub mod rtcp;
 pub mod rtp;
 pub mod transport;
 
