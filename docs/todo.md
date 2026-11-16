@@ -172,10 +172,14 @@ the production integration below. Removing probes is not the acquisition cutover
         Last periodic phase was 688 samples/14.33 ms. This is NOT qualification.
         A separate instrumented 60-second diagnostic passed; it does not replace the
         failed attempt or identify its offending packet retroactively (Evidence).
-      - [ ] Capture/classify the intermittent source-clock refusal using the new
-        first-failure metadata before choosing a source-clock recovery policy or
-        rerunning sustained qualification. Do not weaken DTS/SR checks or enlarge
-        the audio phase budget based on a later short successful run.
+      - [x] Capture/classify a subsequent source-clock refusal with first-failure
+        metadata. The user-requested real-camera retry failed after 200.19 s total:
+        AAC DTS went backward 96 ticks/2 ms on an SR-bearing packet; admission
+        correctly retired the generation. One acquisition, no candidate budget trip.
+      - [ ] Determine whether the SR-boundary AAC rollback originates in camera RTP
+        timing or libavformat's mapping before selecting source-clock recovery.
+        Other-host contention remains unverified; a local socket check cannot exclude
+        it. Do not weaken DTS/SR checks or enlarge the audio phase budget.
     - [x] Extend the candidate to 8/16/24/48-kHz output and 20/40/60-ms frames.
       Keep all timing/trims in the 48-kHz decoder domain; explicitly trim only a
       sub-encoder-sample finite excess. Undercoverage is refused, not padded or

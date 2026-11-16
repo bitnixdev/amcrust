@@ -303,7 +303,12 @@ new first-failure records make subsequent failures distinguishable. A separate
 60-second diagnostic passed but cannot erase that failure. Do not infer oscillator
 drift, select asynchronous resampling, increase tolerances or wire a production
 source clock from this result alone: first distinguish a metadata refusal from an
-actual missing/non-increasing media timestamp. No capture-clock repair is authorized.
+actual missing/non-increasing media timestamp. A user-requested retry subsequently
+captured an AAC DTS rollback of 96 ticks/2 ms on an SR-bearing packet after 200.19 s
+total, with one acquisition and no candidate budget trip. This identifies admission's
+refusal, not whether the camera's RTP timing or libavformat's mapping caused it;
+other-host contention was not excluded. See Evidence for exact packet metadata.
+No capture-clock repair is authorized.
 
 This is a **live-audio qualification candidate**, not an HSV edit/cut policy. It does
 not settle AAC decoder-history/PNS differences, capture-clock accuracy, controller

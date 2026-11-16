@@ -517,6 +517,41 @@ slope check, all-target checking, strict library-only Clippy, formatting and the
 application build (substitution disabled). Bounded self-review found no issues. These
 checks and the separate short diagnostic do not turn the sustained refusal into a pass.
 
+#### User-requested real-camera retry
+
+At the user's request, the same 1800-second-or-first-refusal check was repeated on
+real hardware at **10.76.14.10**, main encoder, with unchanged source admission and
+candidate budgets. No local RTSP connection was present before starting. This does
+not establish exclusive camera access: other hosts were not inventoried or stopped.
+No camera configuration was changed and no media capture was retained.
+
+This distinct attempt **failed with `Source(Clock)` after 200.19 s total**, Cargo exit
+101. The new diagnostics captured **`NonIncreasingDts`** on AAC stream **1**, global
+packet sequence **12370**, in the **1/48000** time base:
+
+- Previous admitted DTS **9,598,224**; offending PTS/DTS **9,598,128**: **−96 ticks /
+  −2 ms**, rather than the declared **+1024 samples**. Step-minus-duration was
+  **−1120 samples / −23⅓ ms**.
+- Packet size **284 bytes**, flags **1**, with a sender report attached: SSRC
+  **1786523631**, NTP **17196193062787408199**, RTP **1741884926**, sender packet/byte
+  counts **18745 / 5370311**. PRFT was **1794811899204999 µs**, flags **24**.
+- Last candidate observation at **199.7599 s**: **9,596,928 decoded samples**, phase
+  **2336 / 48⅔ ms**, peak **2512 / 52⅓ ms**, report age about **4.991 s**, diagnostic
+  slope **0.044957 ms per nominal decoded second**. Neither phase nor freshness
+  budget tripped. The newly attached report was observed by the source, but its
+  offending packet was refused before publication to the candidate.
+- Final source state: generation **1**, **one open attempt**, **one fault**, retired,
+  inactive, zero subscribers and zero charged bytes. There was no acquisition restart.
+
+This identifies the immediate admission refusal, not its ultimate origin. The
+rollback coincides with an SR-bearing packet, but these observations alone cannot
+separate camera RTP timing from libavformat's SR-based timestamp mapping, nor prove
+or disprove another host's involvement. The earlier 34.33-second failure still lacks
+an offending-packet record and must not retroactively be assigned this exact cause.
+Neither attempt qualifies the clock. Investigate the SR-boundary mapping without
+clamping timestamps, widening budgets or treating PRFT as independent evidence.
+No application code or timing policy changed for this retry.
+
 ## Actual camera observation
 
 A bounded run of the native ingest reader connected to **10.76.14.10**, main encoder
