@@ -132,10 +132,26 @@ This does not require rewriting FFmpeg itself.
   - [x] Preserve original clocks separately from private codec sample ordinals;
     retain contradiction evidence and refuse unsupported source-timestamp mapping.
     Convert Opus skip/discard metadata exactly from encoder-rate to 48-kHz units.
-  - [ ] Settle an evidence-backed clock/priming policy for real live A/V. The current
-    camera's non-contiguous AAC PTS are NOT accepted as a continuous sample clock.
-    Larger AAC jumps occur on SR-bearing packets in the longer observations; simply
-    replacing timestamps with PRFT or smoothing packet order would hide the problem.
+  - [ ] Qualify the selected clock/priming policy for real live A/V. Original AAC PTS
+    are NOT relabeled as continuous; source observations and mismatch counts remain.
+    The decision, alternatives and wrong-choice symptoms are in Architecture.
+    - [x] Add explicit source-anchored decoded-sample progression at 48-kHz/20-ms,
+      retaining strict default behavior. Require SR/PRFT admission, guard phase at
+      100 ms and SR-bearing-packet age at 15 s, and revoke only the failed processor.
+      These are provisional refusal budgets, not accepted lip-sync tolerances.
+    - [x] Expose covered audible intervals and effective OpusHead/packet skip/discard
+      requirements; refuse raw timestamp mapping for packets needing trims. Check
+      actual decoded sample counts and continuous candidate output on the camera.
+    - [ ] Run a sustained qualification window (30 minutes or first refusal), recording
+      phase slope and budget trips without automatic reanchoring/restarting. Compare
+      actual first-onset and sustained A/V sync on paired clients, including stalls,
+      SR boundaries and late joins. A persistent slope triggers clock-recovery review,
+      not a larger phase limit. Keep the candidate opt-in until acceptance exists.
+    - [ ] Extend the candidate to negotiated lower-rate audio with exact coverage and
+      explicit finite-resampler-tail handling; the current candidate refuses it.
+    - [ ] Implement the live receiver's preroll/trim and late-join decoder-history
+      contract. RTP does not carry OpusHead/skip side data automatically. Retain needed
+      packets; do not hide initial clipping, noise or end padding by dropping them.
   - [ ] Share processing only for matching source generation and negotiated settings;
     the current audio pool bounds jobs, but does not yet deduplicate encoders.
     Connect audio RTP/RTCP/SRTP and production lifecycle/metrics.

@@ -102,10 +102,13 @@ The shell/package supplies FFmpeg 9 libraries, pkg-config and libclang/bindgen;
 `ffmpeg-sys-next` is pinned in Cargo. The Rust media library includes an encoder
 registry, joined reader supervision, bounded packet subscriptions and source-clock
 diagnostics, per-viewer H.264 RTP packetization, finite fMP4 mux jobs and AAC-to-Opus
-processing. These are not yet connected to the production HomeKit paths. Longer
-real-camera samples expose sender-report-boundary audio clock jumps; diagnostic
-metadata does not resolve continuous A/V timing. The unused project C worker draft
-is removed.
+processing. These are not yet connected to the production HomeKit paths. An explicit
+48-kHz/20-ms live-audio candidate anchors decoded-sample progression to source timing
+and refuses excessive phase error or stale sender reports; strict timing remains the
+default. Priming/tail contracts are exposed, not assumed to work over HomeKit RTP.
+See the [clock decision and alternatives](docs/architecture.md#candidate-live-audio-decision-and-revisit-guide)
+for limits, acceptance work and symptoms that would require revisiting the choice.
+The unused project C worker draft is removed.
 No system-wide FFmpeg or compiler installation is needed with this workflow.
 
 ## Running

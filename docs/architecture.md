@@ -148,10 +148,11 @@ layout, rate and sample format changes are refused rather than reused in an old 
 
 Decoder-frame PTS and sample counts are checked independently of private encoder sample
 ordinals. No asynchronous resampling, silence injection, source-sample dropping or
-wall-clock timestamp substitution is used. `source_timestamp_48k` refuses observed
-clock contradictions and uncovered priming/tail ranges. A locally contiguous sample
-clock alone still does not prove common video/audio sender-report alignment. Codec
-ordinals exposed for mux/decoder bookkeeping must not be promoted to transport clocks.
+wall-clock timestamp substitution is used. `Transcoder::new` retains strict timing:
+`source_timestamp_48k` refuses observed clock contradictions and uncovered priming/tail
+ranges. The explicit candidate below is a separately selected, guarded clock model,
+not permission to promote arbitrary encoder ordinals to RTP timestamps. A locally
+continuous sample clock alone still does not prove common A/V sender alignment.
 
 Encoded Opus packets retain header/side data, cancellation/source grants and admission
 charges. Native encoder padding counts use the configured sample rate; `decoder_skip`
@@ -160,7 +161,74 @@ two-second residence limit; reservations stay charged until held packets drop. E
 finish flushes decoder, resampler and encoder tails; source EOF/cancellation is not
 finish. Codec decoding/count checks are not continuous-source PCM equality, listening
 acceptance or a production audio path. The observed real-camera clock contradictions
-remain a blocker for transport integration, not a reason to adopt packet-order clocks.
+remain a blocker for unqualified transport integration, not a reason to adopt
+unanchored packet-order clocks.
+
+### Candidate live-audio decision and revisit guide
+
+**Selected implementation: source-anchored, bounded sample progression.** Explicitly
+call `Transcoder::new_with_clock_policy(..., ClockPolicy::candidate(), ...)`; the
+ordinary constructor remains strict. This candidate is currently **48-kHz AAC input
+and 48-kHz Opus encoder input with 20-ms frames only**. Other configurations are
+refused by this candidate, not rounded. This deliberately isolates clock qualification
+from the lower-rate finite resampler-tail problem; it is not coverage of every
+HomeKit-negotiated audio mode.
+
+1. Wait on the existing audio subscription for an AAC packet carrying public SR and
+   RTCP-derived PRFT metadata. Constructor refusal is `Incomplete` until then. Start
+   the decoder at that admitted packet and anchor to its first decoded source PTS,
+   preserving the source's signed common-epoch offset rather than zeroing audio.
+   Late admission can wait roughly an SR period (~5 seconds). If that startup delay
+   is unacceptable, qualify a generation-owned anchor before admitting viewers;
+   do not bypass evidence requirements or independently zero the new viewer.
+2. Advance presentation by actual decoded PCM sample count at 48 kHz. Later sender
+   reports refresh evidence but **never move that anchor**. Keep original packet
+   clocks and all mismatch statistics; no source packet is rewritten.
+3. Compare every decoded-frame PTS with the anchored sample prediction. Refuse the
+   processor if absolute phase exceeds **4800 samples / 100 ms**, or no distinct
+   SR-bearing packet has been read within **15 seconds**. `clock_status()` exposes
+   current/maximum phase and last-report age to distinguish drift from stale evidence.
+   PRFT provenance must remain supported on every input packet. These are provisional
+   operational guardrails,
+   not perceptual tolerances or a claim that NTP is physically correct. The freshness
+   interval is approximately three observed camera SR periods, not a fixture deadline
+   or raw network RTCP receive time. Stricter limits may be selected; larger limits
+   require revisiting the implementation and decision.
+4. A failure is sticky and revokes this processor's held output. Other source consumers
+   survive. Do not automatically reanchor or repeatedly restart it into the same live
+   session to conceal drift. A new processor has a fresh anchor; source generations
+   cannot share decoder/clock state. Future pooling must include the full clock policy
+   as well as source generation and codec settings, and must not splice independently
+   started processors with different anchors/decoder histories.
+5. `presentation_48k` describes the complete encoded packet, its audible source-time
+   interval and effective decoder trims. Initial Opus pre-skip can be in `OpusHead`
+   without packet side data; apply it **once**, not again to already-trimmed PCM.
+   End discard is retained. Only samples covered by actual decoded input and converted
+   output are mapped. Unsupported shapes are refused. `source_timestamp_48k` still
+   refuses packets requiring trimming. A live RTP receiver does not automatically
+   receive OpusHead/skip side data: transport integration must explicitly establish
+   preroll/trim behavior or refuse the boundary, never drop a needed first packet.
+
+This is a **live-audio qualification candidate**, not an HSV edit/cut policy. It does
+not settle AAC decoder-history/PNS differences, lower-rate resampler tails, camera
+capture-clock accuracy, controller startup, or audible lip-sync acceptance. No HomeKit
+path is switched by this library API. The sole execution backlog remains in TODO.
+
+| Alternative retained for reconsideration | Why not selected now | Symptoms favoring reconsideration / evidence our choice is wrong |
+|---|---|---|
+| Strict source-PTS progression (still the default) | Real AAC has frequent non-contiguous steps, so usable timestamps are refused | Corrected firmware or another camera provides contiguous sample timing; candidate offers no benefit and should not normalize unnecessarily |
+| Follow each SR/PRFT-derived timestamp directly | PRFT and demux PTS share SR provenance; observed report-boundary jumps remain | Independent capture/client evidence shows the reports accurately represent real gaps, while our continuous clock compresses gaps or develops offset after stalls |
+| Retain/recover per-packet raw RTP clocks before SR-based demux adjustments | Public SR RTP values describe report instants, not each media packet; PRFT is dependent evidence. This needs a justified public-API packet mapping, not private FFmpeg access | If independent packet evidence shows raw RTP follows decoded samples while all large jumps come from SR remapping, prefer preserving that clock over modeling it; unexplained rollover/phase jumps would indicate a bad reconstruction |
+| Continuous sample clock with a fixed source anchor (**chosen, bounded**) | Avoids repeated phase jumps without changing PCM, but assumes the nominal audio sample rate remains adequate | Monotonically growing phase, repeated 100-ms trips, lip sync progressively worsening in long views, or fresh sessions repeatedly starting at different A/V offsets; do not merely raise the limit |
+| Slow bounded clock recovery plus asynchronous resampling | Adds a PLL/filter, rate limits and real sample modification before oscillator drift is distinguished from report jitter | Sustained, repeatable phase slope and corroborating A/V drift favor this; audible pitch modulation, oscillating lip sync or repeated corrections after each SR would indicate chasing jitter instead |
+| Host-arrival clock or unanchored packet/frame counting | Network buffering is not capture time; independent track zeroing loses A/V offset | Latency changes with network load, burst arrivals producing speed changes, or session-dependent lip sync; use arrival time only for deadlines |
+| Insert/drop samples or encoded packets at discontinuities | Risks clicks, lost speech and decoder-state damage; hides whether a jump was real | Audible clicks, clipped first syllables, gaps or repeated syllables at SR boundaries, and sample-count discrepancies mean the repair is damaging content |
+
+Priming-specific wrong-choice symptoms: clipped onsets suggest double pre-skip or
+insufficient AAC history; an initial noise/silence lead-in suggests missing Opus
+pre-skip; click/noise or excess audio at the end suggests discarded tail metadata;
+a fixed offset from the first frame suggests an incorrect anchor/delay convention.
+Stable sample counts do not rule out any of these perceptual failures.
 
 ## Required invariants
 

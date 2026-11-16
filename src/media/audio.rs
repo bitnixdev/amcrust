@@ -5,12 +5,14 @@
 //! Codec sample ordinals are PRIVATE encoder bookkeeping, not source clocks.
 //! Decoding/resampling/encoding never inserts silence, drops decoded samples or
 //! applies asynchronous clock compensation. Non-contiguous source timestamps are
-//! retained as evidence; `source_timestamp_48k` refuses them. Do not promote codec
-//! ordinals to RTP timestamps to work around that refusal.
+//! retained as evidence; strict timing refuses them. An explicit experimental
+//! source-anchored sample policy permits bounded phase error at 48 kHz only; it
+//! never reanchors, compensates samples, or implies HomeKit playback acceptance.
 //!
-//! This is the processing boundary, not a production audio pool/transport. Config
-//! includes every currently supported compatibility setting for future pooling.
-use super::{Error, rescale};
+//! This is the processing boundary, not a production audio pool/transport. Both
+//! Config and ClockPolicy belong in any future generation-scoped sharing key.
+pub use super::audio_clock::{ClockPolicy, ClockStatus};
+use super::{Error, audio_clock::SampleClock, rescale};
 use crate::{
     ingest::{Cancellation, Codec, SenderReport, TimeBase},
     source::{Delivery, DeliveryGuard},
@@ -112,6 +114,7 @@ struct Clock {
     mismatch: Option<ClockMismatch>,
     input_rate: u32,
     converted_samples: u64,
+    samples: SampleClock,
 }
 struct Job {
     source: DeliveryGuard,
@@ -141,17 +144,38 @@ impl Job {
         } else {
             self.source.check().map_err(Error::from)
         };
-        result.map_err(|e| self.fail(e))
+        result
+            .and_then(|()| {
+                self.clock
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .samples
+                    .check(Instant::now())
+            })
+            .map_err(|e| self.fail(e))
     }
 }
 
 /// Skip/discard counts in the Opus decoder's fixed 48-kHz sample domain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DecoderSkip {
     pub start: u32,
     pub end: u32,
     pub start_reason: u8,
     pub end_reason: u8,
+}
+
+/// Candidate-policy presentation contract. The complete encoded packet must be
+/// decoded, with these trims honored. RTP alone cannot communicate this metadata;
+/// a transport lacking an explicit preroll/trim contract must refuse it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Presentation {
+    pub packet_timestamp_48k: i64,
+    pub audible_timestamp_48k: i64,
+    pub audible_samples: u32,
+    /// Effective trim, including OpusHead pre-skip when packet side data omits it.
+    /// Do NOT apply it again to samples already trimmed by the decoder.
+    pub decoder_skip: DecoderSkip,
 }
 
 /// Immutable encoded packet, including FFmpeg skip/discard side data. Holding it
@@ -248,24 +272,94 @@ impl OpusPacket {
     pub fn config(&self) -> Config {
         self.job.config
     }
+    pub fn clock_policy(&self) -> ClockPolicy {
+        self.job
+            .clock
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .samples
+            .policy
+    }
+    /// Explicit 48-kHz candidate priming/tail contract, not a raw-RTP write grant.
+    /// Never throw away a packet needed to establish decoder state, or pretend
+    /// its padded samples were captured. Unsupported packet shapes are refused.
+    pub fn presentation_48k(&self) -> Result<Presentation, Error> {
+        self.check()?;
+        let mut skip = self.decoder_skip()?.unwrap_or_default();
+        let clock = self.job.clock.lock().unwrap_or_else(|p| p.into_inner());
+        if clock.samples.policy == ClockPolicy::Strict {
+            return Err(Error::Configuration);
+        }
+        clock.samples.ready(Instant::now())?;
+        let p = unsafe { &*self.raw };
+        if p.pts < 0 {
+            let header = &self.job.header;
+            if header.len() < 12 || &header[..8] != b"OpusHead" {
+                return Err(Error::Configuration);
+            }
+            let pre_skip = u16::from_le_bytes([header[10], header[11]]) as u32;
+            if pre_skip as i64 != self.job.initial_padding as i64
+                || -(p.pts as i128) != pre_skip as i128
+                || (skip.start != 0 && skip.start != pre_skip)
+            {
+                return Err(Error::Incomplete);
+            }
+            skip.start = pre_skip;
+        }
+        let start = p.pts as i128 + skip.start as i128;
+        let end = p.pts as i128 + p.duration as i128;
+        if p.pts == av::AV_NOPTS_VALUE
+            || p.duration <= 0
+            || start < 0
+            || end <= start
+            || skip.start as i128 != (-(p.pts as i128)).max(0)
+            || end > clock.samples.status.decoded_samples as i128
+            || end > clock.converted_samples as i128
+            || p.duration as i128 + skip.end as i128 != self.job.config.frame_ms as i128 * 48
+        {
+            return Err(Error::Incomplete);
+        }
+        let origin = clock.first_pts.ok_or(Error::Clock)? as i128;
+        let timestamp = |offset: i128| -> Result<i64, Error> {
+            i64::try_from(origin + offset)
+                .ok()
+                .filter(|p| *p != av::AV_NOPTS_VALUE)
+                .ok_or(Error::Clock)
+        };
+        Ok(Presentation {
+            packet_timestamp_48k: timestamp(p.pts as i128)?,
+            audible_timestamp_48k: timestamp(start)?,
+            audible_samples: u32::try_from(end - start).map_err(|_| Error::Clock)?,
+            decoder_skip: skip,
+        })
+    }
     /// Native encoder-rate samples; OpusHead separately stores pre-skip at 48 kHz.
     pub fn encoder_initial_padding(&self) -> i32 {
         self.job.initial_padding
     }
-    /// Only map fully covered samples when every observed input AU has a known,
-    /// contiguous sample clock. Priming/tail padding and any clock contradiction
-    /// are explicit refusals, not independently zeroed/packet-order RTP clocks.
-    /// This local check alone does NOT establish common video/audio SR alignment.
+    /// Map only fully covered packets. Strict policy requires contiguous source
+    /// timestamps; the explicit candidate uses a source-anchored sample clock with
+    /// bounded phase/freshness checks. Neither policy grants A/V acceptance.
+    /// Priming/tail packets require presentation_48k(), not silently dropped data.
     pub fn source_timestamp_48k(&self) -> Result<i64, Error> {
         self.check()?;
+        if self
+            .decoder_skip()?
+            .is_some_and(|s| s.start != 0 || s.end != 0)
+        {
+            return Err(Error::Incomplete);
+        }
         let clock = self.job.clock.lock().unwrap_or_else(|p| p.into_inner());
-        if clock.mismatch.is_some() {
+        clock.samples.ready(Instant::now())?;
+        if clock.samples.policy == ClockPolicy::Strict && clock.mismatch.is_some() {
             return Err(Error::Clock);
         }
         let p = unsafe { &*self.raw };
         if p.pts < 0
             || p.duration <= 0
             || p.pts as i128 + p.duration as i128 > clock.converted_samples as i128
+            || (p.pts as i128 + p.duration as i128) * clock.input_rate as i128
+                > clock.samples.status.decoded_samples as i128 * self.job.config.rate as i128
         {
             return Err(Error::Incomplete);
         }
@@ -430,7 +524,19 @@ impl Transcoder {
         pool: &Pool,
         cancellation: Cancellation,
     ) -> Result<Self, Error> {
-        if !config.valid() {
+        Self::new_with_clock_policy(first, config, ClockPolicy::Strict, pool, cancellation)
+    }
+    /// Experimental live policy is explicit and must be part of any sharing key.
+    /// Candidate admission waits for an AAC packet carrying a fresh SR and PRFT;
+    /// callers may wait for a later packet on the SAME source, never open a reader.
+    pub fn new_with_clock_policy(
+        first: &Delivery,
+        config: Config,
+        policy: ClockPolicy,
+        pool: &Pool,
+        cancellation: Cancellation,
+    ) -> Result<Self, Error> {
+        if !config.valid() || !policy.valid() {
             return Err(Error::Configuration);
         }
         let permits = vec![
@@ -444,6 +550,12 @@ impl Transcoder {
                 .map_err(|_| Error::Limit)?,
         ];
         let packet = first.packet()?;
+        if policy != ClockPolicy::Strict
+            && (packet.sender_report().is_none()
+                || packet.producer_reference().is_none_or(|r| r.flags != 24))
+        {
+            return Err(Error::Incomplete);
+        }
         let stream = &first.configuration()?[packet.stream_index()];
         let parameters = unsafe { &*stream.parameters.as_ptr() };
         if stream.codec != Codec::Aac
@@ -451,6 +563,11 @@ impl Transcoder {
             || stream.parameters.extradata()[0] >> 3 != 2
             || !(8000..=96000).contains(&parameters.sample_rate)
             || !(1..=2).contains(&parameters.ch_layout.nb_channels)
+        {
+            return Err(Error::Configuration);
+        }
+        if policy != ClockPolicy::Strict
+            && (parameters.sample_rate != 48000 || config.rate != 48000 || config.frame_ms != 20)
         {
             return Err(Error::Configuration);
         }
@@ -533,6 +650,7 @@ impl Transcoder {
                 mismatch: None,
                 input_rate: parameters.sample_rate as u32,
                 converted_samples: 0,
+                samples: SampleClock::new(policy, Instant::now()),
             }),
             header,
             config,
@@ -570,6 +688,14 @@ impl Transcoder {
             _thread_bound: PhantomData,
         })
     }
+    pub fn clock_status(&self) -> ClockStatus {
+        self.job
+            .clock
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .samples
+            .snapshot(Instant::now())
+    }
     pub fn stats(&self) -> Stats {
         self.stats
     }
@@ -599,12 +725,32 @@ impl Transcoder {
         if self.pending_pts.len() >= 8 {
             return Err(Error::Limit);
         }
+        if self
+            .job
+            .clock
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .samples
+            .policy
+            != ClockPolicy::Strict
+            && packet.producer_reference().is_none_or(|r| r.flags != 24)
+        {
+            return Err(Error::Clock);
+        }
         let pts = packet.pts().ok_or(Error::Clock)?;
         self.pending_pts.push_back(pts);
         self.sequence = Some(packet.sequence());
         self.stats.input_packets += 1;
         if let Some(sr) = packet.sender_report() {
             self.stats.sender_reports += 1;
+            if self.stats.last_sender_report != Some(sr) {
+                self.job
+                    .clock
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .samples
+                    .report(packet.received_at());
+            }
             self.stats.last_sender_report = Some(sr);
         }
         native(
@@ -676,6 +822,7 @@ impl Transcoder {
                             .map_or(error, |old| old.max(error)),
                     );
                 }
+                clock.samples.frame(sample_pts, f.nb_samples as u32)?;
                 clock.first_pts.get_or_insert(sample_pts);
                 clock.previous_end = Some(
                     sample_pts

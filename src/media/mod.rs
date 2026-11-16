@@ -1,5 +1,6 @@
 //! Media output building blocks. Not yet connected to HomeKit transports.
 pub mod audio;
+mod audio_clock;
 pub mod fmp4;
 pub mod rtp;
 

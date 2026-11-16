@@ -1,10 +1,11 @@
 //! Opt-in real AAC -> Opus check. No synthetic media, retained capture, camera
-//! writes, external worker, transport-clock substitution or HomeKit acceptance.
+//! writes, external worker or HomeKit acceptance. The explicit candidate clock
+//! check is separate from strict mode; run ignored checks serially.
 use amcrust::{
     ingest::{CameraUrl, Cancellation},
     media::{
         Error,
-        audio::{Config, OpusPacket, Pool, Transcoder},
+        audio::{ClockPolicy, Config, OpusPacket, Pool, Transcoder},
     },
     source::{Encoder, Limits, Registry, SourceKey, SubscriptionLimits, Tracks},
 };
@@ -325,4 +326,165 @@ async fn exercise() {
     eprintln!(
         "Audio codec output decoded; source clock contradictions were refused, not repaired. Local encoder failure, repeated cancellation, source revocation and retained reservation release passed; no A/V or HomeKit acceptance claim."
     );
+}
+
+fn consume_candidate(
+    packet: &OpusPacket,
+    decoder: &mut Option<Decoder>,
+    end: &mut Option<i64>,
+) -> Result<(), Error> {
+    let presentation = packet.presentation_48k().inspect_err(|error| {
+        eprintln!(
+            "candidate presentation refusal={error:?} position={:?} skip={:?}",
+            packet.codec_position(),
+            packet.decoder_skip()
+        );
+    })?;
+    if let Some(previous) = *end {
+        assert_eq!(presentation.audible_timestamp_48k, previous);
+    }
+    *end = Some(presentation.audible_timestamp_48k + presentation.audible_samples as i64);
+    let before = decoder.as_ref().map_or(0, |d| d.samples);
+    if let Some(decoder) = decoder {
+        decoder.accept(packet);
+    } else {
+        *decoder = Some(Decoder::new(packet));
+    }
+    assert_eq!(
+        decoder.as_ref().unwrap().samples - before,
+        presentation.audible_samples as u64
+    );
+    if presentation.decoder_skip.start != 0 || presentation.decoder_skip.end != 0 {
+        assert_eq!(packet.source_timestamp_48k(), Err(Error::Incomplete));
+    } else {
+        assert_eq!(
+            packet.source_timestamp_48k()?,
+            presentation.packet_timestamp_48k
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires coordinated camera access; candidate 60-second window; run camera tests serially"]
+async fn real_anchored_audio_clock() {
+    dotenvy::dotenv().ok();
+    let user = std::env::var("AMCREST_USERNAME").expect("AMCREST_USERNAME required");
+    let password = std::env::var("AMCREST_PASSWORD").expect("AMCREST_PASSWORD required");
+    let url = CameraUrl::new(format!(
+        "rtsp://{user}:{password}@10.76.14.10:554/cam/realmonitor?channel=1&subtype=0"
+    ))
+    .unwrap();
+    let mut registry = Registry::new(Limits::default()).unwrap();
+    let source = registry
+        .register(
+            SourceKey {
+                camera: 1,
+                encoder: Encoder::Main,
+            },
+            url,
+        )
+        .unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(85), async {
+        let mut input = source.subscribe(Tracks::Audio, SubscriptionLimits::default()).await.map_err(Error::from)?;
+        let first = loop {
+            let packet = input.recv().await.map_err(Error::from)?;
+            if packet.packet()?.sender_report().is_some() { break packet; }
+        };
+        let config = Config { rate: 48000, ..Default::default() };
+        let pool = Pool::new(3, 6 * 1024 * 1024)?;
+        assert!(matches!(Transcoder::new_with_clock_policy(&first,
+            Config { rate: 16000, ..config }, ClockPolicy::candidate(), &pool, Cancellation::default()),
+            Err(Error::Configuration)));
+        assert_eq!(pool.reserved_bytes(), 0);
+        let mut candidate = Transcoder::new_with_clock_policy(&first, config, ClockPolicy::candidate(), &pool, Cancellation::default())?;
+        let mut strict = Transcoder::new(&first, config, &pool, Cancellation::default())?;
+        let mut tight = Some(Transcoder::new_with_clock_policy(&first, config,
+            ClockPolicy::AnchoredSamples { max_phase_samples: 1, report_timeout: Duration::from_secs(15) }, &pool, Cancellation::default())?);
+        let mut held_tight = Vec::new();
+        let mut next = Some(first);
+        let mut decoder = None;
+        let mut end = None;
+        let mut strict_refused = 0;
+        let mut last = None;
+        let mut budget_trip = false;
+        let until = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let delivery = if let Some(first) = next.take() { first } else {
+                tokio::select! {
+                    biased;
+                    _ = tokio::time::sleep_until(until) => break,
+                    packet = input.recv() => packet.map_err(Error::from)?,
+                }
+            };
+            let original = (delivery.packet()?.pts(), delivery.packet()?.dts());
+            for packet in strict.push(&delivery)? {
+                strict_refused += u64::from(packet.source_timestamp_48k().is_err());
+            }
+            if let Some(encoder) = &mut tight {
+                match encoder.push(&delivery) {
+                    Ok(packets) => held_tight.extend(packets),
+                    Err(Error::Clock) => {
+                        assert!(held_tight.iter().all(|p| p.data() == Err(Error::Clock)));
+                        tight.take(); held_tight.clear();
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            match candidate.push(&delivery) {
+                Ok(packets) => for packet in packets {
+                    consume_candidate(&packet, &mut decoder, &mut end)?;
+                    last = Some(packet);
+                },
+                Err(Error::Clock) => {
+                    assert!(candidate.clock_status().maximum_absolute_phase_samples > 4800);
+                    assert!(last.as_ref().is_some_and(|p| p.data() == Err(Error::Clock)));
+                    budget_trip = true;
+                    break;
+                }
+                Err(error) => return Err(error),
+            }
+            assert_eq!(original, (delivery.packet()?.pts(), delivery.packet()?.dts()));
+        }
+        if !budget_trip {
+            for packet in candidate.finish()? {
+                consume_candidate(&packet, &mut decoder, &mut end)?;
+                last = Some(packet);
+            }
+            decoder.as_mut().unwrap().finish();
+            assert_eq!(decoder.as_ref().unwrap().samples, candidate.stats().decoded_samples);
+        }
+        assert!(strict_refused > 0);
+        assert!(tight.is_none());
+        eprintln!("Candidate anchored clock: budget_trip={budget_trip} status={:?} input={:?} decoded_opus={} strict_refusals={strict_refused}",
+            candidate.clock_status(), candidate.stats(), decoder.as_ref().unwrap().samples);
+        assert_eq!(source.snapshot().open_attempts, 1);
+        source.set_enabled(false).await.map_err(Error::from)?;
+        assert!(last.as_ref().unwrap().data().is_err());
+        drop((candidate, strict, last, held_tight));
+        assert_eq!(pool.reserved_bytes(), 0);
+        drop(input);
+        source.set_enabled(true).await.map_err(Error::from)?;
+        let mut input = source.subscribe(Tracks::Audio, SubscriptionLimits::default()).await.map_err(Error::from)?;
+        let first = loop {
+            let delivery = input.recv().await.map_err(Error::from)?;
+            if delivery.packet()?.sender_report().is_some() { break delivery; }
+        };
+        let mut fresh = Transcoder::new_with_clock_policy(&first, config, ClockPolicy::candidate(), &pool, Cancellation::default())?;
+        assert!(fresh.clock_status().anchored_pts.is_none());
+        assert!(!fresh.clock_status().sender_report_seen);
+        let output = fresh.push(&first)?;
+        assert_eq!(fresh.clock_status().decoded_samples, 1024);
+        assert_eq!(fresh.clock_status().latest_phase_samples, 0);
+        assert_eq!(source.snapshot().open_attempts, 2);
+        source.set_enabled(false).await.map_err(Error::from)?;
+        assert!(output.iter().all(|p| p.data().is_err()));
+        drop((fresh, output));
+        assert_eq!(pool.reserved_bytes(), 0);
+        Ok::<_, Error>(())
+    }).await;
+    registry.shutdown().await.unwrap();
+    result
+        .expect("bounded candidate window")
+        .expect("candidate lifecycle/presentation check");
 }

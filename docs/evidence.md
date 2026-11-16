@@ -241,6 +241,60 @@ also passed with the new observer. The AAC regression saw a further **+3296-samp
 step error** in its short window, reinforcing that observed maxima are not a chosen
 tolerance. The unrelated `AtomicU64::fetch_update` deprecation warning remains.
 
+### Explicit live-audio clock candidate
+
+The selected path is implemented as opt-in `ClockPolicy::AnchoredSamples`, with
+strict behavior retained by the existing constructor. It anchors once to decoded
+source PTS at SR/PRFT-backed admission, then advances by actual decoded samples.
+It checks every frame against that prediction and fails the processor above a
+**100-ms phase budget** or **15-second SR-bearing-packet age**. These are provisional
+operational refusal limits, not accepted lip-sync tolerances. Source packets and
+mismatch statistics are unchanged. See Architecture for the alternatives and
+symptoms that would require reconsideration; execution work remains only in TODO.
+The candidate currently refuses configurations other than 48-kHz input/output and
+20-ms Opus frames, isolating this decision from lower-rate finite-resampler tails.
+
+`tests/camera_audio.rs::real_anchored_audio_clock` ran two read-only 60-second windows
+on the authorized camera through one shared source. Parallel strict and deliberately
+one-sample-budget processors consumed the same delivery. No capture files, camera
+writes, listening test or HomeKit transport were involved.
+
+| Window | AAC packets / decoded samples | Opus packets | Final / maximum absolute phase | Outcome |
+|---|---:|---:|---:|---|
+| First | 2819 / 2886656 | 3008 | 3072 / 3392 samples (64 / 70⅔ ms) | No budget trip |
+| Final | 2822 / 2889728 | 3011 | 1152 / 2032 samples (24 / 42⅓ ms) | No budget trip |
+
+- An independent Opus decoder's output count matched the advertised audible interval
+  **for every packet**, and its final sample count equaled the actual decoded AAC
+  count. Audible intervals were contiguous on the candidate timeline. This validates
+  the explicit presentation contract, not physical A/V synchronization or PCM equality.
+- The first attempt correctly refused an incomplete priming description: initial
+  pre-skip was in **OpusHead**, with no packet skip side data. The contract now accounts
+  for header pre-skip once, checks it against encoder delay, retains end discard and
+  refuses unsupported shapes/coverage. `source_timestamp_48k` does not grant padded
+  packets a raw transport timestamp. The independent decoder actually honored these
+  boundaries; an RTP receiver without that contract is not covered by this result.
+- The final strict processor retained **2820 clock contradictions** and **3009
+  timestamp refusals**. The candidate did not erase that input evidence: its output
+  clock is an explicit model rather than a claim that the original PTS became exact.
+- The deliberately tight processor failed with `Clock`, revoked its held output and
+  released reservations while the other processors continued. Source disable revoked
+  candidate output; reopening produced a new unanchored processor, whose first frame
+  established a fresh zero-phase state. Unsupported lower-rate candidate admission
+  left no reservation. All reservations were released and reader shutdown was joined.
+
+These two windows are not a long soak. The real test records an explicit budget-trip
+outcome if the phase guard fires; such an outcome is **not successful clock acceptance**
+and must not be hidden by restarting the processor. A longer qualification, actual
+Apple onset/lip-sync behavior, live receiver preroll/late joins, lower-rate coverage,
+and HSV cut/decoder-history acceptance remain outstanding.
+
+The **11 library + 44 application tests**, all-target checking, strict library-only
+Clippy, formatting and Nix application build passed. The existing four-configuration
+AAC/Opus check and real shared-source/socket/lifecycle check also passed. Report-age
+expiry was checked with controlled unit-test instants, not an induced real-camera
+RTCP outage. No production or Apple playback acceptance is implied.
+
 ## Actual camera observation
 
 A bounded run of the native ingest reader connected to **10.76.14.10**, main encoder
