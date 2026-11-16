@@ -254,8 +254,12 @@ SSRCs cannot accumulate retained replay state.
 
 `revoke()` synchronously fences the nonblocking socket write under the same gate and
 wakes pending waits. Session replacement/end/suspend/shutdown revoke every affected
-track before the first awaited proxy cleanup, then abort/join proxy tasks. Drop revokes
-and aborts but cannot join. Already kernel-accepted datagrams cannot be retracted.
+track before the first awaited cleanup, then joins its media owner. Production no
+longer keeps separate child-process maps: a temporary native adapter attaches each
+FFmpeg child to its media owner. Producer exit revokes the transport and joins the
+proxy; transport termination kills/reaps the child and joins its bounded diagnostic
+drain. Drop signals revocation but cannot join; explicit stop must be awaited.
+Already kernel-accepted datagrams cannot be retracted.
 The producer predicate is checked before encryption and immediately before writing,
 but **is not an atomic source-generation fence**: integrating source retirement/privacy
 still requires revoking its transports before acknowledging the transition. Aggregate
@@ -264,8 +268,41 @@ source/output accounting, recording-copy fences and joined source owners remain 
 Real-source H.264 from two Rust viewers decrypts/decodes through independent FFmpeg SRTP
 receivers. This is not Home app acceptance. Production still uses FFmpeg camera readers
 and their RTCP clock pairs/cadence; Rust now formats the outbound reports below.
+Authenticated receiver feedback is now consumed in Rust, not sent back to FFmpeg.
 Source-clock RTCP, audio receiver priming and shared-acquisition injection remain
 required before those readers can be removed.
+
+### Rust-owned receiver feedback and live lifetime
+
+`rtcp::Receiver` consumes at most 2048 authenticated plaintext bytes from `Transport`.
+Parsing is transactional: a malformed trailing block cannot partly update report
+state, pin an identity or consume a FIR sequence. It retains one remote participant,
+one last report for the local SSRC and saturating counters, not an SSRC map, CNAME,
+reason string or packet history. SR/RR report fields preserve signed cumulative loss,
+extended sequence, raw jitter/LSR/DLSR; they are not playback acknowledgement or an
+RTT/clock estimate. Reports for other media SSRCs do not replace this track's state.
+
+PLI, FIR and generic NACK shapes are validated. Consecutive repeated FIR request
+sequence numbers are deduplicated, including wrap; NACK counts requested occurrences,
+not unique loss. Requests are observable but do not force a camera IDR, retransmit
+packets, change rate or reset clocks. No such mechanism has been implemented or is
+claimed by removing the legacy feedback-forwarding socket path. Unknown framed blocks
+are counted without retained payloads. SDES/BYE lengths and final-only padding are
+checked; an authenticated BYE for the bound participant terminates this track.
+
+The production media owner then revokes writes and joins its native producer/reaper
+and diagnostic drain. Explicit HAP stop/replacement fences all affected tracks before
+awaiting any owner. Unexpected producer exit also revokes media; video transport
+lifetime, not stale child-map membership, drives the active-live gauge. Fixed-label
+`amcrust_receiver_feedback_total` counters distinguish accepted datagrams, report
+packets, requests, unsupported blocks, BYE and semantic refusal. Authentication/replay
+refusals remain at the transport boundary. Native stderr is drained in fixed-size
+chunks without retaining/logging potentially credential-bearing strings.
+
+A real production video-path check decrypted 100 RTP packets and an SR, sent RR,
+PLI and BYE, and observed producer exit/reaping without a HAP stop request. This was
+not Apple playback, shared acquisition, video decode or clock qualification; the
+input, RTP producer clock/cadence and audio/recording producers are still legacy.
 
 ### Rust-owned outbound sender reports
 
@@ -289,10 +326,11 @@ clock pair and builds Rust SR/SDES with actual accepted counts. The legacy clock
 report cadence are unchanged. Other framed blocks, including FFmpeg's host-derived
 SDES, are not forwarded. BYE accompanying an SR is appended to that compound; a bare
 BYE retires the adapter without inventing a clock or sending unnegotiated reduced-size
-RTCP. Controller feedback still goes to the legacy producer after authentication.
+RTCP. Controller feedback is now consumed by the Rust receiver described above.
 
 **Remaining integration:** qualify the source-to-NTP mapping, own report scheduling
-and receiver-feedback handling in the Rust session actor, and connect source retirement.
+in the Rust session actor, and connect source retirement. Recovery actions for
+receiver keyframe/retransmission requests are not implemented.
 A report formatter is not a clock policy or an audio preroll/trim contract. Neither
 this API nor the accepted-write counters establishes Apple playback or common A/V
 capture-clock accuracy.

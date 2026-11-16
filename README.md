@@ -136,7 +136,10 @@ budgets. Real input has now exercised that isolation, but this is not production
 clock qualification: excess cumulative phase still stops unsupported audio. Oversized
 but explained AAC mapping changes now quarantine audio for the generation rather than
 stop healthy video; this new quarantine path still awaits a live oversized event.
-Video's own timing faults remain fatal. Diagnostics separate reconstructed RTP duration debt,
+Video's own timing faults remain fatal. Production receiver feedback is now parsed in
+Rust instead of returned to FFmpeg, and live media owners join producer/transport
+teardown. FFmpeg camera readers and their clock/cadence remain; this is not shared-reader
+cutover. Diagnostics separate reconstructed RTP duration debt,
 SR mapping changes and unexplained residuals rather than blaming all drift on SRs.
 
 All project-owned C workers and the obsolete Python/AMC2 fixture harness are removed;

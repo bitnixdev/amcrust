@@ -134,15 +134,23 @@ the production integration below. Removing probes is not the acquisition cutover
     - [x] Route existing production video/audio adapters through the shared Rust
       secure UDP transport; remove their inline encryption/socket-write path. Bound
       protected datagrams, reserve SRTP overhead, authenticate/replay-check feedback
-      and revoke all affected tracks before awaited proxy abort/join.
+      and revoke all affected tracks before awaited media teardown.
     - [x] Exercise real-source Rust H.264 directly through that transport: two FFmpeg
       SRTP receivers decode 30 frames each at 400-/1200-byte protected datagram limits.
     - [x] Build outbound SR/SDES in Rust using kernel-accepted RTP packet/payload
       counts and a fresh session CNAME shared by audio/video. Replace verbatim
       forwarding of FFmpeg reports; preserve only their explicit clock pair/cadence
       in the legacy adapter. Validate compound framing and propagate terminal BYE.
+    - [x] Consume authenticated receiver feedback in Rust, removing the UDP return
+      path to FFmpeg. Bound and validate RR/SR, SDES, PLI/FIR/NACK and BYE; retain only
+      fixed-size report/counter state and expose fixed-label metrics. Requests do not
+      imply retransmission or forced IDR support. Peer BYE retires its track.
+    - [x] Replace split live child/proxy maps with joined media ownership. Native
+      producer exit fences transport; track termination kills/reaps its producer and
+      joins its diagnostic drain. Real camera RR/PLI/BYE closed the video producer
+      without a HAP stop request; local checks cover explicit stop and producer exit.
     - [ ] Replace the FFmpeg-facing adapters with Rust media producers, a qualified
-      source-to-NTP mapping, report scheduling and receiver-feedback handling, then
+      source-to-NTP mapping and report scheduling, then
       verify Home app playback. Report formatting alone does not supply a source
       clock, pacing, source-generation fence or audio priming policy.
 - [ ] Live audio: use shared AAC input; own FFmpeg-library decode/Opus encode in Rust.

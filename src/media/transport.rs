@@ -81,6 +81,10 @@ impl Transport {
             receive_slot: AsyncMutex::new(()),
         })
     }
+    /// Whether transport revocation has been signaled; not a task-join acknowledgement.
+    pub fn is_closed(&self) -> bool {
+        *self.closed.borrow()
+    }
     /// Snapshot of kernel-accepted RTP, retained after revocation. Not receiver
     /// acknowledgments. A session actor must serialize snapshot/report generation
     /// with its sends to associate the counters with the supplied clock pair.

@@ -736,6 +736,50 @@ The pinned package built successfully with normal Nix substitution enabled. An
 initial substitution-disabled attempt failed fetching `mailcap-2.1.54.tar.xz`
 (HTTP 404) in the dependency closure; no pins were changed to bypass it.
 
+#### Production receiver-feedback ownership and joined live teardown
+
+Removed the production SRTCP-to-FFmpeg return path and separate live child-process
+maps. `rtcp::Receiver` now validates bounded authenticated feedback transactionally,
+retaining one participant's counters and last relevant SR/RR report. Malformed tails
+cannot partly apply report state, consume a FIR sequence or trigger BYE. Signed loss,
+sequence and raw jitter/LSR/DLSR are preserved without inferring RTT or playback.
+SDES, PLI/FIR, generic NACK and BYE shapes/padding are checked; unknown framed blocks
+are counted. Fixed-label metrics expose observations/refusals. Keyframe/retransmission
+requests are not fulfilled by this parser and do not cause encoder writes or reanchors.
+
+Each live media owner now supervises its temporary native producer. Producer exit
+revokes/joins media; media termination kills/reaps the child and joins a fixed-buffer
+stderr drain. Raw native diagnostic text is no longer retained/logged, avoiding
+credential-bearing strings. Explicit stop/replacement fences affected transports
+before awaiting owners; Drop signals cleanup but is not an acknowledgement. The live
+video gauge follows transport-task lifetime, not stale child-map entries.
+
+A **4.59-second real production video-path check** used north-driveway main input,
+read-only and serially, through `StreamManager::start_stream`, the existing FFmpeg
+video producer and Rust transport/control. A local authenticated protocol peer decrypted
+**100 RTP packets** and an outbound SR, then sent RR, PLI and BYE. The media owner
+finished and reaped the native child **without a HAP stop request**; explicit cleanup
+left the live gauge zero. A subsequent **4.53-second repeat**, again decrypting 100
+RTP packets and an SR, also checked successful owner join and that the process was
+already reaped **before** invoking HAP cleanup. No encoder settings were written and
+no media was retained.
+This tests actual production control/lifetime, not H.264 decoding, Apple playback,
+source timing qualification or shared acquisition. The test is ignored by default:
+`stream::tests::real_production_feedback_and_joined_teardown`.
+
+Local checks additionally cover producer exit, explicit joined stop/reaping,
+no feedback datagrams forwarded to the producer, authenticated semantic refusal,
+exact report fields, foreign identities/targets, FIR deduplication/wrap, malformed
+compounds/padding and bounded parser mutation/truncation cases. Input and producer
+clocks/cadence, live audio and recording still use the existing native paths. The
+shared registry/producers, generation-to-transport fences, sustained clock recovery,
+recording coverage/HDS ownership and HomeKit acceptance remain required before full
+cutover or removal of the remaining FFmpeg command adapters.
+
+Validation passed: 39 library tests, 44 application tests, the phase-trend test,
+two retained Python sampler tests, all-target checking, strict library Clippy,
+formatting and the pinned Nix package build. Bounded self-review found no issues.
+
 ## Actual camera observation
 
 A bounded run of the native ingest reader connected to **10.76.14.10**, main encoder

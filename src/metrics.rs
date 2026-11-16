@@ -44,6 +44,7 @@ pub struct Metrics {
     snapshot_delivery_bytes: AtomicU64,
     snapshot_delivery_errors: AtomicU64,
     live_stream_starts: AtomicU64,
+    receiver_feedback: [AtomicU64; 8],
     live_first_rtp_count: AtomicU64,
     live_first_rtp_micros: AtomicU64,
     live_first_idr_count: AtomicU64,
@@ -79,6 +80,7 @@ impl Metrics {
             snapshot_delivery_bytes: AtomicU64::new(0),
             snapshot_delivery_errors: AtomicU64::new(0),
             live_stream_starts: AtomicU64::new(0),
+            receiver_feedback: std::array::from_fn(|_| AtomicU64::new(0)),
             live_first_rtp_count: AtomicU64::new(0),
             live_first_rtp_micros: AtomicU64::new(0),
             live_first_idr_count: AtomicU64::new(0),
@@ -168,8 +170,32 @@ impl Metrics {
             .fetch_add(bytes as u64, Ordering::Relaxed);
     }
 
-    pub fn set_live_connections(&self, count: usize) {
-        self.live_connections.store(count as u64, Ordering::Relaxed);
+    pub fn live_connection_opened(&self) {
+        self.live_connections.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Paired exactly once with opened by the media task's lifetime guard.
+    pub fn live_connection_closed(&self) {
+        self.live_connections.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    pub fn receiver_feedback(&self, feedback: amcrust::media::rtcp::Feedback) {
+        for (counter, value) in self.receiver_feedback.iter().zip([
+            1,
+            feedback.report_packets,
+            feedback.pli,
+            feedback.fir,
+            feedback.nack_packets,
+            feedback.unsupported,
+            u32::from(feedback.bye),
+            0,
+        ]) {
+            counter.fetch_add(value.into(), Ordering::Relaxed);
+        }
+    }
+
+    pub fn feedback_refused(&self) {
+        self.receiver_feedback[7].fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn data_stream_opened(&self) {
@@ -210,7 +236,7 @@ impl Metrics {
         u8::from(value.load(Ordering::Relaxed))
     }
 
-    fn render(&self, recording_pipeline_running: bool) -> String {
+    pub(crate) fn render(&self, recording_pipeline_running: bool) -> String {
         let mut output = format!(
             concat!(
                 "# HELP amcrust_build_info Build and version information.\n",
@@ -320,6 +346,25 @@ impl Metrics {
         {
             output.push_str(&format!(
                 "amcrust_recording_deliveries_total{{outcome=\"{label}\"}} {}\n",
+                Self::load(count)
+            ));
+        }
+        output.push_str("# HELP amcrust_receiver_feedback_total Authenticated RTCP observations; requests are not fulfillment and reports are not playback acknowledgements.\n# TYPE amcrust_receiver_feedback_total counter\n");
+        for (label, count) in [
+            "datagram",
+            "report",
+            "pli",
+            "fir",
+            "nack_packet",
+            "unsupported",
+            "bye",
+            "refused",
+        ]
+        .iter()
+        .zip(&self.receiver_feedback)
+        {
+            output.push_str(&format!(
+                "amcrust_receiver_feedback_total{{kind=\"{label}\"}} {}\n",
                 Self::load(count)
             ));
         }

@@ -2,6 +2,9 @@
 //! A caller supplies an explicit sender-clock pair; this module never substitutes
 //! packet arrival time or guesses a source-to-NTP mapping.
 
+mod feedback;
+pub use feedback::{Feedback, FeedbackStats, Receiver, ReceptionReport};
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     /// RFC 3550 counters wrap modulo 2^32. These count kernel-accepted RTP only.
@@ -37,7 +40,7 @@ pub enum Error {
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "sender RTCP: {self:?}")
+        write!(f, "RTCP: {self:?}")
     }
 }
 impl std::error::Error for Error {}

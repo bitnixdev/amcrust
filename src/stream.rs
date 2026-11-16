@@ -6,7 +6,7 @@ use rand::Rng;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
@@ -18,23 +18,78 @@ use amcrust::media::transport::{Error as TransportError, RTP_OVERHEAD, Transport
 
 struct MediaProxy {
     transport: Arc<Transport>,
+    metrics: Arc<Metrics>,
     task: Option<tokio::task::JoinHandle<()>>,
+    #[cfg(test)]
+    producer_id: Option<u32>,
 }
 impl MediaProxy {
+    /// Temporary native-producer adapter. Transport/session lifetime survives its
+    /// replacement by Rust producers; no separate, unjoined child ownership.
+    fn with_producer(mut self, mut child: Child) -> Self {
+        #[cfg(test)]
+        {
+            self.producer_id = child.id();
+        }
+        let mut media = self.task.take().expect("media task");
+        let transport = self.transport.clone();
+        let stderr = child.stderr.take();
+        let metrics = self.metrics.clone();
+        self.task = Some(tokio::spawn(async move {
+            let diagnostics = tokio::spawn(async move {
+                if let Some(mut stderr) = stderr {
+                    // Bounded drain: do not retain/log native URLs or credentials.
+                    let mut buffer = [0; 1024];
+                    while let Ok(n) = stderr.read(&mut buffer).await {
+                        if n == 0 {
+                            break;
+                        }
+                    }
+                }
+            });
+            let media_finished = tokio::select! {
+                _ = &mut media => true,
+                status = child.wait() => {
+                    if !transport.is_closed() {
+                        metrics.error(ErrorSubsystem::LiveStream);
+                        warn!("native media producer ended unexpectedly: {status:?}");
+                    }
+                    false
+                },
+            };
+            transport.revoke();
+            if !media_finished {
+                media.abort();
+                let _ = media.await;
+            }
+            if child.id().is_some() {
+                let _ = child.start_kill();
+            }
+            let _ = child.wait().await;
+            diagnostics.abort();
+            let _ = diagnostics.await;
+        }));
+        self
+    }
     async fn stop(mut self) {
         self.transport.revoke();
         if let Some(task) = self.task.take() {
-            task.abort();
             let _ = task.await;
         }
     }
 }
 impl Drop for MediaProxy {
     fn drop(&mut self) {
+        // Wake media and its supervisor. Aborting the supervisor would lose the
+        // explicit wait/reap; Drop signals, stop() additionally joins.
         self.transport.revoke();
-        if let Some(task) = &self.task {
-            task.abort();
-        }
+    }
+}
+
+struct LiveConnection(Arc<Metrics>);
+impl Drop for LiveConnection {
+    fn drop(&mut self) {
+        self.0.live_connection_closed();
     }
 }
 
@@ -105,10 +160,6 @@ struct Session {
 struct Inner {
     /// Prepared sessions and running streams, keyed by HAP session id.
     sessions: std::collections::HashMap<Vec<u8>, Session>,
-    /// Video and audio use independent FFmpeg processes so an audio source or
-    /// resampler stall can never throttle stream-copied video.
-    children: std::collections::HashMap<Vec<u8>, Child>,
-    audio_children: std::collections::HashMap<Vec<u8>, Child>,
     video_proxies: std::collections::HashMap<Vec<u8>, MediaProxy>,
     /// Audio RTP proxy tasks, keyed by HAP session id.
     audio_proxies: std::collections::HashMap<Vec<u8>, MediaProxy>,
@@ -443,20 +494,12 @@ impl StreamManager {
         // Fence both tracks before the first awaited cleanup.
         inner.revoke_transports(Some(&session.id));
         // Tear down any previous stream for this session first.
-        if let Some(mut child) = inner.children.remove(&session.id) {
-            let _ = child.start_kill();
-        }
-        if let Some(mut child) = inner.audio_children.remove(&session.id) {
-            let _ = child.start_kill();
-        }
         if let Some(proxy) = inner.audio_proxies.remove(&session.id) {
             proxy.stop().await;
         }
         if let Some(proxy) = inner.video_proxies.remove(&session.id) {
             proxy.stop().await;
         }
-        self.metrics.set_live_connections(inner.children.len());
-
         debug!(
             "selected live audio: Opus mono {}Hz, {}ms packets, payload {}, max {}kbps, RTCP {:.3}s",
             audio_rate_hz,
@@ -545,19 +588,11 @@ impl StreamManager {
 
         debug!("starting video ffmpeg → {video_dest}");
         match video_cmd.spawn() {
-            Ok(mut child) => {
-                if let Some(stderr) = child.stderr.take() {
-                    tokio::spawn(async move {
-                        let mut lines = BufReader::new(stderr).lines();
-                        while let Ok(Some(line)) = lines.next_line().await {
-                            warn!("video ffmpeg: {line}");
-                        }
-                    });
-                }
-                inner.children.insert(session.id.clone(), child);
-                inner.video_proxies.insert(session.id.clone(), video_proxy);
+            Ok(child) => {
+                inner
+                    .video_proxies
+                    .insert(session.id.clone(), video_proxy.with_producer(child));
                 self.metrics.live_stream_started();
-                self.metrics.set_live_connections(inner.children.len());
             }
             Err(e) => {
                 video_proxy.stop().await;
@@ -620,14 +655,6 @@ impl StreamManager {
                     debug!("starting audio ffmpeg → {audio_dest}");
                     match audio_cmd.spawn() {
                         Ok(mut child) => {
-                            if let Some(stderr) = child.stderr.take() {
-                                tokio::spawn(async move {
-                                    let mut lines = BufReader::new(stderr).lines();
-                                    while let Ok(Some(line)) = lines.next_line().await {
-                                        warn!("audio ffmpeg: {line}");
-                                    }
-                                });
-                            }
                             let proxy = spawn_media_proxy(
                                 "audio",
                                 local_rtp,
@@ -643,8 +670,9 @@ impl StreamManager {
                                 self.metrics.clone(),
                             );
                             if let Some(proxy) = proxy {
-                                inner.audio_children.insert(session.id.clone(), child);
-                                inner.audio_proxies.insert(session.id.clone(), proxy);
+                                inner
+                                    .audio_proxies
+                                    .insert(session.id.clone(), proxy.with_producer(child));
                             } else {
                                 let _ = child.start_kill();
                                 let _ = child.wait().await;
@@ -671,13 +699,6 @@ impl StreamManager {
         inner.revoke_transports(session_id.as_deref());
         match session_id {
             Some(sid) => {
-                if let Some(mut child) = inner.children.remove(&sid) {
-                    let _ = child.start_kill();
-                    debug!("stream stopped");
-                }
-                if let Some(mut child) = inner.audio_children.remove(&sid) {
-                    let _ = child.start_kill();
-                }
                 if let Some(proxy) = inner.audio_proxies.remove(&sid) {
                     proxy.stop().await;
                 }
@@ -687,12 +708,6 @@ impl StreamManager {
                 inner.sessions.remove(&sid);
             }
             None => {
-                for (_, mut child) in inner.children.drain() {
-                    let _ = child.start_kill();
-                }
-                for (_, mut child) in inner.audio_children.drain() {
-                    let _ = child.start_kill();
-                }
                 for (_, proxy) in inner.audio_proxies.drain() {
                     proxy.stop().await;
                 }
@@ -702,7 +717,6 @@ impl StreamManager {
                 inner.sessions.clear();
             }
         }
-        self.metrics.set_live_connections(inner.children.len());
     }
 
     /// Stops all streams; used on shutdown.
@@ -741,7 +755,7 @@ async fn bind_tokio_udp_pair(
 }
 
 /// Proxies FFmpeg's plain RTP and RTCP to the controller as SRTP/SRTCP on one
-/// multiplexed port, and returns controller SRTCP feedback to FFmpeg.
+/// multiplexed port. Authenticated controller feedback is consumed only by Rust.
 fn spawn_media_proxy(
     label: &'static str,
     local_rtp: tokio::net::UdpSocket,
@@ -763,10 +777,18 @@ fn spawn_media_proxy(
     let mut rescaler = amcrust::srtp::TimestampRescaler::new(ratio);
     let sender = transport.clone();
     let reports = rtcp::Sender::new(ssrc, rtcp_identity);
+    let connection = if label == "video" {
+        metrics.live_connection_opened();
+        Some(LiveConnection(metrics.clone()))
+    } else {
+        None
+    };
+    let owner_metrics = metrics.clone();
     let task = tokio::spawn(async move {
+        let _connection = connection;
+        let mut receiver = rtcp::Receiver::new(ssrc);
         let mut rtp_buf = [0u8; 2048];
         let mut rtcp_buf = [0u8; 2048];
-        let mut ffmpeg_rtcp_peer = None;
         let mut sent_rtp = 0u64;
         let mut sent_rtcp = 0u64;
         let mut received_feedback = 0u64;
@@ -799,9 +821,8 @@ fn spawn_media_proxy(
                         }
                     }
                 }
-                result = local_rtcp.recv_from(&mut rtcp_buf) => {
-                    let Ok((n, peer)) = result else { break };
-                    ffmpeg_rtcp_peer = Some(peer);
+                result = local_rtcp.recv(&mut rtcp_buf) => {
+                    let Ok(n) = result else { break };
                     let packet = &mut rtcp_buf[..n];
                     rescaler.rescale_rtcp(packet);
                     let control = match rtcp::local_control(packet, ssrc) {
@@ -847,23 +868,35 @@ fn spawn_media_proxy(
                             break;
                         }
                         Ok(packet) => {
-                            if let Some(peer) = ffmpeg_rtcp_peer {
-                                let _ = local_rtcp.send_to(&packet, peer).await;
-                            }
+                            let feedback = match receiver.receive(&packet) {
+                                Ok(feedback) => feedback,
+                                Err(_) => {
+                                    metrics.feedback_refused();
+                                    continue;
+                                }
+                            };
+                            metrics.receiver_feedback(feedback);
                             received_feedback += 1;
                             if received_feedback == 1 {
-                                debug!("{label} proxy: first controller SRTCP feedback received");
+                                debug!("{label} proxy: first validated controller feedback received");
                             }
+                            // PLI/FIR/NACK remain observable unsupported requests:
+                            // no camera write, retransmission or clock reset is implied.
+                            if feedback.bye { break; }
                         }
                     }
                 }
             }
         }
         sender.revoke();
+        debug!("{label} receiver feedback summary: {:?}", receiver.stats());
     });
     Some(MediaProxy {
         transport,
+        metrics: owner_metrics,
         task: Some(task),
+        #[cfg(test)]
+        producer_id: None,
     })
 }
 
@@ -1019,6 +1052,84 @@ mod tests {
         assert!(!h264_contains_idr(&fua));
     }
 
+    #[test]
+    #[ignore = "internal subprocess fixture; invoked only by lifecycle tests"]
+    fn media_child_fixture() {
+        if std::env::var("AMCRUST_MEDIA_CHILD_FIXTURE").as_deref() == Ok("wait") {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+        }
+    }
+    fn fixture_child(mode: &str) -> Child {
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "stream::tests::media_child_fixture"])
+            .env("AMCRUST_MEDIA_CHILD_FIXTURE", mode)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap()
+    }
+    fn assert_reaped(pid: u32) {
+        assert!(is_reaped(pid), "producer was not reaped by its supervisor");
+    }
+    fn is_reaped(pid: u32) -> bool {
+        // Public POSIX API on the supported Darwin/Linux targets. WNOHANG=1;
+        // ECHILD=10 means our supervisor, not this assertion, already reaped it.
+        unsafe extern "C" {
+            fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
+        }
+        let mut status = 0;
+        let result = unsafe { waitpid(pid.try_into().unwrap(), &mut status, 1) };
+        let error = std::io::Error::last_os_error().raw_os_error();
+        result == -1 && error == Some(10)
+    }
+
+    #[tokio::test]
+    async fn producer_exit_revokes_transport_and_releases_media_tasks() {
+        let (rtp, rtcp) = bind_tokio_udp_pair(Ipv4Addr::LOCALHOST.into())
+            .await
+            .unwrap();
+        let out = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let controller = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let metrics = Metrics::new();
+        let mut proxy = spawn_media_proxy(
+            "video",
+            rtp,
+            rtcp,
+            out,
+            "127.0.0.1".into(),
+            controller.local_addr().unwrap().port(),
+            vec![7; 30],
+            42,
+            [9; 16],
+            188,
+            1,
+            metrics.clone(),
+        )
+        .unwrap()
+        .with_producer(fixture_child("exit"));
+        let pid = proxy.producer_id.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            proxy.task.take().unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_reaped(pid);
+        assert!(
+            metrics
+                .render(false)
+                .contains("amcrust_connections_open{type=\"live_stream\"} 0")
+        );
+        assert!(matches!(
+            proxy.transport.send_rtp(&[0; 12], || true).await,
+            Err(amcrust::media::transport::Error::Closed)
+        ));
+        proxy.stop().await;
+    }
+
     #[tokio::test]
     async fn legacy_adapter_uses_secure_transport_and_joins_stop() {
         use std::time::Duration;
@@ -1057,6 +1168,8 @@ mod tests {
             metrics.clone(),
         )
         .unwrap();
+        let proxy = proxy.with_producer(fixture_child("wait"));
+        let pid = proxy.producer_id.unwrap();
         let fence = proxy.transport.clone();
         let mut crypto = Context::new(
             &[7; 16],
@@ -1092,7 +1205,30 @@ mod tests {
         let feedback = [0x80, 201, 0, 1, 0, 0, 0, 99];
         let encrypted = crypto.encrypt_rtcp(&feedback).unwrap();
         controller.send_to(&encrypted, out_address).await.unwrap();
-        assert_eq!(receive(&producer).await, feedback);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !metrics.render(false).contains("kind=\"datagram\"} 1") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), producer.recv(&mut [0; 2048]))
+                .await
+                .is_err()
+        );
+        let malformed = [0x81, 201, 0, 1, 0, 0, 0, 99];
+        controller
+            .send_to(&crypto.encrypt_rtcp(&malformed).unwrap(), out_address)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !metrics.render(false).contains("kind=\"refused\"} 1") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
         let manager = StreamManager::new(
             vec![VideoSource {
                 rtsp_url: "rtsp://unused.invalid".into(),
@@ -1111,6 +1247,7 @@ mod tests {
             .insert(vec![1], proxy);
         manager.end_session(Some(vec![1])).await;
         manager.stop_stream().await;
+        assert_reaped(pid);
         assert!(matches!(
             fence.send_rtp(&packet, || true).await,
             Err(amcrust::media::transport::Error::Closed)
@@ -1120,6 +1257,128 @@ mod tests {
         let _rtp = UdpSocket::bind(rtp_address).await.unwrap();
         let _rtcp = UdpSocket::bind(rtcp_address).await.unwrap();
         let _out = UdpSocket::bind(out_address).await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "real north-driveway camera, serial read-only access; production video control/teardown, not playback"]
+    async fn real_production_feedback_and_joined_teardown() {
+        use webrtc_srtp::{context::Context, protection_profile::ProtectionProfile};
+        dotenvy::dotenv().ok();
+        let user = std::env::var("AMCREST_USERNAME").unwrap();
+        let password = std::env::var("AMCREST_PASSWORD").unwrap();
+        let url =
+            format!("rtsp://{user}:{password}@10.76.14.10:554/cam/realmonitor?channel=1&subtype=0");
+        let metrics = Metrics::new();
+        let source = VideoSource {
+            rtsp_url: url.clone(),
+            profile: VideoProfile::LIVE_1080P,
+        };
+        let manager = StreamManager::new(
+            vec![source.clone()],
+            url,
+            false,
+            Ipv4Addr::LOCALHOST.into(),
+            metrics.clone(),
+        );
+        let controller = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let out = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let destination = out.local_addr().unwrap();
+        let id = vec![1; 16];
+        manager.inner.lock().await.sessions.insert(
+            id.clone(),
+            Session {
+                id: id.clone(),
+                controller_ip: "127.0.0.1".into(),
+                video_port: controller.local_addr().unwrap().port(),
+                audio_port: 0,
+                video_key: vec![7; 30],
+                audio_key: vec![],
+                video_ssrc: 42,
+                audio_ssrc: 43,
+                rtcp_identity: [9; 16],
+                video_out_socket: Some(out),
+                audio_out_socket: None,
+            },
+        );
+        manager
+            .start_stream(
+                Some(id.clone()),
+                source,
+                99,
+                1200,
+                110,
+                48000,
+                20,
+                24,
+                1.0,
+                1200,
+            )
+            .await;
+        let pid = manager
+            .inner
+            .lock()
+            .await
+            .video_proxies
+            .get(&id)
+            .and_then(|p| p.producer_id);
+        let mut crypto = Context::new(
+            &[7; 16],
+            &[7; 14],
+            ProtectionProfile::Aes128CmHmacSha1_80,
+            None,
+            None,
+        )
+        .unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            let mut buffer = [0; 2048];
+            let mut packets = 0u64;
+            let mut report = false;
+            while packets < 100 || !report {
+                let size = controller.recv(&mut buffer).await.map_err(|e| e.to_string())?;
+                if (192..=223).contains(&buffer[1]) {
+                    let decoded = crypto.decrypt_rtcp(&buffer[..size]).map_err(|e| e.to_string())?;
+                    report |= decoded.len() == 72 && decoded[1] == 200;
+                } else {
+                    crypto.decrypt_rtp(&buffer[..size]).map_err(|e| e.to_string())?;
+                    packets += 1;
+                }
+            }
+            let rr = [0x80, 201, 0, 1, 0, 0, 0, 99];
+            let pli = [0x81, 206, 0, 2, 0, 0, 0, 99, 0, 0, 0, 42];
+            let bye = [0x81, 203, 0, 1, 0, 0, 0, 99];
+            for bytes in [rr.as_slice(), pli.as_slice(), bye.as_slice()] {
+                controller.send_to(&crypto.encrypt_rtcp(bytes).map_err(|e| e.to_string())?, destination).await.map_err(|e| e.to_string())?;
+            }
+            loop {
+                let inner = manager.inner.lock().await;
+                if inner.video_proxies.get(&id).is_some_and(|proxy| proxy.task.as_ref().is_some_and(|t| t.is_finished())) { break; }
+                drop(inner);
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            let task = manager.inner.lock().await.video_proxies.get_mut(&id)
+                .and_then(|p| p.task.take()).ok_or("missing media owner")?;
+            task.await.map_err(|e| e.to_string())?;
+            if !pid.is_some_and(is_reaped) {
+                return Err("producer was not reaped before HAP cleanup".into());
+            }
+            if !metrics.render(false).contains("kind=\"bye\"} 1") || !metrics.render(false).contains("kind=\"pli\"} 1") {
+                return Err("receiver feedback was not handled locally".into());
+            }
+            eprintln!("Production video control: decrypted_rtp={packets} sender_report={report}; RR/PLI/BYE accepted; producer exited without a HAP stop request");
+            Ok::<_, String>(())
+        }).await;
+        manager.stop_stream().await;
+        if let Some(pid) = pid {
+            assert_reaped(pid);
+        }
+        assert!(
+            metrics
+                .render(false)
+                .contains("amcrust_connections_open{type=\"live_stream\"} 0")
+        );
+        result
+            .expect("production control deadline")
+            .expect("production control");
     }
 
     #[test]
