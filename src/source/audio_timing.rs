@@ -26,6 +26,8 @@ pub struct MappingStep {
     pub report_mapping_shift: i128,
     pub mapping_residual: i128,
     pub previous_report_age_ms: u128,
+    /// Public metadata explains the mapping change; this does not authorize continuation.
+    pub explained_remapping: bool,
     pub bounded_remapping: bool,
 }
 /// Exact diagnostic accounting in 48-kHz ticks, not a replacement media clock.
@@ -217,7 +219,7 @@ impl Tracker {
         let shift = nearest(ntp_step as i128 * 48000, 1_i128 << 32) - sr_rtp_step as i128;
         let residual = mapped_step - raw_step as i128 - shift;
         let age = at.saturating_duration_since(old_report_at);
-        let bounded = old.report.ssrc == point.report.ssrc
+        let explained = old.report.ssrc == point.report.ssrc
             && ntp_step > 0
             && sr_rtp_step > 0
             && age < Duration::from_secs(15)
@@ -228,11 +230,10 @@ impl Tracker {
             && point.duration == 1024
             && (old.flags | point.flags) & 2 == 0
             && (1..=4800).contains(&raw_step)
-            // Two valid endpoints can lie at opposite ends of the existing
-            // +/-100ms phase window. This is its diameter, NOT a larger phase
-            // budget: the consuming SampleClock still checks every endpoint.
-            && shift.abs() <= 2 * 4800
             && residual.abs() <= 1;
+        // Two valid endpoints can span the existing +/-100ms window's diameter.
+        // Larger explained changes are quarantine evidence, NEVER a clock grant.
+        let bounded = explained && shift.abs() <= 2 * 4800;
         Some(MappingStep {
             previous: old,
             current: point,
@@ -241,6 +242,7 @@ impl Tracker {
             report_mapping_shift: shift,
             mapping_residual: residual,
             previous_report_age_ms: age.as_millis(),
+            explained_remapping: explained,
             bounded_remapping: bounded,
         })
     }
@@ -527,6 +529,12 @@ mod tests {
         assert!(step(1024, -9600, Duration::from_secs(5), true).bounded_remapping);
         assert!(!step(1024, -1120, Duration::from_secs(15), true).bounded_remapping);
         assert!(!step(1024, -1120, Duration::from_secs(5), false).bounded_remapping);
+        let oversized = step(1024, -13248, Duration::from_secs(5), true);
+        assert!(oversized.explained_remapping);
+        assert!(!oversized.bounded_remapping);
+        assert!(!step(-96, 0, Duration::from_secs(5), true).explained_remapping);
+        assert!(!step(1024, -1120, Duration::from_secs(15), true).explained_remapping);
+        assert!(!step(1024, -1120, Duration::from_secs(5), false).explained_remapping);
         assert!(!step(1024, -9601, Duration::from_secs(5), true).bounded_remapping);
     }
 }

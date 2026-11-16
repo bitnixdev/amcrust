@@ -133,8 +133,10 @@ for classified, bounded AAC sender-report remapping. Original timestamps stay in
 strict audio/recording subscriptions fail locally instead of stopping video for that
 case. The processor still enforces its original ±100-ms phase and 15-second freshness
 budgets. Real input has now exercised that isolation, but this is not production
-clock qualification: larger mapping shifts and excess cumulative phase still stop
-unsupported intervals. Diagnostics now separate reconstructed RTP duration debt,
+clock qualification: excess cumulative phase still stops unsupported audio. Oversized
+but explained AAC mapping changes now quarantine audio for the generation rather than
+stop healthy video; this new quarantine path still awaits a live oversized event.
+Video's own timing faults remain fatal. Diagnostics separate reconstructed RTP duration debt,
 SR mapping changes and unexplained residuals rather than blaming all drift on SRs.
 
 All project-owned C workers and the obsolete Python/AMC2 fixture harness are removed;

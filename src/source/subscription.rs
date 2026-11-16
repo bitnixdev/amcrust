@@ -220,6 +220,11 @@ impl Queue {
         self.validity.retire(reason);
         self.queue.lock().unwrap().clear();
     }
+    pub(super) fn quarantine_audio(&self) {
+        if self.tracks.accepts(crate::ingest::Codec::Aac) {
+            self.retire(Terminal::Clock);
+        }
+    }
     pub(super) fn admit_mapping_step(&self, bounded_mapping_step: bool) -> bool {
         if bounded_mapping_step
             && self.tracks.accepts(crate::ingest::Codec::Aac)
@@ -373,6 +378,36 @@ impl Subscription {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn oversized_mapping_revokes_all_audio_but_not_shared_video() {
+        let generation = Arc::new(Generation {
+            streams: vec![],
+            reason: Mutex::new(None),
+            _charges: vec![],
+        });
+        for tracks in [
+            Tracks::Audio,
+            Tracks::AudioVideo,
+            Tracks::AudioSampleClock,
+            Tracks::Video,
+        ] {
+            let queue = Queue::new(tracks, SubscriptionLimits::default(), vec![]);
+            let held = DeliveryGuard {
+                generation: generation.clone(),
+                validity: queue.validity.clone(),
+            };
+            queue.quarantine_audio();
+            if tracks.accepts(crate::ingest::Codec::Aac) {
+                assert_eq!(held.check(), Err(Terminal::Clock));
+                queue.retire(Terminal::Shutdown);
+                assert_eq!(held.check(), Err(Terminal::Clock));
+            } else {
+                assert_eq!(held.check(), Ok(()));
+            }
+            assert_eq!(generation.check(), Ok(()));
+        }
+    }
+
     #[test]
     fn remapping_retires_strict_consumers_without_revoking_other_tracks() {
         let generation = Arc::new(Generation {

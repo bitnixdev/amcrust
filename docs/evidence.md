@@ -688,6 +688,54 @@ check, all-target checking, strict library-only Clippy, formatting and the Nix b
 (substitution disabled). Bounded self-review found no issues. No clock policy or
 admission budget changed in this increment.
 
+#### Sticky audio quarantine for oversized explained mapping changes
+
+The source now distinguishes **explanation** from **permission to continue**. The
+same public-metadata checks can explain an AAC mapping change larger than the
+200-ms continuation cap without granting audio any additional phase allowance.
+Such a change quarantines the AAC-LC track for the generation: all existing Audio,
+AudioSampleClock and AudioVideo leases are revoked before the offending packet could
+be published, and new audio-bearing subscriptions fail with Clock. Video-only leases
+and acquisition stay active. Audio does not silently restart/reanchor; only a new
+source generation clears the quarantine (explicit owner reset, or fresh acquisition
+after demand has ended).
+
+`TrackSnapshot.quarantine` preserves first cause separately from whole-source faults.
+Later quarantined AAC packets are discarded without updating timing observations,
+but packet generation/index/global sequence checks still run. Video timing, native
+reader failures, parameter changes, privacy/stop and shutdown are not bypassed.
+This is failure containment, not clock recovery or protection from video's own faults.
+Local regressions cover explanation versus continuation bounds, all audio grant types,
+unaffected video grants, first-cause persistence, sequence checks across discarded
+AAC packets and fresh-generation state. No endpoint/freshness/continuation limit grew.
+
+Two separate real-camera source-only checks were run serially, read-only, with no
+retained media or encoder writes:
+
+1. **Failed after 204.30 s**, before an oversized audio event. H.264 stream **0**,
+   sequence **12626**, had PTS/DTS **18,354,150** versus previous DTS **18,360,900**:
+   **−6750 ticks / −75 ms** in the 90-kHz time base, declared duration **6000 ticks**.
+   The packet carried an SR, but AAC-only reconstruction does not classify video;
+   no raw video continuity is inferred. The generation correctly retired with
+   NonIncreasingDts. Four smaller AAC remapping events had been observed without
+   quarantine. Final state: one acquisition, one source fault, zero charges.
+2. **Inconclusive timeout after 300.04 s**: no oversized audio event occurred. There
+   was one smaller bounded AAC mapping event, no source fault, one acquisition and
+   zero charges after joined cleanup. This is not a successful quarantine exercise.
+
+The new ignored check `real_audio_quarantine_preserves_video` waits at most 300 s,
+requires 30 video packets after quarantine, checks held-audio revocation and refusal
+of new audio subscriptions, then explicitly resets and checks a fresh generation.
+Those post-quarantine steps were **not reached** in these two runs. Runtime quarantine
+and recovery coverage therefore remain open in TODO, as does video clock handling;
+neither failure is relabeled a pass or hidden by changing bounds.
+
+Local checks passed: 35 library and 43 application tests, the phase-trend test,
+all-target checking, strict library Clippy, formatting and bounded self-review.
+The pinned package built successfully with normal Nix substitution enabled. An
+initial substitution-disabled attempt failed fetching `mailcap-2.1.54.tar.xz`
+(HTTP 404) in the dependency closure; no pins were changed to bypass it.
+
 ## Actual camera observation
 
 A bounded run of the native ingest reader connected to **10.76.14.10**, main encoder

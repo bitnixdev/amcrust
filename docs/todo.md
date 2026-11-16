@@ -186,7 +186,9 @@ the production integration below. Removing probes is not the acquisition cutover
         steps. Preserve original timestamps; revoke strict audio/AudioVideo locally,
         retain video, and leave the processor's ±100-ms/15-s limits unchanged.
         A mapping step may span the window's 200-ms diameter; it does not authorize
-        either endpoint beyond 100 ms. Unknown/reset/missing timing still retires.
+        either endpoint beyond 100 ms. Unknown/reset/missing timing on active tracks
+        still retires the generation; oversized explained AAC changes now quarantine
+        audio rather than granting continuation.
       - [x] Observe bounded remapping on live input: sequence 5859 repeated AAC DTS
         while reconstructed RTP advanced 1152 ticks, with a matching −1152-tick SR
         shift. Strict audio revoked; candidate audio and video continued in the same
@@ -197,6 +199,16 @@ the production integration below. Removing probes is not the acquisition cutover
         showed 1456 ticks of RTP debt + 144 ticks of report shift + 16 unexplained
         ticks = 1616 ticks of candidate phase. SR updates alone do not explain this
         window; the values are not independent capture/oscillator measurements.
+      - [x] Quarantine all audio-bearing subscriptions on an oversized explained AAC
+        mapping change, preserving healthy video and refusing new audio until a new
+        generation. Keep original timestamps, endpoint limits and first-cause revocation.
+      - [ ] Exercise quarantine, continued video and explicit new-generation recovery
+        on an actual oversized audio event. First hardware check instead stopped on
+        a 75-ms video DTS rollback; second timed out after 300 s without the event.
+        Neither is a successful quarantine exercise.
+      - [ ] Handle/qualify video timing independently: the real H.264 rollback was on
+        an SR-bearing packet but the AAC-only reconstruction does not classify video.
+        Do not suppress video faults or infer raw video continuity from that coincidence.
       - [ ] Resolve sustained drift/clock recovery: the candidate independently hit
         4816 samples/100⅓ ms at 97.36 s. Do not increase its phase budget or reanchor
         to conceal this. Choose/qualify the next clock policy before production use.

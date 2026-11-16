@@ -61,6 +61,10 @@ impl Admission {
         })
     }
 
+    pub(super) fn supports_sample_clock(&self, track: usize) -> bool {
+        self.sample_clock_audio == Some(track)
+    }
+
     pub(super) fn previous_dts(&self, track: usize) -> Option<i64> {
         self.last_dts.get(track).copied().flatten()
     }
@@ -118,7 +122,7 @@ impl Admission {
         // Only the audited AAC mapping classifier may authorize this exception.
         // The packet is immutable; strict subscribers are retired before publication.
         if self.last_dts[track].is_some_and(|last| dts <= last)
-            && !(bounded_mapping_step && self.sample_clock_audio == Some(track))
+            && !(bounded_mapping_step && self.supports_sample_clock(track))
         {
             return Err(Terminal::Clock);
         }

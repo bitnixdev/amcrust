@@ -143,15 +143,46 @@ unchanged 100-ms/15-s limits; the source exception does not grant a transport cl
 Only the explicit audio-only subscription opts in. Strict audio and AudioVideo/mux
 subscriptions are revoked before publication of that packet, including held output
 grants, while unrelated video stays live. Missing clocks and bad metadata retain
-generation retirement. Non-increasing DTS with reconstructed RTP rollback/duplicates,
-unclassified evidence or an oversized mapping change still retires the generation
-rather than receiving an exception. Initial-clock/IDR and queue budgets are unchanged.
+generation retirement on active tracks. Non-increasing DTS with reconstructed RTP
+rollback/duplicates or unclassified evidence still retires the generation. An explained
+but oversized AAC mapping change instead quarantines audio as described below; it
+never receives permission to continue audio. Initial-clock/IDR and queue budgets are
+unchanged.
+
+### Audio quarantine for oversized explained changes
+
+An explained AAC-LC/48-kHz mapping change outside the 200-ms step cap invalidates
+**all** audio-bearing subscriptions, including `AudioSampleClock`, without retiring
+healthy video. The offending packet is not published. This is a failure-containment
+policy, not a larger timing allowance: the sample-clock phase/freshness limits and
+bounded continuation classifier are unchanged.
+
+Quarantine is sticky for the entire source generation. New Audio, AudioSampleClock
+and AudioVideo requests fail with Clock while that generation remains active; there
+is no silent audio restart or new anchor. Video-only subscribers can continue/join.
+With no remaining demand the reader idles out normally; an explicit owner reset or
+subsequent fresh acquisition creates new observations and clears quarantine. Existing
+failed grants never revive. `TrackSnapshot.quarantine` retains the first offending
+metadata separately from whole-generation `fault`/`failure`.
+
+Quarantined AAC timing observations freeze and later AAC packets are discarded, but
+their generation/index/global sequence identity is still checked. Video timing and
+whole-reader failures, configuration changes, cancellation and shutdown remain fully
+guarded. Malformed metadata rejected by acquisition is not swallowed. This keeps an
+unavailable audio track from repeatedly poisoning a healthy shared reader; it does
+not provide clock recovery, repair recording cuts or fence already copied output.
+
+Real checks did not yet observe this new quarantine path: one encountered a separate
+video DTS rollback and another saw no oversized audio event within 300 seconds.
+The existing smaller, bounded audio exception has prior live evidence. Do not claim
+oversized audio recovery or protection from video's own clock faults from that result.
 
 This handles a narrow, explainable discontinuity; it is not loss detection, capture
 clock qualification, an adaptive resampler or a recording edit policy. The real camera
 also exceeded the candidate's cumulative phase budget independently of rollback.
-A subsequent real window exercised the bounded exception: strict audio stopped while
-candidate audio/video continued until a later 276-ms shift retired the generation.
+Before quarantine was added, a real window exercised the smaller bounded exception:
+strict audio stopped while candidate audio/video continued until a later 276-ms shift
+retired the generation.
 This establishes isolation, not successful sustained qualification.
 
 `audio_progress` separates elapsed reconstructed RTP, mapped PTS and declared AAC

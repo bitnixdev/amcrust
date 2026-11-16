@@ -563,6 +563,22 @@ impl Supervisor {
         {
             return Err(Terminal::Unsupported);
         }
+        if tracks.accepts(ingest::Codec::Aac)
+            && self
+                .running
+                .as_ref()
+                .and_then(|r| r.configuration.as_ref())
+                .is_some()
+            && self
+                .metrics
+                .clock
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|c| c.audio_quarantined())
+        {
+            return Err(Terminal::Clock);
+        }
         let slots = vec![
             self.source_slots
                 .clone()
@@ -665,14 +681,39 @@ impl Supervisor {
             }
             Event::Packet(charged) => {
                 let packet = charged.value;
-                let bounded_mapping_step = {
+                let mapping_step = {
                     let mut observations = self.metrics.clock.lock().unwrap();
                     let clock = observations.as_mut().ok_or(Terminal::Unsupported)?;
                     clock.observe(&packet).map_err(|_| Terminal::Clock)?;
-                    clock.bounded_audio_mapping_step(&packet)
+                    if clock.quarantined(packet.stream_index()) {
+                        return Ok(());
+                    }
+                    clock.audio_mapping_step(&packet)
                 };
                 let admission = run.admission.as_mut().ok_or(Terminal::Unsupported)?;
                 let previous_dts = admission.previous_dts(packet.stream_index());
+                if admission.supports_sample_clock(packet.stream_index())
+                    && mapping_step
+                        .is_some_and(|step| step.explained_remapping && !step.bounded_remapping)
+                {
+                    self.metrics
+                        .clock
+                        .lock()
+                        .unwrap()
+                        .as_mut()
+                        .ok_or(Terminal::Unsupported)?
+                        .quarantine_audio(&packet, previous_dts);
+                    // Revoke ALL affected consumers, including sample-clock opt-in,
+                    // before discarding this packet. No valid audio restarts within
+                    // this generation; video's existing delivery grants remain intact.
+                    for client in &self.clients {
+                        if let Some(queue) = client.queue.upgrade() {
+                            queue.quarantine_audio();
+                        }
+                    }
+                    return Ok(());
+                }
+                let bounded_mapping_step = mapping_step.is_some_and(|step| step.bounded_remapping);
                 let idr = match admission.inspect(&packet, bounded_mapping_step) {
                     Ok(Some(idr)) => idr,
                     Ok(None) => {

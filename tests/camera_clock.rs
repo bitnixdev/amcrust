@@ -77,6 +77,94 @@ async fn sample(source: &Source, seconds: u64) -> Result<Sample, String> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real camera, serial access; up to 300s awaiting oversized audio mapping; metadata only"]
+async fn real_audio_quarantine_preserves_video() {
+    use amcrust::source::Terminal;
+    dotenvy::dotenv().ok();
+    let user = std::env::var("AMCREST_USERNAME").unwrap();
+    let password = std::env::var("AMCREST_PASSWORD").unwrap();
+    let url = CameraUrl::new(format!(
+        "rtsp://{user}:{password}@10.76.14.10:554/cam/realmonitor?channel=1&subtype=0"
+    ))
+    .unwrap();
+    let mut registry = Registry::new(Limits::default()).unwrap();
+    let source = registry
+        .register(
+            SourceKey {
+                camera: 1,
+                encoder: Encoder::Main,
+            },
+            url,
+        )
+        .unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(300), async {
+        let mut audio = source.subscribe(Tracks::AudioSampleClock, SubscriptionLimits::default()).await.map_err(|e| e.to_string())?;
+        let mut video = source.subscribe(Tracks::Video, SubscriptionLimits::default()).await.map_err(|e| e.to_string())?;
+        let mut held_audio = None;
+        let mut audio_live = true;
+        let mut quarantine = None;
+        let mut frames_after = 0;
+        loop {
+            tokio::select! {
+                delivery = audio.recv(), if audio_live => match delivery {
+                    Ok(delivery) => held_audio = Some(delivery),
+                    Err(Terminal::Clock) => {
+                        let snapshot = source.clock_snapshot().ok_or("missing clock snapshot")?;
+                        let fault = snapshot.tracks.iter().find_map(|t| t.quarantine).ok_or("audio failed without quarantine")?;
+                        if snapshot.retired || snapshot.fault.is_some() { return Err("quarantine retired acquisition".into()); }
+                        eprintln!("Real audio quarantine: {snapshot:?}");
+                        quarantine = Some(fault);
+                        audio_live = false;
+                    },
+                    Err(reason) => return Err(reason.to_string()),
+                },
+                delivery = video.recv() => {
+                    let delivery = delivery.map_err(|e| e.to_string())?;
+                    if quarantine.is_some_and(|q| delivery.packet().is_ok_and(|p| p.sequence() > q.sequence)) {
+                        frames_after += 1;
+                    }
+                },
+            }
+            if frames_after >= 30 { break; }
+        }
+        if !held_audio.is_some_and(|p| matches!(p.packet(), Err(Terminal::Clock))) {
+            return Err("held audio was not revoked".into());
+        }
+        for tracks in [Tracks::Audio, Tracks::AudioSampleClock, Tracks::AudioVideo] {
+            if !matches!(source.subscribe(tracks, SubscriptionLimits::default()).await, Err(Terminal::Clock)) {
+                return Err("quarantined audio admitted a new consumer".into());
+            }
+        }
+        if source.snapshot().open_attempts != 1 || !source.snapshot().active || source.snapshot().faults != 0 {
+            return Err("video required acquisition restart or source fault".into());
+        }
+        // Reset is explicit owner action, never an automatic reanchor/reconnect.
+        source.reset().await.map_err(|e| e.to_string())?;
+        if video.terminal() != Some(Terminal::Reconfigured) { return Err("reset did not retire old video".into()); }
+        drop((audio, video));
+        let mut fresh = source.subscribe(Tracks::AudioSampleClock, SubscriptionLimits::default()).await.map_err(|e| e.to_string())?;
+        let first = fresh.recv().await.map_err(|e| e.to_string())?;
+        first.packet().map_err(|e| e.to_string())?;
+        let snapshot = source.clock_snapshot().ok_or("missing fresh clock snapshot")?;
+        if snapshot.generation != 2 || snapshot.tracks.iter().any(|t| t.quarantine.is_some()) || source.snapshot().open_attempts != 2 {
+            return Err("quarantine was not cleared by a fresh generation".into());
+        }
+        eprintln!("Audio quarantine recovery: video_packets_after={frames_after} fresh_generation={}", snapshot.generation);
+        Ok::<_, String>(())
+    }).await;
+    registry.shutdown().await.unwrap();
+    eprintln!(
+        "Audio quarantine outcome: {result:?} source={:?} clocks={:?}",
+        source.snapshot(),
+        source.clock_snapshot()
+    );
+    assert_eq!(source.snapshot().charged_bytes, 0);
+    result
+        .expect("quarantine/recovery check exceeded 300s; see event log")
+        .expect("audio quarantine preserves video");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real camera, serial access; up to 300s until a bounded mapping step; metadata only"]
 async fn real_bounded_audio_remapping() {
     use amcrust::source::Terminal;

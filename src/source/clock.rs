@@ -46,6 +46,7 @@ pub enum Fault {
     UnsupportedProducerReference,
     MissingMediaTimestamp,
     NonIncreasingDts,
+    OversizedAudioMapping,
 }
 /// First offending packet metadata only: bounded, no payloads or credentials.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -130,6 +131,9 @@ pub struct TrackSnapshot {
     pub pts_epoch_spread_ns: Option<i128>,
     pub first_epoch_difference_ns: Option<i128>,
     pub reports: Reports,
+    /// Audio is unavailable for this generation; observations freeze at the fault.
+    /// This does not retire the shared acquisition or unrelated video grants.
+    pub quarantine: Option<Failure>,
     pub audio_progress: Option<Progress>,
     pub mapping_steps: u64,
     pub bounded_mapping_steps: u64,
@@ -184,6 +188,7 @@ impl Track {
                 pts_epoch_spread_ns: None,
                 first_epoch_difference_ns: None,
                 reports: Reports::default(),
+                quarantine: None,
                 audio_progress: None,
                 mapping_steps: 0,
                 bounded_mapping_steps: 0,
@@ -399,29 +404,64 @@ impl Observations {
             .tracks
             .get(packet.stream_index())
             .and_then(|track| track.last_dts.map(|value| value.0));
-        let result = if self.retired
-            || packet.generation() != self.generation
-            || packet.sequence() != self.next_sequence
-            || packet.stream_index() >= self.tracks.len()
-            || self.next_sequence == u64::MAX
-        {
-            Err(Fault::PacketIdentity)
-        } else {
-            self.next_sequence += 1;
-            self.tracks[packet.stream_index()].observe(packet, self.born)
+        let result = match self.advance_identity(
+            packet.generation(),
+            packet.sequence(),
+            packet.stream_index(),
+        ) {
+            Ok(true) => self.tracks[packet.stream_index()].observe(packet, self.born),
+            Ok(false) => Ok(()), // Already quarantined: no further timing observations.
+            Err(fault) => Err(fault),
         };
         if let Err(fault) = result {
             self.record_failure(Failure::at(fault, packet, previous_dts));
         }
         result
     }
-    pub(super) fn bounded_audio_mapping_step(&self, packet: &Packet) -> bool {
+    fn advance_identity(
+        &mut self,
+        generation: u64,
+        sequence: u64,
+        index: usize,
+    ) -> Result<bool, Fault> {
+        if self.retired
+            || generation != self.generation
+            || sequence != self.next_sequence
+            || index >= self.tracks.len()
+            || self.next_sequence == u64::MAX
+        {
+            return Err(Fault::PacketIdentity);
+        }
+        // Even discarded AAC advances the global sequence. Quarantine cannot hide
+        // a wrong generation, skipped packet, or invalid track from healthy video.
+        self.next_sequence += 1;
+        Ok(!self.quarantined(index))
+    }
+    pub(super) fn audio_mapping_step(&self, packet: &Packet) -> Option<MappingStep> {
         self.tracks
             .get(packet.stream_index())
             .and_then(|track| track.snapshot.last_mapping_step)
-            .is_some_and(|step| {
-                step.current.sequence == packet.sequence() && step.bounded_remapping
-            })
+            .filter(|step| step.current.sequence == packet.sequence())
+    }
+    pub(super) fn quarantined(&self, index: usize) -> bool {
+        self.tracks
+            .get(index)
+            .is_some_and(|track| track.snapshot.quarantine.is_some())
+    }
+    pub(super) fn audio_quarantined(&self) -> bool {
+        self.tracks
+            .iter()
+            .any(|track| track.snapshot.codec == Codec::Aac && track.snapshot.quarantine.is_some())
+    }
+    /// Called only after validated metadata identifies an oversized, explained
+    /// AAC-LC mapping change. First cause survives; only a new generation clears it.
+    pub(super) fn quarantine_audio(&mut self, packet: &Packet, previous_dts: Option<i64>) {
+        let track = &mut self.tracks[packet.stream_index()];
+        track.snapshot.quarantine.get_or_insert(Failure::at(
+            Fault::OversizedAudioMapping,
+            packet,
+            previous_dts,
+        ));
     }
     fn record_failure(&mut self, failure: Failure) {
         if self.failure.is_none() {
@@ -499,6 +539,73 @@ mod tests {
             packets: 100,
             bytes: 10000,
         }
+    }
+
+    #[test]
+    fn audio_quarantine_is_not_a_generation_fault_and_resets_only_with_generation() {
+        let now = Instant::now();
+        let mut observations = Observations::new(1, now, &[]);
+        observations.tracks = vec![
+            track(),
+            Track::new(
+                1,
+                Codec::Aac,
+                TimeBase {
+                    numerator: 1,
+                    denominator: 48000,
+                },
+            ),
+        ];
+        let failure = Failure {
+            kind: Fault::OversizedAudioMapping,
+            stream_index: 1,
+            sequence: 10,
+            pts: Some(900),
+            dts: Some(900),
+            previous_dts: Some(10000),
+            duration: 1024,
+            flags: 1,
+            packet_bytes: 128,
+            sender_report: None,
+            producer_reference: None,
+        };
+        observations.tracks[1].snapshot.quarantine = Some(failure);
+        assert!(observations.audio_quarantined());
+        assert!(!observations.quarantined(0));
+        observations.next_sequence = 11;
+        assert_eq!(observations.advance_identity(1, 11, 1), Ok(false));
+        assert_eq!(observations.advance_identity(1, 12, 0), Ok(true));
+        assert_eq!(
+            observations.advance_identity(1, 14, 1),
+            Err(Fault::PacketIdentity)
+        );
+        assert_eq!(
+            observations.advance_identity(2, 13, 1),
+            Err(Fault::PacketIdentity)
+        );
+        assert_eq!(
+            observations.advance_identity(1, 13, 2),
+            Err(Fault::PacketIdentity)
+        );
+        assert_eq!(observations.next_sequence, 13);
+        let live = observations.snapshot();
+        assert!(!live.retired);
+        assert!(live.fault.is_none() && live.failure.is_none());
+        observations.retire();
+        assert_eq!(observations.snapshot().tracks[1].quarantine, Some(failure));
+        let mut fresh = Observations::new(2, now, &[]);
+        fresh.tracks = vec![
+            track(),
+            Track::new(
+                1,
+                Codec::Aac,
+                TimeBase {
+                    numerator: 1,
+                    denominator: 48000,
+                },
+            ),
+        ];
+        assert!(!fresh.audio_quarantined());
     }
 
     #[test]
