@@ -9,8 +9,8 @@ pub enum ClockPolicy {
     Strict,
     /// Anchor once to the first decoded source PTS, then count actual 48-kHz PCM
     /// samples. Never chase later SR phase steps. Limits are operational refusal
-    /// budgets, NOT measured perceptual tolerances. Currently 48-kHz in/out,
-    /// 20-ms Opus frames only; lower-rate finite resampling tails are not waived.
+    /// budgets, NOT measured perceptual tolerances. Requires 48-kHz AAC input;
+    /// output supports Config's rates/frames with explicit finite endpoint trims.
     AnchoredSamples {
         max_phase_samples: u32,
         report_timeout: Duration,

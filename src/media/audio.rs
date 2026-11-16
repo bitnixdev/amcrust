@@ -6,7 +6,7 @@
 //! Decoding/resampling/encoding never inserts silence, drops decoded samples or
 //! applies asynchronous clock compensation. Non-contiguous source timestamps are
 //! retained as evidence; strict timing refuses them. An explicit experimental
-//! source-anchored sample policy permits bounded phase error at 48 kHz only; it
+//! source-anchored sample policy permits bounded phase error for 48-kHz AAC input; it
 //! never reanchors, compensates samples, or implies HomeKit playback acceptance.
 //!
 //! This is the processing boundary, not a production audio pool/transport. Both
@@ -114,6 +114,7 @@ struct Clock {
     mismatch: Option<ClockMismatch>,
     input_rate: u32,
     converted_samples: u64,
+    locally_finished: bool,
     samples: SampleClock,
 }
 struct Job {
@@ -176,6 +177,95 @@ pub struct Presentation {
     /// Effective trim, including OpusHead pre-skip when packet side data omits it.
     /// Do NOT apply it again to samples already trimmed by the decoder.
     pub decoder_skip: DecoderSkip,
+    /// Additional end trim for a finite resampler endpoint rounded up by less
+    /// than one encoder-rate sample. Included in decoder_skip.end, in 48-kHz units.
+    pub resampler_tail_discard_48k: u32,
+}
+
+fn finite_coverage(clock: &Clock, config: Config) -> Result<(), Error> {
+    if !config.valid() || clock.input_rate != 48000 {
+        return Err(Error::Configuration);
+    }
+    let factor = (48000 / config.rate) as i128;
+    let converted = clock.converted_samples as i128 * factor;
+    let decoded = clock.samples.status.decoded_samples as i128;
+    if converted < decoded || converted - decoded >= factor {
+        return Err(Error::Incomplete);
+    }
+    Ok(())
+}
+
+// Arithmetic only: caller checks source ownership, policy and report freshness.
+fn presentation(
+    clock: &Clock,
+    config: Config,
+    pts: i64,
+    duration: i64,
+    pre_skip: u32,
+    mut skip: DecoderSkip,
+) -> Result<Presentation, Error> {
+    if !config.valid() || clock.input_rate != 48000 {
+        return Err(Error::Configuration);
+    }
+    let factor = (48000 / config.rate) as i128;
+    let packet_start = pts as i128 * factor;
+    let packet_duration = duration as i128 * factor;
+    if packet_start < 0 {
+        if -packet_start != pre_skip as i128 || (skip.start != 0 && skip.start != pre_skip) {
+            return Err(Error::Incomplete);
+        }
+        skip.start = pre_skip;
+    }
+    let start = packet_start + skip.start as i128;
+    let logical_end = packet_start + packet_duration;
+    let converted_end = clock.converted_samples as i128 * factor;
+    let source_end = clock.samples.status.decoded_samples as i128;
+    // Native duration excludes end padding. The last libopus packet may be
+    // shorter than the configured frame; legal packet spans are 2.5-ms multiples.
+    let coded_span = packet_duration + skip.end as i128;
+    if pts == av::AV_NOPTS_VALUE
+        || duration <= 0
+        || start < 0
+        || skip.start as i128 != (-packet_start).max(0)
+        || logical_end > converted_end
+        || coded_span < 120
+        || coded_span > config.frame_ms as i128 * 48
+        || coded_span % 120 != 0
+    {
+        return Err(Error::Incomplete);
+    }
+    let extra = (logical_end - source_end).max(0);
+    if extra > 0 {
+        // Only crop the fractional finite resampler endpoint, never arbitrary
+        // drift, a pending live packet, missing input, or a whole encoder-rate sample.
+        if !clock.locally_finished
+            || logical_end != converted_end
+            || extra >= factor
+            || (skip.end != 0 && skip.end_reason != 0)
+        {
+            return Err(Error::Incomplete);
+        }
+        skip.end = skip.end.checked_add(extra as u32).ok_or(Error::Limit)?;
+        skip.end_reason = 0; // padding, not convergence
+    }
+    let end = logical_end - extra;
+    if end <= start {
+        return Err(Error::Incomplete);
+    }
+    let origin = clock.first_pts.ok_or(Error::Clock)? as i128;
+    let timestamp = |offset: i128| -> Result<i64, Error> {
+        i64::try_from(origin + offset)
+            .ok()
+            .filter(|p| *p != av::AV_NOPTS_VALUE)
+            .ok_or(Error::Clock)
+    };
+    Ok(Presentation {
+        packet_timestamp_48k: timestamp(packet_start)?,
+        audible_timestamp_48k: timestamp(start)?,
+        audible_samples: u32::try_from(end - start).map_err(|_| Error::Clock)?,
+        decoder_skip: skip,
+        resampler_tail_discard_48k: extra as u32,
+    })
 }
 
 /// Immutable encoded packet, including FFmpeg skip/discard side data. Holding it
@@ -280,58 +370,30 @@ impl OpusPacket {
             .samples
             .policy
     }
-    /// Explicit 48-kHz candidate priming/tail contract, not a raw-RTP write grant.
+    /// Candidate priming/tail contract in the Opus decoder's fixed 48-kHz domain,
+    /// independent of encoder rate. Not a raw-RTP write grant.
     /// Never throw away a packet needed to establish decoder state, or pretend
     /// its padded samples were captured. Unsupported packet shapes are refused.
     pub fn presentation_48k(&self) -> Result<Presentation, Error> {
         self.check()?;
-        let mut skip = self.decoder_skip()?.unwrap_or_default();
+        let skip = self.decoder_skip()?.unwrap_or_default();
         let clock = self.job.clock.lock().unwrap_or_else(|p| p.into_inner());
         if clock.samples.policy == ClockPolicy::Strict {
             return Err(Error::Configuration);
         }
         clock.samples.ready(Instant::now())?;
         let p = unsafe { &*self.raw };
-        if p.pts < 0 {
-            let header = &self.job.header;
-            if header.len() < 12 || &header[..8] != b"OpusHead" {
-                return Err(Error::Configuration);
-            }
-            let pre_skip = u16::from_le_bytes([header[10], header[11]]) as u32;
-            if pre_skip as i64 != self.job.initial_padding as i64
-                || -(p.pts as i128) != pre_skip as i128
-                || (skip.start != 0 && skip.start != pre_skip)
-            {
-                return Err(Error::Incomplete);
-            }
-            skip.start = pre_skip;
+        let header = &self.job.header;
+        if header.len() < 12 || &header[..8] != b"OpusHead" {
+            return Err(Error::Configuration);
         }
-        let start = p.pts as i128 + skip.start as i128;
-        let end = p.pts as i128 + p.duration as i128;
-        if p.pts == av::AV_NOPTS_VALUE
-            || p.duration <= 0
-            || start < 0
-            || end <= start
-            || skip.start as i128 != (-(p.pts as i128)).max(0)
-            || end > clock.samples.status.decoded_samples as i128
-            || end > clock.converted_samples as i128
-            || p.duration as i128 + skip.end as i128 != self.job.config.frame_ms as i128 * 48
+        let pre_skip = u16::from_le_bytes([header[10], header[11]]) as u32;
+        if pre_skip as i128
+            != self.job.initial_padding as i128 * (48000 / self.job.config.rate) as i128
         {
             return Err(Error::Incomplete);
         }
-        let origin = clock.first_pts.ok_or(Error::Clock)? as i128;
-        let timestamp = |offset: i128| -> Result<i64, Error> {
-            i64::try_from(origin + offset)
-                .ok()
-                .filter(|p| *p != av::AV_NOPTS_VALUE)
-                .ok_or(Error::Clock)
-        };
-        Ok(Presentation {
-            packet_timestamp_48k: timestamp(p.pts as i128)?,
-            audible_timestamp_48k: timestamp(start)?,
-            audible_samples: u32::try_from(end - start).map_err(|_| Error::Clock)?,
-            decoder_skip: skip,
-        })
+        presentation(&clock, self.job.config, p.pts, p.duration, pre_skip, skip)
     }
     /// Native encoder-rate samples; OpusHead separately stores pre-skip at 48 kHz.
     pub fn encoder_initial_padding(&self) -> i32 {
@@ -566,9 +628,7 @@ impl Transcoder {
         {
             return Err(Error::Configuration);
         }
-        if policy != ClockPolicy::Strict
-            && (parameters.sample_rate != 48000 || config.rate != 48000 || config.frame_ms != 20)
-        {
+        if policy != ClockPolicy::Strict && parameters.sample_rate != 48000 {
             return Err(Error::Configuration);
         }
         let input_layout = Layout::copy(&parameters.ch_layout)?;
@@ -650,6 +710,7 @@ impl Transcoder {
                 mismatch: None,
                 input_rate: parameters.sample_rate as u32,
                 converted_samples: 0,
+                locally_finished: false,
                 samples: SampleClock::new(policy, Instant::now()),
             }),
             header,
@@ -1032,7 +1093,135 @@ impl Transcoder {
             "flush Opus",
         )?;
         self.receive(&mut output, true)?;
+        {
+            let mut clock = self.job.clock.lock().unwrap_or_else(|p| p.into_inner());
+            if clock.samples.policy != ClockPolicy::Strict {
+                finite_coverage(&clock, self.job.config)?;
+            }
+            clock.locally_finished = true;
+        }
         self.finished = true;
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+    fn clock(rate: u32, decoded: u64, finished: bool) -> Clock {
+        let mut samples = SampleClock::new(ClockPolicy::candidate(), Instant::now());
+        samples.status.decoded_samples = decoded;
+        Clock {
+            first_pts: Some(-16),
+            previous_end: None,
+            mismatch: None,
+            input_rate: 48000,
+            converted_samples: decoded.div_ceil((48000 / rate) as u64),
+            locally_finished: finished,
+            samples,
+        }
+    }
+    #[test]
+    fn preskip_and_signed_origin_are_in_the_decoder_domain() {
+        for rate in [8000, 16000, 24000, 48000] {
+            let factor = 48000 / rate;
+            let config = Config {
+                rate,
+                ..Default::default()
+            };
+            let p = presentation(
+                &clock(rate, 1024, false),
+                config,
+                -312 / factor as i64,
+                960 / factor as i64,
+                312,
+                DecoderSkip::default(),
+            )
+            .unwrap();
+            assert_eq!(p.packet_timestamp_48k, -328);
+            assert_eq!(p.audible_timestamp_48k, -16);
+            assert_eq!(p.audible_samples, 648);
+            assert_eq!(p.decoder_skip.start, 312);
+            assert_eq!(p.resampler_tail_discard_48k, 0);
+        }
+    }
+    #[test]
+    fn finite_rounding_is_an_exact_explicit_end_trim() {
+        for rate in [8000, 16000, 24000, 48000] {
+            for packets in [199, 200, 201] {
+                let c = clock(rate, packets * 1024, true);
+                let factor = 48000 / rate;
+                let extra = c.converted_samples * factor as u64 - packets * 1024;
+                let config = Config {
+                    rate,
+                    ..Default::default()
+                };
+                finite_coverage(&c, config).unwrap();
+                let native = DecoderSkip {
+                    end: 960 - factor,
+                    ..Default::default()
+                };
+                let p = presentation(&c, config, c.converted_samples as i64 - 1, 1, 312, native)
+                    .unwrap();
+                assert_eq!(p.resampler_tail_discard_48k, extra as u32);
+                assert_eq!(p.decoder_skip.end, native.end + extra as u32);
+                assert_eq!(
+                    p.audible_timestamp_48k + p.audible_samples as i64,
+                    -16 + packets as i64 * 1024
+                );
+            }
+        }
+    }
+    #[test]
+    fn live_or_uncovered_endpoints_are_not_cropped_to_fit() {
+        let config = Config {
+            rate: 8000,
+            ..Default::default()
+        };
+        let native = DecoderSkip {
+            end: 954,
+            ..Default::default()
+        };
+        let mut c = clock(8000, 1024, false);
+        assert_eq!(
+            presentation(&c, config, 170, 1, 312, native),
+            Err(Error::Incomplete)
+        );
+        c.locally_finished = true;
+        c.converted_samples = 170; // undercoverage
+        assert_eq!(finite_coverage(&c, config), Err(Error::Incomplete));
+        c.converted_samples = 172; // more than a fractional endpoint
+        assert_eq!(finite_coverage(&c, config), Err(Error::Incomplete));
+        assert_eq!(
+            presentation(&c, config, 171, 1, 312, native),
+            Err(Error::Incomplete)
+        );
+        assert_eq!(
+            presentation(&c, config, 170, 1, 312, native),
+            Err(Error::Incomplete)
+        );
+    }
+    #[test]
+    fn shorter_final_opus_packet_is_valid_but_invalid_spans_are_refused() {
+        let config = Config {
+            rate: 16000,
+            frame_ms: 60,
+            ..Default::default()
+        };
+        let c = clock(16000, 1024, true);
+        let skip = DecoderSkip {
+            end: 117,
+            ..Default::default()
+        };
+        // 2.5-ms final coded packet, one encoder sample of valid duration.
+        assert!(presentation(&c, config, 341, 1, 312, skip).is_ok());
+        assert_eq!(
+            presentation(&c, config, 341, 1, 312, DecoderSkip::default()),
+            Err(Error::Incomplete)
+        );
+        assert_eq!(
+            presentation(&c, config, av::AV_NOPTS_VALUE, 1, 312, skip),
+            Err(Error::Incomplete)
+        );
     }
 }

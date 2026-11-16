@@ -168,11 +168,11 @@ unanchored packet-order clocks.
 
 **Selected implementation: source-anchored, bounded sample progression.** Explicitly
 call `Transcoder::new_with_clock_policy(..., ClockPolicy::candidate(), ...)`; the
-ordinary constructor remains strict. This candidate is currently **48-kHz AAC input
-and 48-kHz Opus encoder input with 20-ms frames only**. Other configurations are
-refused by this candidate, not rounded. This deliberately isolates clock qualification
-from the lower-rate finite resampler-tail problem; it is not coverage of every
-HomeKit-negotiated audio mode.
+ordinary constructor remains strict. The candidate requires **48-kHz AAC input** and
+supports **8/16/24/48-kHz Opus encoder input with 20/40/60-ms frames**. This includes
+HomeKit's negotiated rates and packet times handled by the existing live path.
+Other configurations are refused, not rounded. Encoder-private positions and padding
+are converted exactly into the Opus decoder/RTP clock's fixed 48-kHz domain.
 
 1. Wait on the existing audio subscription for an AAC packet carrying public SR and
    RTCP-derived PRFT metadata. Constructor refusal is `Incomplete` until then. Start
@@ -204,14 +204,28 @@ HomeKit-negotiated audio mode.
    interval and effective decoder trims. Initial Opus pre-skip can be in `OpusHead`
    without packet side data; apply it **once**, not again to already-trimmed PCM.
    End discard is retained. Only samples covered by actual decoded input and converted
-   output are mapped. Unsupported shapes are refused. `source_timestamp_48k` still
+   output are mapped. After successful local finish, a resampler endpoint extending
+   past the source by **less than one encoder-rate sample** is explicitly discarded
+   in 48-kHz units; `resampler_tail_discard_48k` exposes this additional trim. Native
+   packet timestamps and side data remain unchanged; consumers need the complete
+   `presentation_48k().decoder_skip`, not just the native-padding accessor. A shorter
+   final Opus packet is allowed when its native duration/padding describes a legal
+   2.5-ms-multiple span within the configured packet time.
+   **Undercoverage, a whole-sample-or-larger excess, and live/pending endpoint cropping
+   are refused**, never padded or relabeled as complete. In particular a 199-AAC-AU
+   window at 16 kHz returned one 48-kHz tick less output duration; `finish()` fails
+   with `Incomplete` and revokes held outputs. That is a finite-endpoint refusal, not
+   a refusal of the live mode. No successful clip/end acknowledgment follows from it.
+   Unsupported shapes are refused. `source_timestamp_48k` still
    refuses packets requiring trimming. A live RTP receiver does not automatically
    receive OpusHead/skip side data: transport integration must explicitly establish
    preroll/trim behavior or refuse the boundary, never drop a needed first packet.
 
 This is a **live-audio qualification candidate**, not an HSV edit/cut policy. It does
-not settle AAC decoder-history/PNS differences, lower-rate resampler tails, camera
-capture-clock accuracy, controller startup, or audible lip-sync acceptance. No HomeKit
+not settle AAC decoder-history/PNS differences, capture-clock accuracy, controller
+startup, or audible lip-sync acceptance. Decoder callbacks may buffer SILK resampling
+output across packets; callback sizes alone are not coded-packet durations. Receiver
+integration must honor the full presentation contract and its own decoder latency. No HomeKit
 path is switched by this library API. The sole execution backlog remains in TODO.
 
 | Alternative retained for reconsideration | Why not selected now | Symptoms favoring reconsideration / evidence our choice is wrong |

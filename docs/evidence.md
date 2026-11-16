@@ -295,6 +295,60 @@ AAC/Opus check and real shared-source/socket/lifecycle check also passed. Report
 expiry was checked with controlled unit-test instants, not an induced real-camera
 RTCP outage. No production or Apple playback acceptance is implied.
 
+### Negotiated-rate timing and finite endpoints
+
+The guarded live-audio clock now accepts 8/16/24/48-kHz encoder rates and 20/40/60-ms
+frames from the same 48-kHz AAC source. These cover the rates/packet times used by
+the existing HomeKit live path. Original packet metadata is not rewritten. Source
+phase/freshness guards and strict-by-default selection are unchanged.
+
+`presentation_48k` rescales encoder positions, durations and initial padding exactly
+into the decoder/RTP 48-kHz domain. A successfully finished resampler may extend the
+output endpoint by less than one encoder-rate sample: that excess is exposed as
+`resampler_tail_discard_48k` and included in the effective decoder end trim. It is
+not silently called captured audio. Pending/live cropping, undercoverage and larger
+excesses are refused; local codec completion is never recording acknowledgment.
+
+The read-only `real_negotiated_audio_clocks` check consumes one shared source with
+bounded processors for all twelve rate/frame combinations. Windows of 199/200/201
+AAC AUs exercise different resampler endpoint phases; an additional 200-AU case
+covers the common 16-kHz/20-ms mode's successful finite endpoint. Each successful
+case checks continuous source-anchored audible intervals, exact decoded coverage,
+native timestamp/skip metadata preservation and final reservation release.
+
+| Encoder rate / frame | AAC AUs | Source 48-kHz samples | Additional 48-kHz end discard / result |
+|---|---:|---:|---|
+| 8 kHz / 20 ms | 199 | 203776 | 2 samples discarded beyond source endpoint |
+| 16 kHz / 20 ms | 199 | 203776 | **Incomplete**: resampler returned 67925 samples, covering only 203775 source-clock ticks |
+| 24 or 48 kHz / 20 ms | 199 | 203776 | No extra discard |
+| 8 kHz / 40 ms | 200 | 204800 | 4 samples discarded beyond source endpoint |
+| 16 kHz / 20 or 40 ms | 200 | 204800 | 1 sample discarded beyond source endpoint |
+| 24 or 48 kHz / 40 ms | 200 | 204800 | No extra discard |
+| All four rates / 60 ms | 201 | 205824 | No extra discard |
+
+The one-tick shortfall is explicitly refused, not repaired by silence, accepted as
+a tolerance, or treated as an unsupported live mode. Failure revokes that job's held
+output while the other processors and source continue. A caller needing an exact
+finite window must handle the refusal; ordinary live cancellation must not synthesize
+a successful `finish`. AAC passthrough recording cuts remain a separate problem.
+
+The first per-packet check also exposed a diagnostic assumption: FFmpeg's native
+Opus decoder buffered 24 SILK-resampling samples across callbacks at a lower rate,
+so a callback count was not the coded packet's duration. Per-packet contract checks
+now use the public FFmpeg **libopus decoder**, with the effective 48-kHz trims supplied
+on a private packet copy. The existing native-Opus whole-window checks remain in
+place. No production timing was changed to fit that decoder behavior, and no private
+FFmpeg structure is accessed. These are sample-count/presentation checks, not PCM
+equality, listening, Apple startup or sustained lip-sync acceptance.
+
+Final checks passed: **15 library + 44 application tests**, all-target checking,
+strict library-only Clippy, formatting, the negotiated-rate matrix, the existing
+four-configuration audio check, the 60-second candidate check and shared-source
+socket/lifecycle checks. The Nix application build passed with substitution disabled
+for that invocation after the configured cache returned HTTP 500s/timeouts. The final
+matrix had twelve fully covered completions and the one explicitly refused finite
+shortfall. No HomeKit transport or legacy-reader removal is claimed by this increment.
+
 ## Actual camera observation
 
 A bounded run of the native ingest reader connected to **10.76.14.10**, main encoder

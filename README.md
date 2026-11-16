@@ -103,9 +103,11 @@ The shell/package supplies FFmpeg 9 libraries, pkg-config and libclang/bindgen;
 registry, joined reader supervision, bounded packet subscriptions and source-clock
 diagnostics, per-viewer H.264 RTP packetization, finite fMP4 mux jobs and AAC-to-Opus
 processing. These are not yet connected to the production HomeKit paths. An explicit
-48-kHz/20-ms live-audio candidate anchors decoded-sample progression to source timing
-and refuses excessive phase error or stale sender reports; strict timing remains the
-default. Priming/tail contracts are exposed, not assumed to work over HomeKit RTP.
+live-audio candidate anchors decoded-sample progression to 48-kHz AAC source timing
+and supports 8/16/24/48-kHz Opus output with 20/40/60-ms frames. It refuses excessive
+phase error, stale sender reports and uncovered finite endpoints; strict timing
+remains the default. Priming/tail contracts are explicit, not assumed to work over
+HomeKit RTP.
 See the [clock decision and alternatives](docs/architecture.md#candidate-live-audio-decision-and-revisit-guide)
 for limits, acceptance work and symptoms that would require revisiting the choice.
 The unused project C worker draft is removed.

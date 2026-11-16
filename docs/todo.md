@@ -135,7 +135,7 @@ This does not require rewriting FFmpeg itself.
   - [ ] Qualify the selected clock/priming policy for real live A/V. Original AAC PTS
     are NOT relabeled as continuous; source observations and mismatch counts remain.
     The decision, alternatives and wrong-choice symptoms are in Architecture.
-    - [x] Add explicit source-anchored decoded-sample progression at 48-kHz/20-ms,
+    - [x] Add explicit source-anchored decoded-sample progression for 48-kHz AAC input,
       retaining strict default behavior. Require SR/PRFT admission, guard phase at
       100 ms and SR-bearing-packet age at 15 s, and revoke only the failed processor.
       These are provisional refusal budgets, not accepted lip-sync tolerances.
@@ -147,14 +147,19 @@ This does not require rewriting FFmpeg itself.
       actual first-onset and sustained A/V sync on paired clients, including stalls,
       SR boundaries and late joins. A persistent slope triggers clock-recovery review,
       not a larger phase limit. Keep the candidate opt-in until acceptance exists.
-    - [ ] Extend the candidate to negotiated lower-rate audio with exact coverage and
-      explicit finite-resampler-tail handling; the current candidate refuses it.
+    - [x] Extend the candidate to 8/16/24/48-kHz output and 20/40/60-ms frames.
+      Keep all timing/trims in the 48-kHz decoder domain; explicitly trim only a
+      sub-encoder-sample finite excess. Undercoverage is refused, not padded or
+      acknowledged as a complete interval. Real negotiated-rate checks exercise both
+      covered endpoints and a one-tick shortfall, with native metadata unchanged.
     - [ ] Implement the live receiver's preroll/trim and late-join decoder-history
       contract. RTP does not carry OpusHead/skip side data automatically. Retain needed
       packets; do not hide initial clipping, noise or end padding by dropping them.
   - [ ] Share processing only for matching source generation and negotiated settings;
     the current audio pool bounds jobs, but does not yet deduplicate encoders.
-    Connect audio RTP/RTCP/SRTP and production lifecycle/metrics.
+    Connect audio RTP/RTCP/SRTP and production lifecycle/metrics. New Opus timing is
+    already in 48-kHz units: do not apply the legacy FFmpeg proxy's rate rescaling
+    again when replacing that reader/transport path.
 - [ ] `src/hsv/recording.rs` / `src/hsv/fmp4.rs`: remove the recording camera reader;
   consume generation-bound shared packets, mux through FFmpeg bindings and preserve
   correct initialization, prebuffer, actual-IDR start, historical/live order and cuts.

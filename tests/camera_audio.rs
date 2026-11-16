@@ -5,7 +5,7 @@ use amcrust::{
     ingest::{CameraUrl, Cancellation},
     media::{
         Error,
-        audio::{ClockPolicy, Config, OpusPacket, Pool, Transcoder},
+        audio::{ClockPolicy, Config, DecoderSkip, OpusPacket, Pool, Transcoder},
     },
     source::{Encoder, Limits, Registry, SourceKey, SubscriptionLimits, Tracks},
 };
@@ -44,9 +44,19 @@ impl Drop for Decoder {
 }
 impl Decoder {
     fn new(first: &OpusPacket) -> Self {
+        Self::new_with_trim(first, None)
+    }
+    fn new_with_trim(first: &OpusPacket, trim: Option<DecoderSkip>) -> Self {
         // SAFETY: codec is checked; context owns a padded private extradata copy.
         unsafe {
-            let codec = av::avcodec_find_decoder(av::AVCodecID::AV_CODEC_ID_OPUS);
+            // The native FFmpeg SILK decoder buffers resampling output across
+            // callbacks. Use the reference libopus decoder for per-packet trim
+            // checks; retain the native decoder for legacy whole-window checks.
+            let codec = if trim.is_some() {
+                av::avcodec_find_decoder_by_name(c"libopus".as_ptr())
+            } else {
+                av::avcodec_find_decoder(av::AVCodecID::AV_CODEC_ID_OPUS)
+            };
             assert!(!codec.is_null());
             let mut result = Self {
                 context: av::avcodec_alloc_context3(codec),
@@ -65,12 +75,16 @@ impl Decoder {
                 den: first.config().rate as i32,
             };
             (*result.context).thread_count = 1;
+            (*result.context).sample_rate = 48000;
             assert_eq!(av::avcodec_open2(result.context, codec, ptr::null_mut()), 0);
-            result.accept(first);
+            result.accept_with_trim(first, trim);
             result
         }
     }
     fn accept(&mut self, encoded: &OpusPacket) {
+        self.accept_with_trim(encoded, None);
+    }
+    fn accept_with_trim(&mut self, encoded: &OpusPacket, trim: Option<DecoderSkip>) {
         // SAFETY: all native allocations are guarded, payload/side data are deep
         // copied, and send_packet retains its own reference while decoding.
         unsafe {
@@ -84,6 +98,9 @@ impl Decoder {
             (*packet.0).dts = pts;
             (*packet.0).duration = duration;
             for (kind, bytes) in encoded.side_data().unwrap() {
+                if kind == av::AVPacketSideDataType::AV_PKT_DATA_SKIP_SAMPLES && trim.is_some() {
+                    continue;
+                }
                 let target = av::av_packet_new_side_data(packet.0, kind, bytes.len());
                 assert!(!target.is_null());
                 if !bytes.is_empty() {
@@ -99,6 +116,19 @@ impl Decoder {
                     data[8] = skip.start_reason;
                     data[9] = skip.end_reason;
                 }
+            }
+            if let Some(skip) = trim {
+                let target = av::av_packet_new_side_data(
+                    packet.0,
+                    av::AVPacketSideDataType::AV_PKT_DATA_SKIP_SAMPLES,
+                    10,
+                );
+                assert!(!target.is_null());
+                let data = std::slice::from_raw_parts_mut(target, 10);
+                data[..4].copy_from_slice(&skip.start.to_le_bytes());
+                data[4..8].copy_from_slice(&skip.end.to_le_bytes());
+                data[8] = skip.start_reason;
+                data[9] = skip.end_reason;
             }
             assert_eq!(av::avcodec_send_packet(self.context, packet.0), 0);
             self.drain(false);
@@ -333,6 +363,8 @@ fn consume_candidate(
     decoder: &mut Option<Decoder>,
     end: &mut Option<i64>,
 ) -> Result<(), Error> {
+    let native_skip = packet.decoder_skip()?;
+    let native_position = packet.codec_position()?;
     let presentation = packet.presentation_48k().inspect_err(|error| {
         eprintln!(
             "candidate presentation refusal={error:?} position={:?} skip={:?}",
@@ -346,9 +378,12 @@ fn consume_candidate(
     *end = Some(presentation.audible_timestamp_48k + presentation.audible_samples as i64);
     let before = decoder.as_ref().map_or(0, |d| d.samples);
     if let Some(decoder) = decoder {
-        decoder.accept(packet);
+        decoder.accept_with_trim(packet, Some(presentation.decoder_skip));
     } else {
-        *decoder = Some(Decoder::new(packet));
+        *decoder = Some(Decoder::new_with_trim(
+            packet,
+            Some(presentation.decoder_skip),
+        ));
     }
     assert_eq!(
         decoder.as_ref().unwrap().samples - before,
@@ -362,6 +397,8 @@ fn consume_candidate(
             presentation.packet_timestamp_48k
         );
     }
+    assert_eq!(packet.decoder_skip()?, native_skip);
+    assert_eq!(packet.codec_position()?, native_position);
     Ok(())
 }
 
@@ -393,10 +430,6 @@ async fn real_anchored_audio_clock() {
         };
         let config = Config { rate: 48000, ..Default::default() };
         let pool = Pool::new(3, 6 * 1024 * 1024)?;
-        assert!(matches!(Transcoder::new_with_clock_policy(&first,
-            Config { rate: 16000, ..config }, ClockPolicy::candidate(), &pool, Cancellation::default()),
-            Err(Error::Configuration)));
-        assert_eq!(pool.reserved_bytes(), 0);
         let mut candidate = Transcoder::new_with_clock_policy(&first, config, ClockPolicy::candidate(), &pool, Cancellation::default())?;
         let mut strict = Transcoder::new(&first, config, &pool, Cancellation::default())?;
         let mut tight = Some(Transcoder::new_with_clock_policy(&first, config,
@@ -487,4 +520,117 @@ async fn real_anchored_audio_clock() {
     result
         .expect("bounded candidate window")
         .expect("candidate lifecycle/presentation check");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires coordinated camera access; negotiated-rate boundary checks; run serially"]
+async fn real_negotiated_audio_clocks() {
+    dotenvy::dotenv().ok();
+    let user = std::env::var("AMCREST_USERNAME").expect("AMCREST_USERNAME required");
+    let password = std::env::var("AMCREST_PASSWORD").expect("AMCREST_PASSWORD required");
+    let url = CameraUrl::new(format!(
+        "rtsp://{user}:{password}@10.76.14.10:554/cam/realmonitor?channel=1&subtype=0"
+    ))
+    .unwrap();
+    let mut registry = Registry::new(Limits::default()).unwrap();
+    let source = registry
+        .register(
+            SourceKey {
+                camera: 1,
+                encoder: Encoder::Main,
+            },
+            url,
+        )
+        .unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(25), async {
+        let mut input = source.subscribe(Tracks::Audio, SubscriptionLimits::default()).await.map_err(Error::from)?;
+        let first = loop {
+            let delivery = input.recv().await.map_err(Error::from)?;
+            if delivery.packet()?.sender_report().is_some() { break delivery; }
+        };
+        struct Case {
+            config: Config,
+            target: u64,
+            encoder: Option<Transcoder>,
+            decoder: Option<Decoder>,
+            end: Option<i64>,
+            tail: u64,
+            last: Option<OpusPacket>,
+        }
+        let pool = Pool::new(13, 26 * 1024 * 1024)?;
+        assert!(matches!(Transcoder::new_with_clock_policy(&first, Config { rate: 32000, ..Default::default() },
+            ClockPolicy::candidate(), &pool, Cancellation::default()), Err(Error::Configuration)));
+        assert_eq!(pool.reserved_bytes(), 0);
+        let mut cases = Vec::new();
+        for rate in [8000, 16000, 24000, 48000] {
+            for (index, frame_ms) in [20, 40, 60].into_iter().enumerate() {
+                let config = Config { rate, frame_ms, ..Default::default() };
+                cases.push(Case {
+                    config, target: 199 + index as u64,
+                    encoder: Some(Transcoder::new_with_clock_policy(&first, config, ClockPolicy::candidate(), &pool, Cancellation::default())?),
+                    decoder: None, end: None, tail: 0, last: None,
+                });
+            }
+        }
+        // Also finish the common 16-kHz/20-ms mode at a covered endpoint; the
+        // 199-AU shortfall is an endpoint refusal, not a refusal of this mode.
+        let config = Config::default();
+        cases.push(Case { config, target: 200,
+            encoder: Some(Transcoder::new_with_clock_policy(&first, config, ClockPolicy::candidate(), &pool, Cancellation::default())?),
+            decoder: None, end: None, tail: 0, last: None });
+        let mut next = Some(first);
+        for count in 1..=201 {
+            let delivery = if let Some(first) = next.take() { first } else { input.recv().await.map_err(Error::from)? };
+            for case in &mut cases {
+                let Some(encoder) = &mut case.encoder else { continue; };
+                for packet in encoder.push(&delivery)? {
+                    assert_eq!(packet.presentation_48k()?.resampler_tail_discard_48k, 0, "live output cannot receive finite endpoint trims");
+                    consume_candidate(&packet, &mut case.decoder, &mut case.end)?;
+                    case.last = Some(packet);
+                }
+                if count == case.target {
+                    let finished = match encoder.finish() {
+                        Ok(packets) => packets,
+                        Err(Error::Incomplete) => {
+                            let stats = encoder.stats();
+                            let factor = (48000 / case.config.rate) as u64;
+                            let converted = stats.resampled_samples * factor;
+                            assert!(converted < stats.decoded_samples);
+                            assert!(stats.decoded_samples - converted < factor);
+                            assert_eq!(case.last.as_ref().unwrap().data(), Err(Error::Incomplete));
+                            eprintln!("Negotiated candidate rate={} frame_ms={} AAC={} finite_finish=refused uncovered_48k={}", case.config.rate, case.config.frame_ms, stats.input_packets, stats.decoded_samples - converted);
+                            case.last.take();
+                            case.encoder.take();
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    for packet in finished {
+                        case.tail += packet.presentation_48k().inspect_err(|e| eprintln!("tail refusal rate={} frame={} error={e:?} position={:?} skip={:?}", case.config.rate, case.config.frame_ms, packet.codec_position(), packet.decoder_skip()))?.resampler_tail_discard_48k as u64;
+                        consume_candidate(&packet, &mut case.decoder, &mut case.end)?;
+                    }
+                    let stats = encoder.stats();
+                    let status = encoder.clock_status();
+                    case.decoder.as_mut().unwrap().finish();
+                    let decoded = case.decoder.as_ref().unwrap().samples;
+                    assert_eq!(stats.decoded_samples, case.target * 1024);
+                    assert_eq!(decoded, stats.decoded_samples);
+                    assert_eq!(case.end, Some(status.anchored_pts.unwrap() + decoded as i64));
+                    assert_eq!(case.tail, stats.resampled_samples * (48000 / case.config.rate) as u64 - decoded);
+                    assert!(case.tail < (48000 / case.config.rate) as u64);
+                    eprintln!("Negotiated candidate rate={} frame_ms={} AAC={} decoded={} resampled={} extra_tail_48k={}", case.config.rate, case.config.frame_ms, stats.input_packets, decoded, stats.resampled_samples, case.tail);
+                    case.last.take();
+                    case.encoder.take();
+                }
+            }
+        }
+        assert!(cases.iter().all(|c| c.encoder.is_none()));
+        assert_eq!(source.snapshot().open_attempts, 1);
+        assert_eq!(pool.reserved_bytes(), 0);
+        Ok::<_, Error>(())
+    }).await;
+    registry.shutdown().await.unwrap();
+    result
+        .expect("bounded negotiated-rate check")
+        .expect("negotiated-rate presentation");
 }
