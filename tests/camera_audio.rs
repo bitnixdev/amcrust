@@ -476,8 +476,27 @@ async fn real_anchored_audio_clock() {
         )
         .unwrap();
     let mut last_observation = None;
+    let mut monitors = Vec::new();
     let result = tokio::time::timeout(Duration::from_secs(seconds + 25), async {
-        let mut input = source.subscribe(Tracks::Audio, SubscriptionLimits::default()).await.map_err(Error::from)?;
+        for tracks in [Tracks::Audio, Tracks::Video] {
+            let mut subscription = source.subscribe(tracks, SubscriptionLimits::default()).await.map_err(Error::from)?;
+            monitors.push((tracks, tokio::spawn(async move {
+                let mut count = 0_u64;
+                let mut last = None;
+                let mut last_sequence = None;
+                loop {
+                    match subscription.recv().await {
+                        Ok(delivery) => {
+                            if let Ok(packet) = delivery.packet() { last_sequence = Some(packet.sequence()); }
+                            count += 1;
+                            last = Some(delivery);
+                        }
+                        Err(reason) => return (count, last_sequence, reason, last.is_none_or(|p| p.packet().is_err())),
+                    }
+                }
+            })));
+        }
+        let mut input = source.subscribe(Tracks::AudioSampleClock, SubscriptionLimits::default()).await.map_err(Error::from)?;
         let first = loop {
             let packet = input.recv().await.map_err(Error::from)?;
             if packet.packet()?.sender_report().is_some() { break packet; }
@@ -603,6 +622,22 @@ async fn real_anchored_audio_clock() {
         Ok::<_, Error>(())
     }).await;
     registry.shutdown().await.unwrap();
+    let bounded_steps = source.clock_snapshot().map_or(0, |s| {
+        s.tracks
+            .iter()
+            .map(|t| t.bounded_mapping_steps)
+            .sum::<u64>()
+    });
+    for (tracks, monitor) in monitors {
+        let outcome = monitor.await.expect("joined subscription observer");
+        eprintln!(
+            "Candidate sibling: tracks={tracks:?} outcome={outcome:?} bounded_mapping_steps={bounded_steps}"
+        );
+        assert!(outcome.3, "terminal sibling must revoke held delivery");
+        if qualification && bounded_steps > 0 && matches!(tracks, Tracks::Audio) {
+            assert_eq!(outcome.2, amcrust::source::Terminal::Clock);
+        }
+    }
     eprintln!(
         "Candidate final outcome: requested_seconds={seconds} result={result:?} last_observation={last_observation:?} source={:?} clocks={:?}",
         source.snapshot(),

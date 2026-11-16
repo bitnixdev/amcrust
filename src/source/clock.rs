@@ -3,6 +3,8 @@
 //! SR is attached to a following media packet, not necessarily a packet sampled at
 //! the SR's RTP/NTP instant. PRFT in the pinned RTSP demuxer is derived from the SR
 //! and the packet RTP timestamp; it is not an independent camera capture clock.
+use super::audio_timing::Tracker;
+pub use super::audio_timing::{MappingStep, Point};
 use crate::ingest::{Codec, Packet, SenderReport, StreamConfiguration, TimeBase};
 use serde::Serialize;
 use std::time::{Duration, Instant};
@@ -128,6 +130,10 @@ pub struct TrackSnapshot {
     pub pts_epoch_spread_ns: Option<i128>,
     pub first_epoch_difference_ns: Option<i128>,
     pub reports: Reports,
+    pub mapping_steps: u64,
+    pub bounded_mapping_steps: u64,
+    pub first_mapping_step: Option<MappingStep>,
+    pub last_mapping_step: Option<MappingStep>,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
@@ -147,6 +153,7 @@ struct Track {
     first_epoch_ns: Option<i128>,
     epoch_ns: Option<Range>,
     last_report: Option<(SenderReport, Instant, u64)>,
+    audio_timing: Tracker,
 }
 impl Track {
     fn new(index: usize, codec: Codec, time_base: TimeBase) -> Self {
@@ -176,6 +183,10 @@ impl Track {
                 pts_epoch_spread_ns: None,
                 first_epoch_difference_ns: None,
                 reports: Reports::default(),
+                mapping_steps: 0,
+                bounded_mapping_steps: 0,
+                first_mapping_step: None,
+                last_mapping_step: None,
             },
             last_dts: None,
             debt: 0,
@@ -184,6 +195,7 @@ impl Track {
             first_epoch_ns: None,
             epoch_ns: None,
             last_report: None,
+            audio_timing: Tracker::default(),
         }
     }
     fn record_dts(
@@ -241,6 +253,16 @@ impl Track {
     fn observe(&mut self, packet: &Packet, born: Instant) -> Result<(), Fault> {
         let reference = packet.producer_reference();
         let report = packet.sender_report();
+        if self.snapshot.codec == Codec::Aac
+            && self.snapshot.time_base.numerator == 1
+            && self.snapshot.time_base.denominator == 48000
+            && let Some(step) = self.audio_timing.observe(packet)
+        {
+            self.snapshot.mapping_steps += 1;
+            self.snapshot.bounded_mapping_steps += u64::from(step.bounded_remapping);
+            self.snapshot.first_mapping_step.get_or_insert(step);
+            self.snapshot.last_mapping_step = Some(step);
+        }
         self.record_dts(
             packet.dts(),
             packet.duration(),
@@ -388,6 +410,14 @@ impl Observations {
             self.record_failure(Failure::at(fault, packet, previous_dts));
         }
         result
+    }
+    pub(super) fn bounded_audio_mapping_step(&self, packet: &Packet) -> bool {
+        self.tracks
+            .get(packet.stream_index())
+            .and_then(|track| track.snapshot.last_mapping_step)
+            .is_some_and(|step| {
+                step.current.sequence == packet.sequence() && step.bounded_remapping
+            })
     }
     fn record_failure(&mut self, failure: Failure) {
         if self.failure.is_none() {

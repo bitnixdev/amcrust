@@ -135,6 +135,19 @@ mod tests {
         assert_eq!(c.status.decoded_samples, 3072);
     }
     #[test]
+    fn mapping_step_can_cross_phase_window_without_reanchoring() {
+        let mut c = SampleClock::new(ClockPolicy::candidate(), Instant::now());
+        c.frame(0, 1024).unwrap();
+        c.frame(1024 + 4560, 1024).unwrap(); // +95 ms
+        c.frame(2048 - 2736, 1024).unwrap(); // -57 ms: 152-ms mapping step
+        assert_eq!(c.status.anchored_pts, Some(0));
+        assert_eq!(c.status.decoded_samples, 3072);
+        assert_eq!(c.status.latest_phase_samples, -2736);
+        assert_eq!(c.frame(3072 - 4801, 1024), Err(Error::Clock));
+        assert_eq!(c.status.decoded_samples, 3072);
+    }
+
+    #[test]
     fn report_is_required_and_deadline_is_not_refreshed_by_media() {
         let now = Instant::now();
         let mut c = SampleClock::new(ClockPolicy::candidate(), now);

@@ -6,6 +6,7 @@
 //! Call Registry::shutdown before dropping the runtime. Drop signals shutdown but
 //! cannot synchronously join async cleanup; no task is aborted during native I/O.
 mod admission;
+mod audio_timing;
 pub mod clock;
 mod subscription;
 pub(crate) use admission::nals;
@@ -664,17 +665,15 @@ impl Supervisor {
             }
             Event::Packet(charged) => {
                 let packet = charged.value;
-                self.metrics
-                    .clock
-                    .lock()
-                    .unwrap()
-                    .as_mut()
-                    .ok_or(Terminal::Unsupported)?
-                    .observe(&packet)
-                    .map_err(|_| Terminal::Clock)?;
+                let bounded_mapping_step = {
+                    let mut observations = self.metrics.clock.lock().unwrap();
+                    let clock = observations.as_mut().ok_or(Terminal::Unsupported)?;
+                    clock.observe(&packet).map_err(|_| Terminal::Clock)?;
+                    clock.bounded_audio_mapping_step(&packet)
+                };
                 let admission = run.admission.as_mut().ok_or(Terminal::Unsupported)?;
                 let previous_dts = admission.previous_dts(packet.stream_index());
-                let idr = match admission.inspect(&packet) {
+                let idr = match admission.inspect(&packet, bounded_mapping_step) {
                     Ok(Some(idr)) => idr,
                     Ok(None) => {
                         self.metrics.missing_clocks.fetch_add(1, Ordering::Relaxed);
@@ -694,9 +693,13 @@ impl Supervisor {
                     let Some(queue) = client.queue.upgrade() else {
                         continue;
                     };
-                    if !queue.tracks.accepts(codec)
-                        || (!client.started && queue.tracks.video() && !idr)
-                    {
+                    if !queue.tracks.accepts(codec) {
+                        continue;
+                    }
+                    if !queue.admit_mapping_step(bounded_mapping_step) {
+                        continue;
+                    }
+                    if !client.started && queue.tracks.video() && !idr {
                         continue;
                     }
                     if let Err(reason) = queue.offer(

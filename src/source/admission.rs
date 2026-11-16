@@ -5,6 +5,7 @@ use crate::ingest::{Codec, Packet, StreamConfiguration};
 
 pub(super) struct Admission {
     video: usize,
+    sample_clock_audio: Option<usize>,
     sps: Vec<u8>,
     pps: Vec<u8>,
     pps_id: u32,
@@ -40,6 +41,19 @@ impl Admission {
         }
         Ok(Self {
             video: video.index,
+            sample_clock_audio: streams
+                .iter()
+                .find(|s| {
+                    s.codec == Codec::Aac
+                        && s.time_base.numerator == 1
+                        && s.time_base.denominator == 48000
+                        && s.parameters.audio_format().0 == 48000
+                        && s.parameters
+                            .extradata()
+                            .first()
+                            .is_some_and(|b| b >> 3 == 2)
+                })
+                .map(|s| s.index),
             sps,
             pps,
             pps_id,
@@ -53,7 +67,11 @@ impl Admission {
 
     /// None means an initial unclocked packet was deliberately not published.
     /// Known clocks are preserved even when steps differ from packet duration.
-    pub(super) fn inspect(&mut self, packet: &Packet) -> Result<Option<bool>, Terminal> {
+    pub(super) fn inspect(
+        &mut self,
+        packet: &Packet,
+        bounded_mapping_step: bool,
+    ) -> Result<Option<bool>, Terminal> {
         let track = packet.stream_index();
         let mut idr = false;
         if track == self.video {
@@ -97,7 +115,11 @@ impl Admission {
                 Err(Terminal::Clock)
             };
         };
-        if self.last_dts[track].is_some_and(|last| dts <= last) {
+        // Only the audited AAC mapping classifier may authorize this exception.
+        // The packet is immutable; strict subscribers are retired before publication.
+        if self.last_dts[track].is_some_and(|last| dts <= last)
+            && !(bounded_mapping_step && self.sample_clock_audio == Some(track))
+        {
             return Err(Terminal::Clock);
         }
         self.last_dts[track] = Some(dts);

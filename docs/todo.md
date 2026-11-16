@@ -85,7 +85,9 @@ the production integration below. Removing probes is not the acquisition cutover
   the old wall-clock/packet-order policies as though they were source-clock evidence.
   - [x] Skip initial unclocked packets without repair; video waits for a subsequent
     timestamped actual IDR. Preserve irregular signed clocks; later missing or
-    non-increasing DTS retires the generation. This is a refusal policy, not A/V proof.
+    unexplained non-increasing DTS retires the generation. Classified bounded AAC
+    SR remapping now has the explicit audio-only exception below, not a timestamp
+    rewrite or A/V proof.
   - [x] Expose bounded generation-scoped SR/PRFT and duration-debt observations.
     Malformed public metadata, changed report SSRC and non-advancing/ambiguous report
     clocks are refused; retired observations are never reused for a new reader.
@@ -176,10 +178,21 @@ the production integration below. Removing probes is not the acquisition cutover
         metadata. The user-requested real-camera retry failed after 200.19 s total:
         AAC DTS went backward 96 ticks/2 ms on an SR-bearing packet; admission
         correctly retired the generation. One acquisition, no candidate budget trip.
-      - [ ] Determine whether the SR-boundary AAC rollback originates in camera RTP
-        timing or libavformat's mapping before selecting source-clock recovery.
-        Other-host contention remains unverified; a local socket check cannot exclude
-        it. Do not weaken DTS/SR checks or enlarge the audio phase budget.
+      - [x] Classify SR-boundary AAC rollback using adjacent public metadata and the
+        pinned FFmpeg mapping: reconstructed RTP advanced while mapped DTS reversed,
+        with exact 170-ms and 152-ms report-mapping shifts. This is dependent metadata,
+        not an independent wire capture. The user confirmed the other service was off.
+      - [x] Add `Tracks::AudioSampleClock` for bounded, demonstrable AAC SR-remapping
+        steps. Preserve original timestamps; revoke strict audio/AudioVideo locally,
+        retain video, and leave the processor's ±100-ms/15-s limits unchanged.
+        A mapping step may span the window's 200-ms diameter; it does not authorize
+        either endpoint beyond 100 ms. Unknown/reset/missing timing still retires.
+      - [ ] Observe the final bounded-remapping path on a live rollback: the focused
+        300-second run saw no rollback and was inconclusive, not a pass. Captured
+        real metadata and isolation are covered locally; physical playback is not.
+      - [ ] Resolve sustained drift/clock recovery: the candidate independently hit
+        4816 samples/100⅓ ms at 97.36 s. Do not increase its phase budget or reanchor
+        to conceal this. Choose/qualify the next clock policy before production use.
     - [x] Extend the candidate to 8/16/24/48-kHz output and 20/40/60-ms frames.
       Keep all timing/trims in the 48-kHz decoder domain; explicitly trim only a
       sub-encoder-sample finite excess. Undercoverage is refused, not padded or

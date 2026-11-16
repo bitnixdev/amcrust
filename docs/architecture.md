@@ -84,8 +84,11 @@ but cannot provide an async join by itself.
 Current admission supports Annex-B H.264 with one matching SPS/PPS pair and checked
 slice references. It waits for a future actual timestamped IDR, never a cached GOP or
 key flag alone. Initial unclocked packets are skipped, not repaired; later clock loss
-or non-increasing DTS is refused. Irregular steps are preserved. These decisions do
-not establish source A/V alignment or decoded presentation.
+or unexplained non-increasing DTS retires the generation. A narrowly classified AAC
+SR-mapping step instead retires strict audio/AudioVideo subscriptions locally; explicit
+`Tracks::AudioSampleClock` subscriptions can continue with unchanged packet timestamps.
+Video-only subscriptions are unaffected by that audio-local event. Irregular steps are
+preserved. These decisions do not establish source A/V alignment or decoded presentation.
 AudioVideo subscriptions start at video admission, not at a covering historical AAC
 window; they are not a finished recording-cut implementation.
 
@@ -113,6 +116,42 @@ constraint; duplicates do not refresh report age. Retirement is explicit and a n
 reader gets fresh observations. No report-age deadline, drift tolerance or affine
 clock correction is inferred from the short device samples. The observed AAC clock
 contradictions, including larger SR-boundary jumps, remain unresolved for live A/V.
+
+### Bounded AAC sender-report remapping
+
+`src/source/audio_timing.rs` uses only public SR/PRFT fields, with the exact integer
+semantics audited in pinned FFmpeg **9.0.2** (`rtpdec.c:rtp_set_prft/finalize_packet`,
+`utils.c:ff_parse_ntp_time`, and the MPEG4-GENERIC AAC depacketizer/header parser).
+For 48-kHz AAC-LC, invert PRFT minus the cached report's NTP microseconds to obtain
+an RTP timestamp **reconstructed from metadata**, not independently captured on wire.
+The inverse must round-trip exactly, with flags 24 and a signed delta within 15 s;
+unsupported NTP eras/provenance and missing metadata provide no exception. Preserve
+first/last rollback evidence and bounded counters, never packet bodies.
+
+A source exception requires consecutive usable AAC observations, 1024-tick durations,
+PTS equal to DTS, no corrupt flag, unchanged report SSRC, advancing report NTP/RTP,
+and fresh distinct report evidence under 15 s. Reconstructed media RTP must advance
+by 1..4800 ticks despite mapped DTS going backward/equal. The difference must match
+the SR mapping change to within the **one-tick integer-rescaling ambiguity**, not a
+measured jitter allowance. No guessed timestamp, dropped AU, padding or reanchor occurs.
+
+The mapping-step cap is **9600 ticks / 200 ms**, the diameter of the existing
+**±4800-tick / ±100-ms** phase window: e.g. +95 ms to −57 ms is a 152-ms step but both
+endpoints fit. This is not a larger phase budget. The consuming anchored-sample
+processor still checks every decoded endpoint against its original anchor and the
+unchanged 100-ms/15-s limits; the source exception does not grant a transport clock.
+Only the explicit audio-only subscription opts in. Strict audio and AudioVideo/mux
+subscriptions are revoked before publication of that packet, including held output
+grants, while unrelated video stays live. Missing clocks and bad metadata retain
+generation retirement. Non-increasing DTS with reconstructed RTP rollback/duplicates,
+unclassified evidence or an oversized mapping change still retires the generation
+rather than receiving an exception. Initial-clock/IDR and queue budgets are unchanged.
+
+This handles a narrow, explainable discontinuity; it is not loss detection, capture
+clock qualification, an adaptive resampler or a recording edit policy. The real camera
+also exceeded the candidate's cumulative phase budget independently of rollback.
+See Evidence for failed/inconclusive hardware windows; do not describe them as a
+successful sustained qualification or silently widen the endpoint budget.
 
 Queue and held-delivery charges persist through retirement until owners drop. Source
 and registry budgets include bounded reader handoff and descriptor charges. Access
@@ -306,9 +345,13 @@ source clock from this result alone: first distinguish a metadata refusal from a
 actual missing/non-increasing media timestamp. A user-requested retry subsequently
 captured an AAC DTS rollback of 96 ticks/2 ms on an SR-bearing packet after 200.19 s
 total, with one acquisition and no candidate budget trip. This identifies admission's
-refusal, not whether the camera's RTP timing or libavformat's mapping caused it;
-other-host contention was not excluded. See Evidence for exact packet metadata.
-No capture-clock repair is authorized.
+refusal. Subsequent adjacent public metadata showed advancing reconstructed RTP and
+exact SR mapping shifts of 170 ms and 152 ms. The user confirmed the north-driveway
+service was stopped before the retry; it is not the competing-reader explanation.
+The bounded source exception above separates those mapping changes from media
+progression, without claiming an independent capture clock. A later candidate run
+hit 4816 samples / 100⅓ ms of cumulative phase and was correctly refused. See Evidence
+for exact outcomes. No capture-clock repair or automatic reanchor is authorized.
 
 This is a **live-audio qualification candidate**, not an HSV edit/cut policy. It does
 not settle AAC decoder-history/PNS differences, capture-clock accuracy, controller
@@ -321,7 +364,7 @@ path is switched by this library API. The sole execution backlog remains in TODO
 |---|---|---|
 | Strict source-PTS progression (still the default) | Real AAC has frequent non-contiguous steps, so usable timestamps are refused | Corrected firmware or another camera provides contiguous sample timing; candidate offers no benefit and should not normalize unnecessarily |
 | Follow each SR/PRFT-derived timestamp directly | PRFT and demux PTS share SR provenance; observed report-boundary jumps remain | Independent capture/client evidence shows the reports accurately represent real gaps, while our continuous clock compresses gaps or develops offset after stalls |
-| Retain/recover per-packet raw RTP clocks before SR-based demux adjustments | Public SR RTP values describe report instants, not each media packet; PRFT is dependent evidence. This needs a justified public-API packet mapping, not private FFmpeg access | If independent packet evidence shows raw RTP follows decoded samples while all large jumps come from SR remapping, prefer preserving that clock over modeling it; unexplained rollover/phase jumps would indicate a bad reconstruction |
+| Retain/recover per-packet raw RTP clocks before SR-based demux adjustments | Public SR RTP values describe report instants, not each media packet; PRFT is dependent evidence. A narrow 48-kHz AAC inverse now round-trips public PRFT/SR metadata for discontinuity classification; this is not an independent wire clock or a replacement presentation timeline | If independent packet evidence shows raw RTP follows decoded samples while all large jumps come from SR remapping, prefer preserving that clock over modeling it; unexplained rollover/phase jumps would indicate a bad reconstruction |
 | Continuous sample clock with a fixed source anchor (**chosen, bounded**) | Avoids repeated phase jumps without changing PCM, but assumes the nominal audio sample rate remains adequate | Monotonically growing phase, repeated 100-ms trips, lip sync progressively worsening in long views, or fresh sessions repeatedly starting at different A/V offsets; do not merely raise the limit |
 | Slow bounded clock recovery plus asynchronous resampling | Adds a PLL/filter, rate limits and real sample modification before oscillator drift is distinguished from report jitter | Sustained, repeatable phase slope and corroborating A/V drift favor this; audible pitch modulation, oscillating lip sync or repeated corrections after each SR would indicate chasing jitter instead |
 | Host-arrival clock or unanchored packet/frame counting | Network buffering is not capture time; independent track zeroing loses A/V offset | Latency changes with network load, burst arrivals producing speed changes, or session-dependent lip sync; use arrival time only for deadlines |

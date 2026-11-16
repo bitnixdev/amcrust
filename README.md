@@ -128,6 +128,13 @@ or increasing timing budgets. Source snapshots retain the first offending timing
 metadata; no captured media is saved. See [Evidence](docs/evidence.md#sustained-clock-attempt-and-first-failure-provenance)
 for the failed attempt and separate diagnostic outcome.
 
+The source now offers explicit audio-only `Tracks::AudioSampleClock` subscriptions
+for classified, bounded AAC sender-report remapping. Original timestamps stay intact;
+strict audio/recording subscriptions fail locally instead of stopping video for that
+case. The processor still enforces its original ±100-ms phase and 15-second freshness
+budgets. This is not production clock qualification: real runs also exposed excess
+cumulative phase, and the final live-remapping check was inconclusive (no event).
+
 All project-owned C workers and the obsolete Python/AMC2 fixture harness are removed;
 their findings and numeric records remain in [Evidence](docs/evidence.md). The read-only
 production workload sampler `scripts/ingest_baseline.py` is retained, along with its

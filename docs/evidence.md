@@ -545,12 +545,85 @@ packet sequence **12370**, in the **1/48000** time base:
 
 This identifies the immediate admission refusal, not its ultimate origin. The
 rollback coincides with an SR-bearing packet, but these observations alone cannot
-separate camera RTP timing from libavformat's SR-based timestamp mapping, nor prove
-or disprove another host's involvement. The earlier 34.33-second failure still lacks
-an offending-packet record and must not retroactively be assigned this exact cause.
+separate camera RTP timing from libavformat's SR-based timestamp mapping, nor
+independently establish capture timing. The user subsequently supplied service
+status confirming `amcrust-north-driveway` on `salty-fight` had stopped at
+**2026-11-16 06:40:21 UTC**, before the retry. That service is therefore ruled out as
+the competing reader, rather than retained as an explanation. The earlier 34.33-second
+failure still lacks an offending-packet record and must not retroactively be assigned
+this exact cause.
 Neither attempt qualifies the clock. Investigate the SR-boundary mapping without
 clamping timestamps, widening budgets or treating PRFT as independent evidence.
 No application code or timing policy changed for this retry.
+
+#### AAC remapping classification and bounded subscription handling
+
+Audited the actual pinned **FFmpeg 9.0.2** source, not private runtime structs:
+`rtpdec.c:rtp_set_prft/finalize_packet`, `utils.c:ff_parse_ntp_time`, and the
+MPEG4-GENERIC AAC depacketizer/header parser. PRFT inversion must match FFmpeg's
+integer conversion exactly (including its UINT32_MAX fractional-NTP denominator),
+round-trip to the original microseconds, and stay within the supported signed range.
+This reconstructs the packet RTP timestamp from dependent public metadata; it is
+**not an independent wire observation, packet-loss detector or capture-clock proof**.
+
+Two read-only real-camera windows supplied adjacent-packet evidence:
+
+| Window | Mapped DTS step | Reconstructed RTP step | SR mapping shift | Residual |
+|---|---:|---:|---:|---:|
+| Initial classification, stopped at **39.44 s** | −7488 ticks / −156 ms | +672 ticks / +14 ms | −8160 ticks / −170 ms | 0 |
+| Focused source check, stopped at **154.39 s** | −6144 ticks / −128 ms | +1152 ticks / +24 ms | −7296 ticks / −152 ms | 0 |
+
+Both had advancing report clocks and fresh report evidence. This shows that those
+particular mapped rollbacks are explained by SR remapping, not a reconstructed media
+RTP rollback. It does not retroactively identify the earlier unrecorded failure.
+The initial implementation bounded a mapping update to 100 ms and refused both.
+That conflated update size with endpoint phase error: valid +95-ms and −57-ms
+endpoints differ by 152 ms. The final classifier instead permits at most the existing
+±100-ms window's **200-ms diameter**, while the processor still refuses any individual
+endpoint outside **±100 ms** and any stale report at **15 s**. These endpoint budgets
+were not increased. A regression replays the exact 152-ms public metadata above,
+without retaining audio or inventing media, and checks the unchanged endpoint guard.
+
+The implemented source exception is explicit `Tracks::AudioSampleClock`, restricted
+to audio-only consumption and AAC-LC/48-kHz/1024-tick timing. It requires exact public
+metadata inversion, matching SR/PTS changes within one integer-rounding tick, positive
+bounded reconstructed RTP progression, fresh advancing reports, unchanged SSRC,
+PTS=DTS and uncorrupted packets. Original timestamps are never clamped or replaced.
+Strict Audio/AudioVideo subscribers receive Clock termination and their held grants
+are revoked before publication; video-only subscribers are unaffected. Missing clocks,
+bad metadata and any non-increasing DTS outside this exception still retire the source.
+First/last mapping records and counters are bounded and generation-scoped. Codec
+sample progression, resampling and recording presentation policies are unchanged.
+
+Additional hardware outcomes, recorded as separate attempts:
+
+- A post-change **1800-second-or-first-refusal candidate attempt failed** at
+  **97.72 s total / 97.363 s processing** with a genuine **phase-budget trip**:
+  **4816 samples / 100⅓ ms**, fresh report age **3.122 s**, diagnostic slope
+  **0.728512 ms per nominal decoded second**. There were no backward mapping steps
+  in this window. The processor revoked held output; sibling audio/video remained
+  live until explicit cleanup. This is not a successful sustained qualification.
+- A separate **60-second diagnostic passed**, producing **3011 Opus packets** from
+  **2822 AAC packets / 2,889,728 samples**, with independently decoded audible count
+  **2,889,728**, final phase **144 / 3 ms**, peak **976 / 20⅓ ms** and no mapping
+  rollback. Its subsequent fresh-generation lifecycle check also completed.
+- The final focused source-only check watched for a real bounded rollback for
+  **300 seconds**. **None occurred**: 14,053 AAC and 4496 video source packets,
+  no source fault, one acquisition, zero charges after shutdown. It deliberately
+  reported an inconclusive timeout rather than a successful exercise of the new
+  exception. No audio processing/presentation was qualified by that metadata check.
+
+Thus the classifier and subscription isolation have local regression coverage,
+including captured real metadata, but the final live exception still needs an actual
+rollback occurrence. The camera evidence also exposes an independent cumulative
+phase problem; repeated short successes do not solve it. No camera writes, captured
+media, phase/freshness budget enlargement, automatic reanchor or production acquisition
+cutover occurred. The next work remains in TODO, not a parallel experiment plan.
+
+Implementation checks passed: **32 library + 43 application tests**, the phase-trend
+check, all-target checking, strict library-only Clippy, formatting and the Nix build
+(substitution disabled). Bounded self-review found no issues. These checks do not
+replace the missing live rollback occurrence or resolve the failed phase qualification.
 
 ## Actual camera observation
 

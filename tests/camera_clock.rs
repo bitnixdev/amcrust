@@ -77,6 +77,93 @@ async fn sample(source: &Source, seconds: u64) -> Result<Sample, String> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real camera, serial access; up to 300s until a bounded mapping step; metadata only"]
+async fn real_bounded_audio_remapping() {
+    use amcrust::source::Terminal;
+    dotenvy::dotenv().ok();
+    let user = std::env::var("AMCREST_USERNAME").unwrap();
+    let password = std::env::var("AMCREST_PASSWORD").unwrap();
+    let url = CameraUrl::new(format!(
+        "rtsp://{user}:{password}@10.76.14.10:554/cam/realmonitor?channel=1&subtype=0"
+    ))
+    .unwrap();
+    let mut registry = Registry::new(Limits::default()).unwrap();
+    let source = registry
+        .register(
+            SourceKey {
+                camera: 1,
+                encoder: Encoder::Main,
+            },
+            url,
+        )
+        .unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(300), async {
+        let mut strict = source
+            .subscribe(Tracks::Audio, SubscriptionLimits::default())
+            .await?;
+        let mut video = source
+            .subscribe(Tracks::Video, SubscriptionLimits::default())
+            .await?;
+        let mut candidate = source
+            .subscribe(Tracks::AudioSampleClock, SubscriptionLimits::default())
+            .await?;
+        let mut previous = None;
+        let mut held_strict = None;
+        let mut strict_stopped = false;
+        let mut step_sequence = None;
+        let mut video_after = false;
+        let mut audio_after = false;
+        loop {
+            tokio::select! {
+                packet = strict.recv(), if !strict_stopped => match packet {
+                    Ok(packet) => held_strict = Some(packet),
+                    Err(Terminal::Clock) => strict_stopped = true,
+                    Err(reason) => return Err(reason),
+                },
+                packet = video.recv() => {
+                    let delivery = packet?;
+                    let p = delivery.packet()?;
+                    video_after |= step_sequence.is_some_and(|seq| p.sequence() > seq);
+                },
+                packet = candidate.recv() => {
+                    let delivery = packet?;
+                    let p = delivery.packet()?;
+                    let dts = p.dts().ok_or(Terminal::Clock)?;
+                    audio_after |= step_sequence.is_some_and(|seq| p.sequence() > seq);
+                    if step_sequence.is_none() && previous.is_some_and(|last| dts <= last) {
+                        let clocks = source.clock_snapshot().unwrap();
+                        let step = clocks.tracks[p.stream_index()].first_mapping_step.unwrap();
+                        assert!(step.bounded_remapping);
+                        assert_eq!(step.current.sequence, p.sequence());
+                        assert_eq!(step.current.dts, dts); // Original rollback, not clamped.
+                        eprintln!("Real bounded AAC remapping: {step:?}");
+                        step_sequence = Some(p.sequence());
+                    }
+                    previous = Some(dts);
+                },
+            }
+            if strict_stopped && video_after && audio_after {
+                assert!(held_strict.is_some_and(|p| matches!(p.packet(), Err(Terminal::Clock))));
+                assert_eq!(source.snapshot().faults, 0);
+                return Ok::<_, Terminal>(());
+            }
+        }
+    })
+    .await;
+    registry.shutdown().await.unwrap();
+    eprintln!(
+        "Bounded remapping outcome: {result:?} source={:?} clocks={:?}",
+        source.snapshot(),
+        source.clock_snapshot()
+    );
+    assert_eq!(source.snapshot().open_attempts, 1);
+    assert_eq!(source.snapshot().charged_bytes, 0);
+    result
+        .expect("no bounded remapping observed within 300s")
+        .expect("bounded source remapping");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires coordinated authorized camera access and existing credentials; takes ~80 seconds"]
 async fn real_sender_clocks() {
     dotenvy::dotenv().ok();

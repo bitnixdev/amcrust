@@ -11,6 +11,10 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 pub enum Tracks {
     Video,
     Audio,
+    /// Audio-only opt-in for a bounded source-anchored decoded-sample clock.
+    /// Allows proven bounded SR remapping, preserving original PTS/DTS. Consumers
+    /// must still enforce cumulative phase/freshness budgets; not for muxing.
+    AudioSampleClock,
     /// Starts at a future video IDR; does not provide covering AAC history for
     /// recording cuts. Recording history/clip admission is a separate owner.
     AudioVideo,
@@ -22,13 +26,21 @@ impl Tracks {
     pub(super) fn supported(self, streams: &[StreamConfiguration]) -> bool {
         use crate::ingest::Codec;
         (!self.video() || streams.iter().any(|s| s.codec == Codec::H264))
-            && (!matches!(self, Self::Audio | Self::AudioVideo)
-                || streams.iter().any(|s| s.codec == Codec::Aac))
+            && (!matches!(
+                self,
+                Self::Audio | Self::AudioSampleClock | Self::AudioVideo
+            ) || streams.iter().any(|s| s.codec == Codec::Aac))
+    }
+    pub(super) fn accepts_mapping_step(self) -> bool {
+        matches!(self, Self::AudioSampleClock)
     }
     pub(super) fn accepts(self, codec: crate::ingest::Codec) -> bool {
         match codec {
             crate::ingest::Codec::H264 => self.video(),
-            crate::ingest::Codec::Aac => matches!(self, Self::Audio | Self::AudioVideo),
+            crate::ingest::Codec::Aac => matches!(
+                self,
+                Self::Audio | Self::AudioSampleClock | Self::AudioVideo
+            ),
         }
     }
 }
@@ -208,6 +220,17 @@ impl Queue {
         self.validity.retire(reason);
         self.queue.lock().unwrap().clear();
     }
+    pub(super) fn admit_mapping_step(&self, bounded_mapping_step: bool) -> bool {
+        if bounded_mapping_step
+            && self.tracks.accepts(crate::ingest::Codec::Aac)
+            && !self.tracks.accepts_mapping_step()
+        {
+            self.retire(Terminal::Clock);
+            false
+        } else {
+            true
+        }
+    }
     pub(super) fn oldest_age(&self) -> Duration {
         self.budget
             .entries
@@ -344,5 +367,40 @@ impl Subscription {
     }
     pub fn outstanding_packets(&self) -> usize {
         self.queue.limits.packets - self.queue.budget.packets.available_permits()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn remapping_retires_strict_consumers_without_revoking_other_tracks() {
+        let generation = Arc::new(Generation {
+            streams: vec![],
+            reason: Mutex::new(None),
+            _charges: vec![],
+        });
+        for tracks in [
+            Tracks::Audio,
+            Tracks::AudioVideo,
+            Tracks::AudioSampleClock,
+            Tracks::Video,
+        ] {
+            let queue = Queue::new(tracks, SubscriptionLimits::default(), vec![]);
+            let held = DeliveryGuard {
+                generation: generation.clone(),
+                validity: queue.validity.clone(),
+            };
+            assert!(queue.admit_mapping_step(false));
+            queue.admit_mapping_step(true);
+            if matches!(tracks, Tracks::Audio | Tracks::AudioVideo) {
+                assert_eq!(held.check(), Err(Terminal::Clock));
+                queue.retire(Terminal::Shutdown);
+                assert_eq!(held.check(), Err(Terminal::Clock));
+            } else {
+                assert_eq!(held.check(), Ok(()));
+            }
+            assert_eq!(generation.check(), Ok(()));
+        }
     }
 }
