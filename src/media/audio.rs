@@ -611,6 +611,9 @@ impl Transcoder {
                 .try_acquire_many_owned(RESERVATION as u32)
                 .map_err(|_| Error::Limit)?,
         ];
+        if first.timing()? != crate::source::Timing::Source {
+            return Err(Error::Configuration);
+        }
         let packet = first.packet()?;
         if policy != ClockPolicy::Strict
             && (packet.sender_report().is_none()

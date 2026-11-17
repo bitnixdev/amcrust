@@ -76,6 +76,32 @@ impl Admission {
         packet: &Packet,
         bounded_mapping_step: bool,
     ) -> Result<Option<bool>, Terminal> {
+        let idr = self.shape(packet, false)?;
+        let track = packet.stream_index();
+        let (Some(_), Some(dts)) = (packet.pts(), packet.dts()) else {
+            return if self.last_dts[track].is_none() {
+                Ok(None)
+            } else {
+                Err(Terminal::Clock)
+            };
+        };
+        if self.last_dts[track].is_some_and(|last| dts <= last)
+            && !(bounded_mapping_step && self.supports_sample_clock(track))
+        {
+            return Err(Terminal::Clock);
+        }
+        self.last_dts[track] = Some(dts);
+        Ok(Some(idr))
+    }
+    pub(super) fn inspect_presentation(&mut self, packet: &Packet) -> Result<bool, Terminal> {
+        let idr = self.shape(packet, true)?;
+        self.last_dts[packet.stream_index()] = packet.dts();
+        Ok(idr)
+    }
+    fn shape(&self, packet: &Packet, presentation: bool) -> Result<bool, Terminal> {
+        if packet.stream_index() >= self.last_dts.len() || packet.flags() & 2 != 0 {
+            return Err(Terminal::Unsupported);
+        }
         let track = packet.stream_index();
         let mut idr = false;
         if track == self.video {
@@ -94,6 +120,7 @@ impl Admission {
                         bits.ue()?; // first_mb_in_slice; multiple slices are supported
                         let slice_type = bits.ue()?;
                         if slice_type > 9
+                            || (presentation && slice_type % 5 == 1) // No guessed B-frame reorder clock.
                             || (is_idr && !matches!(slice_type % 5, 2 | 4))
                             || bits.ue()? != self.pps_id
                         {
@@ -110,24 +137,7 @@ impl Admission {
                 return Err(Terminal::Unsupported);
             }
         }
-        let (Some(_), Some(dts)) = (packet.pts(), packet.dts()) else {
-            // No invented DTS/PTS, including for a key-flagged first video packet.
-            // Once this track has a usable clock, losing it retires the generation.
-            return if self.last_dts[track].is_none() {
-                Ok(None)
-            } else {
-                Err(Terminal::Clock)
-            };
-        };
-        // Only the audited AAC mapping classifier may authorize this exception.
-        // The packet is immutable; strict subscribers are retired before publication.
-        if self.last_dts[track].is_some_and(|last| dts <= last)
-            && !(bounded_mapping_step && self.supports_sample_clock(track))
-        {
-            return Err(Terminal::Clock);
-        }
-        self.last_dts[track] = Some(dts);
-        Ok(Some(idr))
+        Ok(idr)
     }
 }
 
@@ -225,5 +235,45 @@ impl Bits {
             value = (value << 1) | self.next()?;
         }
         Ok(value - 1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn admission() -> Admission {
+        Admission {
+            video: 0,
+            sample_clock_audio: None,
+            sps: vec![],
+            pps: vec![],
+            pps_id: 0,
+            last_dts: vec![None],
+        }
+    }
+    #[test]
+    fn presentation_does_not_repair_camera_clocks_or_accept_reordered_slices() {
+        let mut presented = admission();
+        let mut strict = admission();
+        let first = Packet::timing_fixture(0, None, None, &[0, 0, 1, 0x65, 0xb8]);
+        assert_eq!(presented.inspect_presentation(&first), Ok(true));
+        assert_eq!(strict.inspect(&first, false), Ok(None));
+        let forward = Packet::timing_fixture(1, Some(100), Some(100), &[0, 0, 1, 0x41, 0xe0]);
+        assert_eq!(presented.inspect_presentation(&forward), Ok(false));
+        assert_eq!(strict.inspect(&forward, false), Ok(Some(false)));
+        let backward = Packet::timing_fixture(2, Some(75), Some(75), &[0, 0, 1, 0x41, 0xe0]);
+        assert_eq!(presented.inspect_presentation(&backward), Ok(false));
+        assert_eq!(strict.inspect(&backward, false), Err(Terminal::Clock));
+        assert_eq!((backward.pts(), backward.dts()), (Some(75), Some(75)));
+        let reordered = Packet::timing_fixture(3, Some(80), Some(80), &[0, 0, 1, 0x41, 0xa8]);
+        assert_eq!(
+            presented.inspect_presentation(&reordered),
+            Err(Terminal::Unsupported)
+        );
+        let wrong_reference = Packet::timing_fixture(4, Some(90), Some(90), &[0, 0, 1, 0x41, 0xd0]);
+        assert_eq!(
+            presented.inspect_presentation(&wrong_reference),
+            Err(Terminal::Unsupported)
+        );
     }
 }

@@ -177,6 +177,10 @@ impl DeliveryGuard {
     }
 }
 impl Delivery {
+    pub fn timing(&self) -> Result<super::Timing, Terminal> {
+        self.check()?;
+        Ok(self.generation.timing)
+    }
     pub(crate) fn guard(&self) -> Result<DeliveryGuard, Terminal> {
         self.check()?;
         Ok(DeliveryGuard {
@@ -260,6 +264,9 @@ impl Queue {
             true
         }
     }
+    pub(super) fn current_start(&self, packet: &Packet) -> bool {
+        packet.received_at() >= self.joined
+    }
     pub(super) fn oldest_age(&self) -> Duration {
         self.budget
             .entries
@@ -298,8 +305,25 @@ impl Queue {
             return Err(Terminal::Residence);
         }
         let stream = &generation.streams[packet.stream_index()];
-        let start = packet.pts().ok_or(Terminal::Clock)? as i128;
-        let end = start + packet.duration().max(0) as i128;
+        let presentation = generation.timing == super::Timing::Presentation;
+        let (start, end, numerator, denominator) = if presentation {
+            let start = packet
+                .received_at()
+                .checked_duration_since(generation.born)
+                .ok_or(Terminal::Clock)?
+                .as_nanos() as i128;
+            // This mode bounds read-time span, not an untrusted camera duration.
+            // Count/byte/residence limits independently bound single deliveries.
+            (start, start, 1, 1_000_000_000)
+        } else {
+            let start = packet.pts().ok_or(Terminal::Clock)? as i128;
+            (
+                start,
+                start + packet.duration().max(0) as i128,
+                stream.time_base.numerator,
+                stream.time_base.denominator,
+            )
+        };
         {
             let entries = self.budget.entries.lock().unwrap();
             let (mut low, mut high) = (start, end);
@@ -310,10 +334,10 @@ impl Queue {
                 low = low.min(entry.start);
                 high = high.max(entry.end);
             }
-            let span_ns = (high - low) * stream.time_base.numerator as i128 * 1_000_000_000;
+            let span_ns = (high - low) * numerator as i128 * 1_000_000_000;
             if span_ns
                 > self.limits.media_span.as_nanos().min(i128::MAX as u128) as i128
-                    * stream.time_base.denominator as i128
+                    * denominator as i128
             {
                 return Err(Terminal::MediaSpan);
             }
@@ -404,6 +428,8 @@ mod tests {
     use super::*;
     fn generation() -> Arc<Generation> {
         Arc::new(Generation {
+            timing: super::super::Timing::Source,
+            born: Instant::now(),
             streams: vec![],
             reason: Retirement::default(),
             _charges: vec![],
@@ -575,6 +601,8 @@ mod tests {
     #[test]
     fn oversized_mapping_revokes_all_audio_but_not_shared_video() {
         let generation = Arc::new(Generation {
+            timing: super::super::Timing::Source,
+            born: Instant::now(),
             streams: vec![],
             reason: Retirement::default(),
             _charges: vec![],
@@ -605,6 +633,8 @@ mod tests {
     #[test]
     fn remapping_retires_strict_consumers_without_revoking_other_tracks() {
         let generation = Arc::new(Generation {
+            timing: super::super::Timing::Source,
+            born: Instant::now(),
             streams: vec![],
             reason: Retirement::default(),
             _charges: vec![],

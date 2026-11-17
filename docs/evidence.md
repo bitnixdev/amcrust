@@ -9,10 +9,11 @@ Former experimental implementation names below are provenance, not current entry
 
 ## What is actually running
 
-The existing Rust bridge still opens separate FFmpeg camera readers for live video,
-live audio and recording. Production live video/audio now use the shared Rust secure
-UDP transport and Rust-formatted sender reports described below, but acquisition is unchanged. Its HomeKit features are
-not evidence that a shared-source replacement works. Production instrumentation added first RTP/IDR timing and recording
+Production live video now consumes encoder-keyed Rust shared acquisition, H.264
+packetization, explicit host-monotonic presentation and Rust-scheduled reports.
+Its per-viewer FFmpeg command and local video relay are removed. Live audio and
+recording still open separate FFmpeg camera readers; full cutover is unfinished.
+The production-path checks below are not deployment or Apple playback acceptance. Production instrumentation added first RTP/IDR timing and recording
 delivery outcomes (`end_sent`, `cancelled`, `source_unavailable`, `write_error`).
 `end_sent` is a successful write, not confirmed iCloud storage. The process sampler in
 `scripts/ingest_baseline.py` avoids command lines/environment values; process counts
@@ -20,9 +21,9 @@ are not RTSP session counts and summed RSS may double-count shared pages.
 
 The unused C-worker draft (`native/`, `native-media.nix`) has been removed and
 `src/ingest.rs` replaced by a Rust libavformat acquisition boundary. It is compiled
-as application library code, but not wired into `src/main.rs` or production consumers.
-MediaMTX was investigated but not added or launched. No production shared-ingest or
-Apple acceptance claim follows from these steps.
+as application library code and is now wired into `src/main.rs` for live video.
+MediaMTX was investigated but not added or launched. Audio/recording integration and
+Apple acceptance remain separate requirements.
 
 ### Rust acquisition increment
 
@@ -834,6 +835,53 @@ Unattended recovery over months, camera reboots and network failures is an expli
 requirement. This decision supersedes treating the strict source-anchored candidate
 as the production clock contract; it does not turn its historical failures into passes
 or claim that the recovered presentation implementation already exists.
+
+#### Production shared-video cutover
+
+`src/main.rs` now registers the native live encoders and supplies non-secret source
+handles to `StreamManager`. `src/stream/shared.rs` owns per-viewer H.264 packetization,
+source-bound writes, authenticated feedback, current host-NTP/RTP pairs and report
+scheduling at the negotiated minimum interval (bounded to supported values). The
+video FFmpeg command, video UDP relay sockets and native video timestamp adapter path
+are removed; there is no runtime legacy video fallback. Audio/recording remain native.
+
+Production sources explicitly select presentation timing. Camera timestamps and first
+contradictions remain unchanged diagnostics; the video timeline uses monotonic packet
+read instants instead. Structural packet identity, changed report identity, codec
+changes, corruption, current SPS/PPS/slice references and negotiated dimensions remain
+checks; B slices are refused instead of guessing display reordering. Initial missing
+PTS/DTS is supported without fabricating source fields. A generation's timing mode
+cannot change; strict audio/mux constructors reject presentation deliveries. Read-time
+queue span, residence/count/byte limits and source-bound write fences stay enforced.
+No capture-time accuracy, burst smoothing or common live A/V synchronization is claimed.
+
+A real production `StreamManager::start_stream` check completed in **0.48 seconds**:
+**153 RTP packets** and a Rust sender report were decrypted, RR/PLI/BYE were handled,
+and the Rust producer ended without HAP stop. No video child process existed.
+A separate application-producer sharing check completed in **0.52 seconds**, with
+**100 / 154 authenticated RTP packets** and three B-viewer timestamps: both owners
+used one acquisition and stopping A left B active. These are short control/lifetime
+results, not timing benchmarks or Apple playback qualification.
+
+The presentation-mode downstream decoder check passed in **6.92 seconds**. Two SRTP
+receivers decoded **30 / 30 frames**, with **2670 / 901 RTP packets** at 400-/1200-byte
+wire limits from one acquisition. The original `MissingMediaTimestamp` diagnostic
+remained visible while presentation continued. Local checks cover unchanged rollback
+metadata, B-slice/wrong-reference refusal, identity checks after a clock diagnostic,
+180-day clock arithmetic/RTP wrapping, cancellation during stalled native RTSP setup,
+late transport-install refusal and release of ended-owner sockets/source references.
+The final production control repeat passed in **0.44 seconds** with **152 RTP packets**
+and no video child. A strengthened sharing repeat waited for two fresh source video
+packets after A stopped; it passed in **1.56 seconds**, with **100 / 47 authenticated
+RTP packets**, three B timestamps and still one acquisition. Ended owners release
+bound sockets/source descriptors without waiting for a later HAP cleanup request.
+
+Validation passed: **45 library + 47 application tests**, recovery and phase-trend
+checks, all-target compilation, strict library Clippy, formatting, two sampler tests
+and the pinned Nix build. Bounded major-only self-review returned no findings. The
+existing application atomic-deprecation warning remains.
+These checks do not establish months-long operation, camera-reboot recovery, actual
+HomeKit A/V, HSV cutover or aggregate production resource savings.
 
 ## Actual camera observation
 

@@ -21,7 +21,8 @@ pub struct H264 {
     guard: DeliveryGuard,
     stream: usize,
     time_base: TimeBase,
-    origin_pts: i64,
+    origin_pts: Option<i64>,
+    presentation: Option<super::presentation::PresentationClock>,
     origin_rtp: u32,
     sequence: u16,
     first_source_sequence: u64,
@@ -31,6 +32,35 @@ pub struct H264 {
 }
 impl H264 {
     pub fn new(first: &Delivery, config: Config) -> Result<Self, Error> {
+        Self::new_timed(first, config, None)
+    }
+    pub fn new_presented(
+        first: &Delivery,
+        config: Config,
+        clock: super::presentation::PresentationClock,
+    ) -> Result<Self, Error> {
+        Self::new_timed(first, config, Some(clock))
+    }
+    pub fn sender_clock(&self) -> Result<super::rtcp::ClockPair, Error> {
+        self.guard.check()?;
+        if let Some(error) = self.terminal {
+            return Err(error);
+        }
+        self.presentation
+            .ok_or(Error::Clock)?
+            .report(self.origin_rtp, 90000)
+    }
+    fn new_timed(
+        first: &Delivery,
+        config: Config,
+        presentation: Option<super::presentation::PresentationClock>,
+    ) -> Result<Self, Error> {
+        if (first.timing()? == crate::source::Timing::Presentation) != presentation.is_some() {
+            return Err(Error::Configuration);
+        }
+        if presentation.is_none() && first.packet()?.pts().is_none() {
+            return Err(Error::Clock);
+        }
         if !(96..=127).contains(&config.payload_type)
             || !(64..=65507).contains(&config.packet_bytes)
         {
@@ -47,7 +77,8 @@ impl H264 {
             guard: first.guard()?,
             stream: stream.index,
             time_base: stream.time_base,
-            origin_pts: packet.pts().ok_or(Error::Clock)?,
+            origin_pts: packet.pts(),
+            presentation,
             origin_rtp: random.r#gen(),
             sequence: random.r#gen(),
             first_source_sequence: packet.sequence(),
@@ -113,15 +144,20 @@ impl H264 {
             }
         }
         output.extend(units);
-        let delta = packet.pts().ok_or(Error::Clock)? as i128 - self.origin_pts as i128;
-        let ticks = rescale(
-            delta,
-            self.time_base,
-            TimeBase {
-                numerator: 1,
-                denominator: 90000,
-            },
-        )?;
+        let ticks = if let Some(clock) = self.presentation {
+            clock.ticks(packet.received_at(), 90000)
+        } else {
+            let delta = packet.pts().ok_or(Error::Clock)? as i128
+                - self.origin_pts.ok_or(Error::Clock)? as i128;
+            rescale(
+                delta,
+                self.time_base,
+                TimeBase {
+                    numerator: 1,
+                    denominator: 90000,
+                },
+            )? as i128
+        };
         self.last_source_sequence = Some(packet.sequence());
         Ok((output, self.origin_rtp.wrapping_add(ticks as u32)))
     }

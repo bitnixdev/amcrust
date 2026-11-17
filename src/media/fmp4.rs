@@ -271,6 +271,9 @@ impl Muxer {
                 .try_acquire_many_owned(reserve)
                 .map_err(|_| Error::Limit)?,
         ];
+        if first.timing()? != crate::source::Timing::Source {
+            return Err(Error::Configuration);
+        }
         let packet = first.packet()?;
         let streams = first.configuration()?;
         let video = &streams[packet.stream_index()];

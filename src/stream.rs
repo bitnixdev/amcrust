@@ -1,7 +1,7 @@
 //! HomeKit camera RTP stream management: SetupEndpoints / SelectedRTPStreamConfiguration
-//! TLV8 negotiation and the ffmpeg RTSP→SRTP media pipeline.
+//! TLV8 negotiation, shared Rust video and the remaining native audio adapter.
 
-use log::{debug, error, warn};
+use log::{debug, warn};
 use rand::Rng;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process::Stdio;
@@ -16,8 +16,10 @@ use crate::tlv8;
 use amcrust::media::rtcp;
 use amcrust::media::transport::{Error as TransportError, RTP_OVERHEAD, Transport};
 
+mod shared;
+
 struct MediaProxy {
-    transport: Arc<Transport>,
+    transport: shared::Control,
     metrics: Arc<Metrics>,
     task: Option<tokio::task::JoinHandle<()>>,
     #[cfg(test)]
@@ -178,9 +180,9 @@ impl Inner {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct VideoSource {
-    pub rtsp_url: String,
+    pub source: amcrust::source::Source,
     pub profile: VideoProfile,
 }
 
@@ -395,6 +397,10 @@ impl StreamManager {
                     .unwrap_or_default();
                 let payload_type = tlv8::find_u8(&rtp_params, RTP_PAYLOAD_TYPE).unwrap_or(99);
                 let max_mtu = tlv8::find_u16(&rtp_params, RTP_MAX_MTU).unwrap_or(1316);
+                let video_rtcp_interval = tlv8::find(&rtp_params, RTP_MIN_RTCP_INTERVAL)
+                    .filter(|v| v.len() == 4)
+                    .map(|v| f32::from_le_bytes([v[0], v[1], v[2], v[3]]))
+                    .unwrap_or(0.5);
                 let max_bitrate = tlv8::find_u16(&rtp_params, RTP_MAX_BITRATE).unwrap_or_default();
                 debug!(
                     "selected live video {:?}x{:?}@{:?}: native source {}x{}@{} {}kbps, controller max {}kbps",
@@ -444,6 +450,7 @@ impl StreamManager {
                     audio_max_bitrate,
                     audio_rtcp_interval,
                     audio_max_mtu,
+                    video_rtcp_interval,
                 )
                 .await;
             }
@@ -474,7 +481,12 @@ impl StreamManager {
         audio_max_bitrate: u16,
         audio_rtcp_interval: f32,
         audio_max_mtu: u16,
+        video_rtcp_interval: f32,
     ) {
+        if !video_rtcp_interval.is_finite() || !(0.0..=60.0).contains(&video_rtcp_interval) {
+            self.metrics.error(ErrorSubsystem::LiveStream);
+            return;
+        }
         let mut inner = self.inner.lock().await;
 
         let session = match &session_id {
@@ -515,66 +527,25 @@ impl StreamManager {
             warn!("unsupported video MTU");
             return;
         }
-        let pkt_size = wire_mtu - RTP_OVERHEAD;
-        let (video_local_rtp, video_local_rtcp) =
-            match bind_tokio_udp_pair(IpAddr::V4(Ipv4Addr::LOCALHOST)).await {
-                Ok(pair) => pair,
-                Err(e) => {
-                    self.metrics.error(ErrorSubsystem::LiveStream);
-                    warn!("could not bind video proxy socket: {e}");
-                    return;
-                }
-            };
-        let video_local_rtp_port = video_local_rtp.local_addr().map(|a| a.port()).unwrap_or(0);
-        let video_local_rtcp_port = video_local_rtcp.local_addr().map(|a| a.port()).unwrap_or(0);
-        let video_dest = format!(
-            "rtp://127.0.0.1:{video_local_rtp_port}?rtcpport={video_local_rtcp_port}&pkt_size={pkt_size}"
-        );
-        let Some(video_proxy) = spawn_media_proxy(
-            "video",
-            video_local_rtp,
-            video_local_rtcp,
-            session.video_out_socket.take().unwrap(),
-            session.controller_ip.clone(),
-            session.video_port,
-            session.video_key.clone(),
-            session.video_ssrc,
-            session.rtcp_identity,
-            wire_mtu,
-            1,
-            self.metrics.clone(),
-        ) else {
+        let Ok(controller_ip) = session.controller_ip.parse() else {
             self.metrics.error(ErrorSubsystem::LiveStream);
             return;
         };
-
-        let mut video_cmd = Command::new("ffmpeg");
-        video_cmd
-            .arg("-hide_banner")
-            .args(["-loglevel", "warning"])
-            .args(["-fflags", "+genpts+nobuffer"])
-            .args(["-flags", "low_delay"])
-            // The camera's own timestamps jump backwards (clock wobble); its
-            // packet *delivery* is smooth, so arrival time is the better clock.
-            .args(["-use_wallclock_as_timestamps", "1"])
-            // H.264 parameters arrive via the RTSP SDP, so skip input probing —
-            // it otherwise delays the first RTP packet by several seconds and
-            // iOS gives up on the stream.
-            .args(["-probesize", "65536"])
-            .args(["-analyzeduration", "0"])
-            .args(["-rtsp_transport", "tcp"])
-            .args(["-i", &video_source.rtsp_url])
-            .args(["-map", "0:v:0"])
-            .arg("-an")
-            .args(["-c:v", "copy"])
-            .args(["-payload_type", &payload_type.to_string()])
-            .args(["-ssrc", &session.video_ssrc.to_string()])
-            .args(["-f", "rtp"])
-            .arg(&video_dest)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
-        video_cmd.kill_on_drop(true);
+        let video_proxy = shared::spawn(
+            shared::Video {
+                source: video_source.source,
+                profile: video_source.profile,
+                socket: session.video_out_socket.take().unwrap(),
+                peer: SocketAddr::new(controller_ip, session.video_port),
+                key: session.video_key.clone(),
+                ssrc: session.video_ssrc,
+                identity: session.rtcp_identity,
+                mtu: wire_mtu,
+                payload: payload_type,
+                interval: std::time::Duration::from_secs_f32(video_rtcp_interval.max(0.5)),
+            },
+            self.metrics.clone(),
+        );
 
         let audio_wire_mtu = usize::from(audio_max_mtu.min(1378));
         if self.audio && audio_wire_mtu < 188 {
@@ -586,21 +557,8 @@ impl StreamManager {
             && session.audio_out_socket.is_some()
             && audio_wire_mtu >= 188;
 
-        debug!("starting video ffmpeg → {video_dest}");
-        match video_cmd.spawn() {
-            Ok(child) => {
-                inner
-                    .video_proxies
-                    .insert(session.id.clone(), video_proxy.with_producer(child));
-                self.metrics.live_stream_started();
-            }
-            Err(e) => {
-                video_proxy.stop().await;
-                self.metrics.error(ErrorSubsystem::LiveStream);
-                error!("failed to spawn video ffmpeg: {e}");
-                return;
-            }
-        }
+        inner.video_proxies.insert(session.id.clone(), video_proxy);
+        self.metrics.live_stream_started();
 
         // Audio has its own RTSP reader/encoder process and local RTP/RTCP
         // proxy. Nothing in this path can block or pace the video process.
@@ -892,7 +850,7 @@ fn spawn_media_proxy(
         debug!("{label} receiver feedback summary: {:?}", receiver.stats());
     });
     Some(MediaProxy {
-        transport,
+        transport: shared::Control::Ready(transport),
         metrics: owner_metrics,
         task: Some(task),
         #[cfg(test)]
@@ -1038,6 +996,28 @@ pub fn supported_rtp_config() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn registry() -> amcrust::source::Registry {
+        amcrust::source::Registry::new(amcrust::source::Limits {
+            timing: amcrust::source::Timing::Presentation,
+            ..Default::default()
+        })
+        .unwrap()
+    }
+    fn register(
+        registry: &mut amcrust::source::Registry,
+        camera: u64,
+        url: String,
+    ) -> amcrust::source::Source {
+        registry
+            .register(
+                amcrust::source::SourceKey {
+                    camera,
+                    encoder: amcrust::source::Encoder::Main,
+                },
+                amcrust::ingest::CameraUrl::new(url).unwrap(),
+            )
+            .unwrap()
+    }
 
     #[test]
     fn detects_single_and_fragmented_h264_idr_packets() {
@@ -1229,9 +1209,10 @@ mod tests {
         })
         .await
         .unwrap();
+        let mut registry = registry();
         let manager = StreamManager::new(
             vec![VideoSource {
-                rtsp_url: "rtsp://unused.invalid".into(),
+                source: register(&mut registry, 1, "rtsp://unused.invalid".into()),
                 profile: VideoProfile::LIVE_720P,
             }],
             "rtsp://unused.invalid".into(),
@@ -1247,6 +1228,7 @@ mod tests {
             .insert(vec![1], proxy);
         manager.end_session(Some(vec![1])).await;
         manager.stop_stream().await;
+        registry.shutdown().await.unwrap();
         assert_reaped(pid);
         assert!(matches!(
             fence.send_rtp(&packet, || true).await,
@@ -1269,8 +1251,9 @@ mod tests {
         let url =
             format!("rtsp://{user}:{password}@10.76.14.10:554/cam/realmonitor?channel=1&subtype=0");
         let metrics = Metrics::new();
+        let mut registry = registry();
         let source = VideoSource {
-            rtsp_url: url.clone(),
+            source: register(&mut registry, 1, url.clone()),
             profile: VideoProfile::LIVE_1080P,
         };
         let manager = StreamManager::new(
@@ -1312,6 +1295,7 @@ mod tests {
                 24,
                 1.0,
                 1200,
+                0.5,
             )
             .await;
         let pid = manager
@@ -1358,16 +1342,17 @@ mod tests {
             let task = manager.inner.lock().await.video_proxies.get_mut(&id)
                 .and_then(|p| p.task.take()).ok_or("missing media owner")?;
             task.await.map_err(|e| e.to_string())?;
-            if !pid.is_some_and(is_reaped) {
-                return Err("producer was not reaped before HAP cleanup".into());
+            if pid.is_some() {
+                return Err("shared video unexpectedly spawned a native producer".into());
             }
             if !metrics.render(false).contains("kind=\"bye\"} 1") || !metrics.render(false).contains("kind=\"pli\"} 1") {
                 return Err("receiver feedback was not handled locally".into());
             }
-            eprintln!("Production video control: decrypted_rtp={packets} sender_report={report}; RR/PLI/BYE accepted; producer exited without a HAP stop request");
+            eprintln!("Production video control: decrypted_rtp={packets} sender_report={report}; RR/PLI/BYE accepted; Rust producer ended without a HAP stop request; no video child process");
             Ok::<_, String>(())
         }).await;
         manager.stop_stream().await;
+        registry.shutdown().await.unwrap();
         if let Some(pid) = pid {
             assert_reaped(pid);
         }
@@ -1393,15 +1378,16 @@ mod tests {
         assert_eq!(codec.iter().filter(|item| item.tag == 0x03).count(), 2);
     }
 
-    #[test]
-    fn selects_native_source_by_controller_dimensions() {
+    #[tokio::test]
+    async fn selects_native_source_by_controller_dimensions() {
+        let mut registry = registry();
         let sources = [
             VideoSource {
-                rtsp_url: "rtsp://camera/subtype=2".into(),
+                source: register(&mut registry, 1, "rtsp://camera/subtype=2".into()),
                 profile: VideoProfile::LIVE_720P,
             },
             VideoSource {
-                rtsp_url: "rtsp://camera/subtype=0".into(),
+                source: register(&mut registry, 2, "rtsp://camera/subtype=0".into()),
                 profile: VideoProfile::LIVE_1080P,
             },
         ];
@@ -1413,5 +1399,6 @@ mod tests {
             select_video_source(&sources, Some(1920), Some(1080)).profile,
             VideoProfile::LIVE_1080P
         );
+        registry.shutdown().await.unwrap();
     }
 }

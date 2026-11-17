@@ -75,7 +75,9 @@ the production integration below. Removing probes is not the acquisition cutover
   needing it. Main audio/video/recording share one main source; Sub Stream 2 is separate.
   - [x] Implement the encoder-keyed Rust registry and non-secret source handles.
     Real library consumers shared one main RTSP socket; adding Sub Stream 2 used two.
-  - [ ] Inject that registry into the production consumers (section 3).
+  - [x] Inject encoder-keyed sources into production live video; remove video URLs
+    from downstream `VideoSource` handles and join the registry at application shutdown.
+  - [ ] Connect live audio and recording to the same owners (section 3).
 - [ ] Supervisor: startup/read deadlines, bounded retry/backoff, generation reset,
   parameter changes, idle stop, cancellation and deterministic resource cleanup.
   - [x] Own one blocking reader job per active source; revoke before interrupt/join;
@@ -136,11 +138,17 @@ the production integration below. Removing probes is not the acquisition cutover
 
 ## 3. Wire consumers and remove direct camera readers
 
-- [ ] `src/main.rs`: construct and inject the shared source service. Only acquisition
-  receives RTSP credentials/URLs; downstream callers receive source/subscription handles.
+- [ ] `src/main.rs`: finish shared service injection for audio/recording. Live video now
+  receives source handles, not URLs; only its acquisition owner receives credentials.
+  The legacy audio/recording callers still need migration.
 - [ ] `src/stream.rs`: remove direct RTSP opens for video and audio. Feed encoded H.264
   into Rust RTP packetization with the negotiated MTU/payload type and fresh per-viewer
   transport state. Keep existing `src/srtp.rs` encryption/control integration working.
+  - [x] Replace the production video FFmpeg reader/RTP command and local video relay
+    with a shared-source Rust producer. Own presentation timestamps, SR scheduling,
+    feedback and cancellation; protect pending startup and release ended-owner resources.
+    Real production checks exercise one source/two owners and independent stop; separate
+    presentation-mode receivers decode 30 frames each. HomeKit A/V acceptance is open.
   - [x] Implement per-viewer single-NAL/FU-A packetization with independent sequence,
     clock origin, SSRC/payload/MTU configuration, current in-band SPS/PPS and AU marker.
     Two real-source plaintext RTP receivers decoded at 400-/1200-byte packet limits.
@@ -164,10 +172,13 @@ the production integration below. Removing probes is not the acquisition cutover
       producer exit fences transport; track termination kills/reaps its producer and
       joins its diagnostic drain. Real camera RR/PLI/BYE closed the video producer
       without a HAP stop request; local checks cover explicit stop and producer exit.
-    - [ ] Replace the FFmpeg-facing adapters with Rust media producers, a qualified
-      source-to-NTP mapping and report scheduling, then
-      verify Home app playback. Report formatting alone does not supply a source
-      clock, pacing, source-generation fence or audio priming policy.
+    - [x] Replace the video adapter with explicit host-monotonic presentation and
+      current host-NTP/RTP pairs; schedule reports in Rust using the negotiated minimum
+      interval. Preserve original camera timestamps and first clock contradictions.
+      Reject reordered B slices, corruption and mismatched negotiated dimensions.
+    - [ ] Replace the audio adapter, qualify common A/V presentation and recovery,
+      then verify Home app playback. Read-time video timestamps alone do not establish
+      burst handling, physical synchronization or audio priming.
 - [ ] Live audio: use shared AAC input; own FFmpeg-library decode/Opus encode in Rust.
   Pool only compatible negotiated settings and isolate encoder/subscriber failures.
   - [x] Implement thread-bound AAC-LC -> S16 resampler/FIFO -> libopus processing,

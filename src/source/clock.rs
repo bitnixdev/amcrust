@@ -418,6 +418,28 @@ impl Observations {
         }
         result
     }
+    /// Presentation admission ignores unreliable clock values, not packet identity
+    /// or a changed reported source. Keep the first clock failure for diagnostics.
+    pub(super) fn observe_presentation(&mut self, packet: &Packet) -> Result<(), Fault> {
+        let previous_dts = self
+            .tracks
+            .get(packet.stream_index())
+            .and_then(|t| t.last_dts.map(|v| v.0));
+        let result = self
+            .advance_identity(
+                packet.generation(),
+                packet.sequence(),
+                packet.stream_index(),
+            )
+            .and_then(|_| self.tracks[packet.stream_index()].observe(packet, self.born));
+        if let Err(fault) = result {
+            self.record_failure(Failure::at(fault, packet, previous_dts));
+            if matches!(fault, Fault::PacketIdentity | Fault::ReportSourceChanged) {
+                return Err(fault);
+            }
+        }
+        Ok(())
+    }
     fn advance_identity(
         &mut self,
         generation: u64,
@@ -539,6 +561,24 @@ mod tests {
             packets: 100,
             bytes: 10000,
         }
+    }
+
+    #[test]
+    fn presentation_keeps_identity_checks_after_a_sticky_clock_diagnostic() {
+        let mut observations = Observations::new(1, Instant::now(), &[]);
+        observations.tracks = vec![track()];
+        let first = Packet::timing_fixture(0, None, None, &[1]);
+        assert_eq!(observations.observe_presentation(&first), Ok(()));
+        observations.refused_admission(&first, None);
+        let next = Packet::timing_fixture(1, Some(-100), Some(-100), &[1]);
+        assert_eq!(observations.observe_presentation(&next), Ok(()));
+        assert_eq!(observations.fault, Some(Fault::MissingMediaTimestamp));
+        assert_eq!(
+            observations.observe_presentation(&next),
+            Err(Fault::PacketIdentity)
+        );
+        // Diagnostics preserve the original cause, never erase evidence on continuation.
+        assert_eq!(observations.failure.unwrap().sequence, 0);
     }
 
     #[test]

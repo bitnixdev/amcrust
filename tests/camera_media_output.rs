@@ -191,7 +191,16 @@ async fn rtp_viewer(
     )
     .unwrap();
     assert_eq!(transport.rtp_capacity(), config.packet_bytes);
-    let mut packetizer = H264::new(&first, config).unwrap();
+    let mut packetizer = if first.timing().unwrap() == amcrust::source::Timing::Presentation {
+        H264::new_presented(
+            &first,
+            config,
+            amcrust::media::presentation::PresentationClock::new(),
+        )
+        .unwrap()
+    } else {
+        H264::new(&first, config).unwrap()
+    };
     let mut delivery = first;
     let mut buffer = vec![0; config.packet_bytes];
     let mut last_sequence = None;
@@ -257,6 +266,39 @@ async fn real_camera_media_output() {
         .await
         .expect("bounded camera output check");
 }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real camera; serial read-only access; presentation video decode, not HomeKit A/V"]
+async fn real_presented_video() {
+    let mut registry = Registry::new(Limits {
+        timing: amcrust::source::Timing::Presentation,
+        ..Default::default()
+    })
+    .unwrap();
+    let source = registry
+        .register(
+            SourceKey {
+                camera: 1,
+                encoder: Encoder::Main,
+            },
+            camera_url(),
+        )
+        .unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
+        let one = source.subscribe(Tracks::Video, SubscriptionLimits::default()).await.unwrap();
+        let two = source.subscribe(Tracks::Video, SubscriptionLimits::default()).await.unwrap();
+        let p1 = ViewerPorts::reserve();
+        let p2 = ViewerPorts::reserve();
+        let (one, two) = tokio::join!(
+            rtp_viewer(one, Config { ssrc: 42, payload_type: 99, packet_bytes: 400 }, p1),
+            rtp_viewer(two, Config { ssrc: 43, payload_type: 100, packet_bytes: 1200 }, p2));
+        assert_eq!(source.snapshot().open_attempts, 1);
+        eprintln!("Presented video decoded={}/{} RTP={}/{} one acquisition; original clock diagnostics={:?}", one.0, two.0, one.1, two.1, source.clock_snapshot().and_then(|s| s.fault));
+    }).await;
+    registry.shutdown().await.unwrap();
+    assert_eq!(source.snapshot().charged_bytes, 0);
+    result.expect("presented decode deadline");
+}
+
 async fn exercise() {
     let mut registry = Registry::new(Limits::default()).unwrap();
     let source = registry

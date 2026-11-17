@@ -1,4 +1,4 @@
-//! Encoder-keyed shared acquisition. This library is not yet wired to HomeKit.
+//! Encoder-keyed shared acquisition, used by production HomeKit live video.
 //!
 //! Registry owns async supervisors; each active encoder has exactly one blocking
 //! Reader job. Retirement revokes deliveries before joining that job. Retry never
@@ -68,8 +68,18 @@ impl fmt::Display for Terminal {
 }
 impl std::error::Error for Terminal {}
 
+/// Camera timestamps remain immutable in both modes. Presentation consumers use
+/// host-monotonic read times, not a claim about physical capture time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Timing {
+    #[default]
+    Source,
+    Presentation,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
+    pub timing: Timing,
     pub sources: usize,
     pub subscribers: usize,
     pub subscribers_per_source: usize,
@@ -86,6 +96,7 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
+            timing: Timing::Source,
             sources: 16,
             subscribers: 64,
             subscribers_per_source: 8,
@@ -390,6 +401,8 @@ impl Retirement {
     }
 }
 struct Generation {
+    timing: Timing,
+    born: Instant,
     streams: Vec<StreamConfiguration>,
     reason: Retirement,
     _charges: Vec<OwnedSemaphorePermit>,
@@ -589,6 +602,10 @@ impl Supervisor {
         tracks: Tracks,
         limits: SubscriptionLimits,
     ) -> Result<Subscription, Terminal> {
+        if self.limits.timing == Timing::Presentation && matches!(tracks, Tracks::AudioSampleClock)
+        {
+            return Err(Terminal::Unsupported);
+        }
         if self
             .running
             .as_ref()
@@ -708,6 +725,8 @@ impl Supervisor {
                     }
                 }
                 run.configuration = Some(Arc::new(Generation {
+                    timing: self.limits.timing,
+                    born: run.born,
                     streams,
                     reason: Retirement::default(),
                     _charges: charges,
@@ -718,7 +737,13 @@ impl Supervisor {
                 let mapping_step = {
                     let mut observations = self.metrics.clock.lock().unwrap();
                     let clock = observations.as_mut().ok_or(Terminal::Unsupported)?;
-                    clock.observe(&packet).map_err(|_| Terminal::Clock)?;
+                    if self.limits.timing == Timing::Presentation {
+                        clock
+                            .observe_presentation(&packet)
+                            .map_err(|_| Terminal::Clock)?;
+                    } else {
+                        clock.observe(&packet).map_err(|_| Terminal::Clock)?;
+                    }
                     if clock.quarantined(packet.stream_index()) {
                         return Ok(());
                     }
@@ -726,7 +751,8 @@ impl Supervisor {
                 };
                 let admission = run.admission.as_mut().ok_or(Terminal::Unsupported)?;
                 let previous_dts = admission.previous_dts(packet.stream_index());
-                if admission.supports_sample_clock(packet.stream_index())
+                if self.limits.timing == Timing::Source
+                    && admission.supports_sample_clock(packet.stream_index())
                     && mapping_step
                         .is_some_and(|step| step.explained_remapping && !step.bounded_remapping)
                 {
@@ -747,8 +773,25 @@ impl Supervisor {
                     }
                     return Ok(());
                 }
-                let bounded_mapping_step = mapping_step.is_some_and(|step| step.bounded_remapping);
-                let idr = match admission.inspect(&packet, bounded_mapping_step) {
+                let bounded_mapping_step = self.limits.timing == Timing::Source
+                    && mapping_step.is_some_and(|step| step.bounded_remapping);
+                let inspected = if self.limits.timing == Timing::Presentation {
+                    // Retain clock contradictions without making them renderer grants.
+                    if (packet.pts().is_none()
+                        || packet.dts().is_none()
+                        || packet
+                            .dts()
+                            .zip(previous_dts)
+                            .is_some_and(|(now, last)| now <= last))
+                        && let Some(clock) = self.metrics.clock.lock().unwrap().as_mut()
+                    {
+                        clock.refused_admission(&packet, previous_dts);
+                    }
+                    admission.inspect_presentation(&packet).map(Some)
+                } else {
+                    admission.inspect(&packet, bounded_mapping_step)
+                };
+                let idr = match inspected {
                     Ok(Some(idr)) => idr,
                     Ok(None) => {
                         self.metrics.missing_clocks.fetch_add(1, Ordering::Relaxed);
@@ -774,7 +817,10 @@ impl Supervisor {
                     if !queue.admit_mapping_step(bounded_mapping_step) {
                         continue;
                     }
-                    if !client.started && queue.tracks.video() && !idr {
+                    if !client.started
+                        && queue.tracks.video()
+                        && (!idr || !queue.current_start(&packet))
+                    {
                         continue;
                     }
                     if let Err(reason) = queue.offer(

@@ -12,18 +12,17 @@ completed work and its limitations are in [Evidence](evidence.md). The
 
 | Area | Current state | Destination |
 |---|---|---|
-| Camera acquisition | Live video, live audio and recording open their own FFmpeg RTSP readers | One Rust-owned libavformat acquisition per active encoder |
-| Live video | FFmpeg packet copy/RTP followed by the shared, fenced Rust SRTP/SRTCP transport | Shared encoded H.264, Rust per-viewer packetization and existing encryption/control integration |
+| Camera acquisition | Live viewers share Rust libavformat readers by encoder; audio and recording still open their own FFmpeg readers | One Rust-owned libavformat acquisition per active encoder |
+| Live video | Shared Rust H.264 packetization, host-monotonic presentation and Rust-scheduled SRTP/SRTCP; no video child process or local video relay | Shared encoded H.264, Rust per-viewer packetization and existing encryption/control integration |
 | Live audio | Per-viewer FFmpeg AAC decode/Opus encode | Rust-owned FFmpeg-library audio processing shared where negotiated settings match |
 | Recording | Persistent FFmpeg reader/mux, Rust fMP4 prebuffer and HDS delivery | Shared packet subscriptions, Rust-owned mux/lifetimes, existing HomeKit/HDS integration |
 | Experiments | Retained numeric findings; obsolete C/Python fixture harness removed | Behavioral evidence to carry forward, not a second production implementation |
-| Rust acquisition boundary | `src/ingest.rs` owns libavformat; `src/source/` supplies an encoder registry, joined supervisors and bounded generation-scoped subscriptions | Connect the library owners to production live/audio/recording consumers |
+| Rust acquisition boundary | `src/main.rs` creates the registry and injects source handles into live video; joined supervisors and bounded subscriptions own libavformat | Connect live audio and recording to those same encoder owners |
 
-**The production acquisition cutover has not happened.** Previous packet, lifetime,
-mux and presentation experiments do not establish that the new Rust path is deployed
-or accepted by Apple clients. The project-owned C workers and probe packaging have been removed;
-the Rust library registry/fanout is built and exercised against the real camera, but
-not connected to production consumers.
+**Production live video has switched; full audio/recording cutover is unfinished.**
+Real checks exercise this application path, but are not deployment or Apple acceptance.
+The project-owned C workers/probe packaging and the per-viewer video FFmpeg command
+are removed. No selectable legacy video fallback remains.
 
 ## Intended data flow
 
@@ -76,7 +75,9 @@ The user selected **stable playback with an explicit recovered presentation cloc
 not source-derived capture-time fidelity. Cameras are underpowered, untrusted long-term
 clock sources; production must recover unattended across months of operation, camera
 reboots, network outages and other failures. This is the implementation direction,
-not a claim that the current strict source/audio library implements it.
+not a claim that continuous audio recovery or full recording presentation is implemented.
+Production video now uses host-monotonic packet-read times; that initial presentation
+model still needs sustained, network-burst and paired-client A/V qualification.
 
 Preserve original PTS/DTS, SR/PRFT and contradiction diagnostics separately from
 presentation timing. Implement a common monotonic A/V presentation domain with bounded
@@ -107,7 +108,19 @@ Explicit `Registry::shutdown` signals all owners before joining and can be await
 again if cancelled. Call it before dropping the Tokio runtime; Drop signals cleanup
 but cannot provide an async join by itself.
 
-Current admission supports Annex-B H.264 with one matching SPS/PPS pair and checked
+Production creates its registry with `Timing::Presentation`; the library default
+`Timing::Source` remains for source-clock diagnostics and the existing finite/audio
+experiments. A generation has one immutable timing mode. Presentation admission checks
+packet identity, corruption, current parameter sets and slice references; it refuses
+B slices rather than guessing reordered timestamps. Missing/rolling-back camera clocks
+remain recorded, not overwritten, and do not alone retire a presentation generation.
+Changed report identity, codec changes and I/O failures still retire it. Queue span
+uses the same monotonic domain while count/byte/residence budgets remain unchanged.
+Strict audio/mux constructors reject presentation deliveries instead of accidentally
+using their unreliable camera timestamps. The fixed-anchor audio candidate is not a
+presentation-mode fallback. The source-clock behavior described below remains diagnostic.
+
+Current source-clock admission supports Annex-B H.264 with one matching SPS/PPS pair and checked
 slice references. It waits for a future actual timestamped IDR, never a cached GOP or
 key flag alone. Initial unclocked packets are skipped, not repaired; later clock loss
 or unexplained non-increasing DTS retires the generation. A narrowly classified AAC
@@ -240,9 +253,13 @@ on FFmpeg internal allocations, allocator overhead or process RSS.
 storage (single NAL or FU-A). Each viewer owns its sequence and RTP clock origin plus
 negotiated SSRC/payload type/plaintext packet limit. SPS/PPS accompany each IDR; the
 last packet alone carries the AU marker. Abandoning a partial AU fails that packetizer.
-The shared secure transport below now owns production socket writes. Connecting this
-packetizer and source-derived RTCP generation to HomeKit sessions remains integration
-work; `Transport::rtp_capacity()` reserves the SRTP overhead from the wire limit.
+The shared secure transport below owns production socket writes. This
+packetizer is now connected to HomeKit sessions with an explicit presentation clock;
+`Transport::rtp_capacity()` reserves the SRTP overhead from the wire limit.
+`H264::new_presented` uses immutable packet read instants in a host-monotonic domain.
+`sender_clock` samples that same RTP clock against host UTC for current SRs, not the
+last packet or camera NTP. All AUs are passed through without timestamp clamping or
+frame dropping; this does not guarantee jitter smoothing or physical lip sync.
 
 `media::fmp4::Muxer` uses public FFmpeg parameter-copy, packet-reference and custom AVIO
 APIs for finite H.264/AAC or video-only output. Its first input must be the source-issued
@@ -262,8 +279,7 @@ writes. Reservations are logical ownership bounds, not FFmpeg allocator/RSS meas
 ## Implemented secure transport boundary
 
 `media::transport::Transport` is now the **only production live SRTP/SRTCP socket-write
-path**, used by both FFmpeg adapters in `src/stream.rs` and available directly to Rust
-packetizers. It owns the UDP socket, fixed peer, outgoing SSRC and cryptographic state.
+path**, used by the Rust video owner and remaining audio adapter in `src/stream.rs`. It owns the UDP socket, fixed peer, outgoing SSRC and cryptographic state.
 It does not acquire media, pace packets, rescale timestamps or invent sender reports.
 The legacy timestamp adapter stays at the FFmpeg boundary only; Rust audio's 48-kHz
 presentation timestamps must not pass through it.
@@ -297,16 +313,20 @@ feedback, including retirement between a producer predicate and the syscall. No
 per-transport callback registry or rebinding is needed. Subscription-local audio
 failure leaves unrelated video transports usable; generation retirement closes both.
 Already copied plaintext cannot bypass the fence, even with a stale `true` predicate.
-The unbound constructor remains for the existing production FFmpeg adapters: source
-privacy is not production-integrated until those consumers use source-bound writes.
+The Rust video owner now uses this binding. Its pending-start control fences stop
+before subscription/first IDR, refuses late transport installation, joins cancellation
+and releases retired transport/source references even while an ended HAP entry remains.
+The unbound constructor remains only for the native audio adapter; recording-copy
+privacy is still separate integration work.
 Aggregate source/output accounting and recording-copy fences remain TODO.
 
 Real-source H.264 from two Rust viewers decrypts/decodes through independent FFmpeg SRTP
-receivers. This is not Home app acceptance. Production still uses FFmpeg camera readers
-and their RTCP clock pairs/cadence; Rust now formats the outbound reports below.
+receivers. This is not Home app acceptance. Production video no longer uses the FFmpeg
+executable or its RTP/report clock. Live audio still uses that native adapter; its
+clock pairs/cadence remain supplied by FFmpeg.
 Authenticated receiver feedback is now consumed in Rust, not sent back to FFmpeg.
-Source-clock RTCP, audio receiver priming and shared-acquisition injection remain
-required before those readers can be removed.
+Recovered audio presentation/report clocks, receiver priming and audio/recording
+shared-acquisition injection remain required before the remaining readers can be removed.
 
 ### Rust-owned receiver feedback and live lifetime
 
@@ -364,9 +384,10 @@ SDES, are not forwarded. BYE accompanying an SR is appended to that compound; a 
 BYE retires the adapter without inventing a clock or sending unnegotiated reduced-size
 RTCP. Controller feedback is now consumed by the Rust receiver described above.
 
-**Remaining integration:** qualify the source-to-NTP mapping, own report scheduling
-in the Rust session actor, and connect source retirement. Recovery actions for
-receiver keyframe/retransmission requests are not implemented.
+Video now owns its host presentation-to-NTP pairing, report schedule and source
+retirement fence. **Remaining integration:** implement and qualify recovered audio
+presentation/report timing and common A/V behavior, plus recording. Recovery actions
+for receiver keyframe/retransmission requests are not implemented.
 A report formatter is not a clock policy or an audio preroll/trim contract. Neither
 this API nor the accepted-write counters establishes Apple playback or common A/V
 capture-clock accuracy.
@@ -400,7 +421,7 @@ unanchored packet-order clocks.
 
 ### Historical source-anchored candidate and revisit guide
 
-**Selected implementation: source-anchored, bounded sample progression.** Explicitly
+**Historical candidate implementation: source-anchored, bounded sample progression.** Explicitly
 call `Transcoder::new_with_clock_policy(..., ClockPolicy::candidate(), ...)`; the
 ordinary constructor remains strict. The candidate requires **48-kHz AAC input** and
 supports **8/16/24/48-kHz Opus encoder input with 20/40/60-ms frames**. This includes

@@ -9,9 +9,10 @@ Supported/tested cameras: Amcrest `IP8M-2696E-AI` and `IP8M-2796E-AI`.
 
 ## Project direction and documentation
 
-**The shared-ingest cutover is not implemented yet.** The current application below
-still uses separate FFmpeg camera readers. The destination is Rust-owned shared
-acquisition through FFmpeg library bindings, with independent HomeKit transports—
+**Live video now uses Rust-owned shared acquisition and packetization.** Its per-viewer
+FFmpeg processes and local video RTP relays have been removed. Live audio and HSV
+recording still use separate FFmpeg camera readers, so the full cutover is unfinished.
+The destination is one shared acquisition per active encoder, with independent HomeKit transports—
 not project-owned C workers, MediaMTX, or a selectable legacy-reader fallback.
 
 - [Architecture](docs/architecture.md): current versus intended data flow and decisions.
@@ -102,17 +103,19 @@ The shell/package supplies FFmpeg 9 libraries, pkg-config and libclang/bindgen;
 `ffmpeg-sys-next` is pinned in Cargo. The Rust media library includes an encoder
 registry, joined reader supervision, bounded packet subscriptions and source-clock
 diagnostics, per-viewer H.264 RTP packetization, finite fMP4 mux jobs and AAC-to-Opus
-processing. These media producers are not yet connected to the production HomeKit
-paths. The shared Rust secure UDP transport is already used by production video/audio
-proxies, with protected-datagram limits and revoke-before-join session shutdown.
-Outbound RTCP reports are built in Rust from accepted-write counts and a session CNAME;
-the legacy adapters still supply their clock pairs and report cadence. An explicit
+processing. `src/main.rs` now injects source handles into production live video;
+`src/stream/shared.rs` owns its packetization, report scheduling and joined cancellation.
+Video uses explicit host-monotonic read-time presentation, preserving camera timestamps
+as diagnostics rather than trusting them for playback. This is not capture-time accuracy
+or completed audio clock recovery. Source-bound SRTP/SRTCP writes fence generation and
+subscription retirement. Video sender reports map the same monotonic domain to host UTC;
+the remaining native audio adapter still supplies its own clock pair/cadence. An explicit
 live-audio candidate anchors decoded-sample progression to 48-kHz AAC source timing
 and supports 8/16/24/48-kHz Opus output with 20/40/60-ms frames. It refuses excessive
 phase error, stale sender reports and uncovered finite endpoints; strict timing
 remains the default. Priming/tail contracts are explicit, not assumed to work over
 HomeKit RTP.
-See the [clock decision and alternatives](docs/architecture.md#candidate-live-audio-decision-and-revisit-guide)
+See the [clock decision and alternatives](docs/architecture.md#production-timing-and-recovery-decision)
 for limits, acceptance work and symptoms that would require revisiting the choice.
 The first sustained clock attempt failed with a source-clock refusal; a later short
 success is not qualification. The existing camera check supports an explicit bounded
@@ -128,7 +131,7 @@ or increasing timing budgets. Source snapshots retain the first offending timing
 metadata; no captured media is saved. See [Evidence](docs/evidence.md#sustained-clock-attempt-and-first-failure-provenance)
 for the failed attempt and separate diagnostic outcome.
 
-The source now offers explicit audio-only `Tracks::AudioSampleClock` subscriptions
+The retained strict diagnostic source mode offers audio-only `Tracks::AudioSampleClock` subscriptions
 for classified, bounded AAC sender-report remapping. Original timestamps stay intact;
 strict audio/recording subscriptions fail locally instead of stopping video for that
 case. The processor still enforces its original ±100-ms phase and 15-second freshness
@@ -138,15 +141,16 @@ but explained AAC mapping changes now quarantine audio for the generation rather
 stop healthy video; this new quarantine path still awaits a live oversized event.
 Video's own timing faults remain fatal. Production receiver feedback is now parsed in
 Rust instead of returned to FFmpeg, and live media owners join producer/transport
-teardown. FFmpeg camera readers and their clock/cadence remain; this is not shared-reader
-cutover. Diagnostics separate reconstructed RTP duration debt,
+teardown. These strict timing refusals no longer govern production video; its explicit
+presentation mode still enforces packet identity, codec/parameter validity, no B-frame
+reordering guesses and source retirement. Audio/recording cutover remains unfinished. Diagnostics separate reconstructed RTP duration debt,
 SR mapping changes and unexplained residuals rather than blaming all drift on SRs.
 
 All project-owned C workers and the obsolete Python/AMC2 fixture harness are removed;
 their findings and numeric records remain in [Evidence](docs/evidence.md). The read-only
 production workload sampler `scripts/ingest_baseline.py` is retained, along with its
 checks (`python3 -m unittest discover -s scripts -p 'test_*.py'`). This cleanup does not
-remove the production FFmpeg camera readers; shared-source integration remains open.
+remove the remaining audio/recording FFmpeg camera readers; those integrations remain open.
 No system-wide FFmpeg or compiler installation is needed with this workflow.
 
 ## Running
@@ -277,7 +281,7 @@ src/
   amcrest.rs    digest-auth camera client: snapshots, RTSP URLs, event stream
   accessory.rs  HomeKit accessory: stream management + motion sensor services
   stream.rs     SetupEndpoints/SelectedRTPStreamConfiguration TLV8 negotiation
-                and the ffmpeg RTSP→SRTP media pipeline
+                with shared Rust video and the remaining native audio adapter
   srtp.rs       SRTP/SRTCP primitives and legacy FFmpeg timestamp adapter
   media/transport.rs  shared secure UDP writes, accepted counts and session-stop fence
   media/rtcp.rs  compound sender reports, session CNAME and legacy control parsing

@@ -569,6 +569,31 @@ impl Reader {
 }
 
 #[cfg(test)]
+impl Packet {
+    pub(crate) fn timing_fixture(
+        sequence: u64,
+        pts: Option<i64>,
+        dts: Option<i64>,
+        data: &[u8],
+    ) -> Self {
+        let raw = NonNull::new(unsafe { av::av_packet_alloc() }).unwrap();
+        unsafe {
+            assert!(av::av_new_packet(raw.as_ptr(), data.len() as i32) >= 0);
+            std::ptr::copy_nonoverlapping(data.as_ptr(), (*raw.as_ptr()).data, data.len());
+            (*raw.as_ptr()).pts = pts.unwrap_or(av::AV_NOPTS_VALUE);
+            (*raw.as_ptr()).dts = dts.unwrap_or(av::AV_NOPTS_VALUE);
+            (*raw.as_ptr()).duration = 6000;
+        }
+        Self {
+            raw,
+            generation: 1,
+            sequence,
+            received_at: Instant::now(),
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     fn empty_packet() -> Packet {

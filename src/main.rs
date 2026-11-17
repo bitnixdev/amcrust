@@ -268,16 +268,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         metrics.clone(),
         capabilities.clone(),
     );
+    let mut source_registry = amcrust::source::Registry::new(amcrust::source::Limits {
+        timing: amcrust::source::Timing::Presentation,
+        ..Default::default()
+    })?;
     let mut video_sources = Vec::new();
     if let Some(profile) = live_720_profile {
         video_sources.push(VideoSource {
-            rtsp_url: camera.rtsp_url(2),
+            source: source_registry.register(
+                amcrust::source::SourceKey {
+                    camera: 1,
+                    encoder: amcrust::source::Encoder::SubStream2,
+                },
+                amcrust::ingest::CameraUrl::new(camera.rtsp_url(2))?,
+            )?,
             profile,
         });
     }
     if let Some(main_profile) = hsv_state.selected_main_profile().await {
         video_sources.push(VideoSource {
-            rtsp_url: camera.rtsp_url(0),
+            source: source_registry.register(
+                amcrust::source::SourceKey {
+                    camera: 1,
+                    encoder: amcrust::source::Encoder::Main,
+                },
+                amcrust::ingest::CameraUrl::new(camera.rtsp_url(0))?,
+            )?,
             profile: main_profile,
         });
     }
@@ -454,16 +470,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Err(e) = result {
                 log::error!("server error: {e:?}");
                 streams.stop_stream().await;
+                let _ = source_registry.shutdown().await;
                 std::process::exit(1);
             }
         }
         _ = tokio::signal::ctrl_c() => {
             info!("shutting down...");
             streams.stop_stream().await;
+            let _ = source_registry.shutdown().await;
             std::process::exit(0);
         }
     }
 
+    streams.stop_stream().await;
+    source_registry.shutdown().await?;
     Ok(())
 }
 
