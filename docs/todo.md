@@ -16,6 +16,11 @@ milestone or add another parallel plan/proof document.
 - [x] All project-owned C required for the application is replaced; obsolete C is removed.
 - [ ] Real-device live/audio/HSV, privacy, recovery and resource acceptance pass.
 
+**Current priority:** implement the user-selected recovered presentation clock and
+connect production consumers. Preserve camera clocks as diagnostics, not trusted
+long-term playback authority. Unattended recovery across outages/reboots is required;
+repeating strict candidate qualification is not a production cutover prerequisite.
+
 ## 1. Replace the C-based draft with Rust (start here)
 
 - [ ] Choose and pin Rust bindings compatible with the FFmpeg libraries in Nix. Check
@@ -77,6 +82,12 @@ the production integration below. Removing probes is not the acquisition cutover
     idle-stop, disable/re-enable, owner URL replacement and repeatable joined shutdown.
     Faults retire leases; subsequent subscriptions use capped exponential backoff and
     a consecutive-failure circuit breaker, never splice a reconnect into old leases.
+  - [x] Replace the permanent breaker latch with timed cooldown and fresh-demand retry.
+    Three native RTSP setup failures exercised repeated cooldown without operator
+    reset; idle/disabled sources stayed closed and old subscriptions stayed retired.
+    A real camera relay check then recovered authenticated IDR output in generation 3
+    after two setup failures, without source reset or endpoint replacement. Mid-stream
+    outages, physical camera reboot and production recovery are still unqualified.
   - [ ] Exercise real disconnect/stall/retry and changing camera parameters; connect
     source recovery/configuration to production owners.
 - [ ] Device clocks: handle the observed missing first video PTS/DTS and irregular
@@ -109,8 +120,12 @@ the production integration below. Removing probes is not the acquisition cutover
     replacement left Sub Stream 2 running in the real check.
   - [ ] Fence actual transport writes and recording copies; borrowed/escaped data
     cannot be retracted by this cooperative library layer. Session-owned live UDP
-    writes now have a revoke-before-join fence; coupling it to source-generation
-    retirement and fencing recording copies remain open.
+    writes now have a revoke-before-join fence. Production source binding and
+    recording-copy fences remain open.
+  - [x] Bind library transports to source-generation and subscription retirement gates.
+    Real authenticated RTP exercised local cancellation, independent video, source
+    disable, copied-RTP/RTCP refusal and fresh-generation isolation. Predicate/syscall
+    races and acknowledgement ordering are also covered locally.
 - [ ] Admission/resource limits: per-source, per-subscriber and aggregate job/byte caps;
   expose active source/subscriber counts, queue age/bytes, faults and recovery metrics.
   - [x] Bound registry entries, subscriber slots, handoff/descriptor/delivery byte
@@ -172,11 +187,11 @@ the production integration below. Removing probes is not the acquisition cutover
     - [x] Expose covered audible intervals and effective OpusHead/packet skip/discard
       requirements; refuse raw timestamp mapping for packets needing trims. Check
       actual decoded sample counts and continuous candidate output on the camera.
-    - [ ] Run a sustained qualification window (30 minutes or first refusal), recording
-      phase slope and budget trips without automatic reanchoring/restarting. Compare
-      actual first-onset and sustained A/V sync on paired clients, including stalls,
-      SR boundaries and late joins. A persistent slope triggers clock-recovery review,
-      not a larger phase limit. Keep the candidate opt-in until acceptance exists.
+    - [ ] Qualify the recovered presentation policy over sustained A/V, stalls, late
+      joins and reconnects, including first-onset and actual paired-client playback.
+      Bound continuous resampling and keep source evidence unchanged. The earlier
+      source-anchored candidate did NOT qualify; its results below remain historical,
+      not a requirement to repeat that failed policy until the camera happens to pass.
       - [x] Attempt the 30-minute-or-first-refusal check with unchanged budgets:
         **failed with `Source(Clock)` after 34.33 s total**, not a candidate phase trip.
         Last periodic phase was 688 samples/14.33 ms. This is NOT qualification.
@@ -219,7 +234,8 @@ the production integration below. Removing probes is not the acquisition cutover
         Do not suppress video faults or infer raw video continuity from that coincidence.
       - [ ] Resolve sustained drift/clock recovery: the candidate independently hit
         4816 samples/100⅓ ms at 97.36 s. Do not increase its phase budget or reanchor
-        to conceal this. Choose/qualify the next clock policy before production use.
+        to conceal this. The user has now selected recovered presentation timing;
+        implement and qualify it before production use.
     - [x] Extend the candidate to 8/16/24/48-kHz output and 20/40/60-ms frames.
       Keep all timing/trims in the 48-kHz decoder domain; explicitly trim only a
       sub-encoder-sample finite excess. Undercoverage is refused, not padded or

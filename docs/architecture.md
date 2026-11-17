@@ -70,6 +70,29 @@ viewer, recording session or requested output format.
   session RTP packetization, lifecycle, cancellation, accounting and privacy fences.
 - Dependencies and native-library versions belong in Cargo/Nix, not global installs.
 
+## Production timing and recovery decision
+
+The user selected **stable playback with an explicit recovered presentation clock**,
+not source-derived capture-time fidelity. Cameras are underpowered, untrusted long-term
+clock sources; production must recover unattended across months of operation, camera
+reboots, network outages and other failures. This is the implementation direction,
+not a claim that the current strict source/audio library implements it.
+
+Preserve original PTS/DTS, SR/PRFT and contradiction diagnostics separately from
+presentation timing. Implement a common monotonic A/V presentation domain with bounded
+continuous audio resampling; qualify buffering, onset, drift, stalls and recording
+cuts against actual playback. Host arrival is not capture time, and independently
+zeroing tracks is not synchronization. Do not silently pad, discard media, reanchor,
+or widen the old candidate's budgets to hide its failure. The source-anchored candidate
+below remains historical/diagnostic; making this camera pass it is no longer a
+production gate. Its alternatives table records the earlier choice, not this decision.
+
+Recovery must be demand-driven and bounded, without a permanent circuit-breaker latch.
+Old source grants stay revoked. Retry does not resurrect stale decoder/recording state,
+complete a failed clip, or permit resetting SRTP counters under reused keys/SSRCs.
+Fresh-session recovery and any future in-session recovery need explicit cryptographic
+and media-epoch ownership. Privacy disable and shutdown override every retry.
+
 ## Implemented source-library boundary
 
 `source::Registry` registers camera/encoder identities once, retaining credentials in
@@ -77,6 +100,9 @@ its supervisors. Consumer handles cannot retrieve URLs. An idle source has no re
 the first subscriber starts one blocking libavformat job, shared across requested
 tracks. Failure retires all old leases. New subscriptions observe bounded backoff and
 a consecutive-failure circuit breaker; they never resume inside an old generation.
+After a failed burst, the breaker cools down (30 seconds by default, configurable
+between the retry cap and 300 seconds) and permits fresh demand without operator reset.
+Cooldown expiry does not open an idle/disabled source or revive an old subscription.
 Explicit `Registry::shutdown` signals all owners before joining and can be awaited
 again if cancelled. Call it before dropping the Tokio runtime; Drop signals cleanup
 but cannot provide an async join by itself.
@@ -203,8 +229,9 @@ clock recovery still requires explicit policy and physical A/V qualification.
 Queue and held-delivery charges persist through retirement until owners drop. Source
 and registry budgets include bounded reader handoff and descriptor charges. Access
 checks and lease retirement are cooperative: already borrowed/copied bytes cannot be
-retracted. Source-generation transport fences, recording history/copies, aggregate output-job
-limits and Prometheus wiring remain integration work. Logical charges are not a bound
+retracted. Source-bound transport writes now use the atomic retirement fence below;
+production registry injection, recording history/copies, aggregate output-job limits
+and Prometheus wiring remain integration work. Logical charges are not a bound
 on FFmpeg internal allocations, allocator overhead or process RSS.
 
 ## Implemented output-library boundary
@@ -261,9 +288,18 @@ proxy; transport termination kills/reaps the child and joins its bounded diagnos
 drain. Drop signals revocation but cannot join; explicit stop must be awaited.
 Already kernel-accepted datagrams cannot be retracted.
 The producer predicate is checked before encryption and immediately before writing,
-but **is not an atomic source-generation fence**: integrating source retirement/privacy
-still requires revoking its transports before acknowledging the transition. Aggregate
-source/output accounting, recording-copy fences and joined source owners remain TODO.
+but **is not an atomic source-generation fence by itself**.
+`Transport::new_source_bound` binds to both the actual generation and subscription
+of its first delivery. The final nonblocking syscall holds both retirement read gates;
+retirement takes their write side before acknowledgement. Producer callbacks and
+cryptography run outside these gates. Sticky notifications wake pending sends and
+feedback, including retirement between a producer predicate and the syscall. No
+per-transport callback registry or rebinding is needed. Subscription-local audio
+failure leaves unrelated video transports usable; generation retirement closes both.
+Already copied plaintext cannot bypass the fence, even with a stale `true` predicate.
+The unbound constructor remains for the existing production FFmpeg adapters: source
+privacy is not production-integrated until those consumers use source-bound writes.
+Aggregate source/output accounting and recording-copy fences remain TODO.
 
 Real-source H.264 from two Rust viewers decrypts/decodes through independent FFmpeg SRTP
 receivers. This is not Home app acceptance. Production still uses FFmpeg camera readers
@@ -362,7 +398,7 @@ acceptance or a production audio path. The observed real-camera clock contradict
 remain a blocker for unqualified transport integration, not a reason to adopt
 unanchored packet-order clocks.
 
-### Candidate live-audio decision and revisit guide
+### Historical source-anchored candidate and revisit guide
 
 **Selected implementation: source-anchored, bounded sample progression.** Explicitly
 call `Transcoder::new_with_clock_policy(..., ClockPolicy::candidate(), ...)`; the
@@ -450,9 +486,9 @@ path is switched by this library API. The sole execution backlog remains in TODO
 | Strict source-PTS progression (still the default) | Real AAC has frequent non-contiguous steps, so usable timestamps are refused | Corrected firmware or another camera provides contiguous sample timing; candidate offers no benefit and should not normalize unnecessarily |
 | Follow each SR/PRFT-derived timestamp directly | PRFT and demux PTS share SR provenance; observed report-boundary jumps remain | Independent capture/client evidence shows the reports accurately represent real gaps, while our continuous clock compresses gaps or develops offset after stalls |
 | Retain/recover per-packet raw RTP clocks before SR-based demux adjustments | Public SR RTP values describe report instants, not each media packet; PRFT is dependent evidence. A narrow 48-kHz AAC inverse now round-trips public PRFT/SR metadata for discontinuity classification; this is not an independent wire clock or a replacement presentation timeline | If independent packet evidence shows raw RTP follows decoded samples while all large jumps come from SR remapping, prefer preserving that clock over modeling it; unexplained rollover/phase jumps would indicate a bad reconstruction |
-| Continuous sample clock with a fixed source anchor (**chosen, bounded**) | Avoids repeated phase jumps without changing PCM, but assumes the nominal audio sample rate remains adequate | Monotonically growing phase, repeated 100-ms trips, lip sync progressively worsening in long views, or fresh sessions repeatedly starting at different A/V offsets; do not merely raise the limit |
-| Slow bounded clock recovery plus asynchronous resampling | Adds a PLL/filter, rate limits and real sample modification before oscillator drift is distinguished from report jitter | Sustained, repeatable phase slope and corroborating A/V drift favor this; audible pitch modulation, oscillating lip sync or repeated corrections after each SR would indicate chasing jitter instead |
-| Host-arrival clock or unanchored packet/frame counting | Network buffering is not capture time; independent track zeroing loses A/V offset | Latency changes with network load, burst arrivals producing speed changes, or session-dependent lip sync; use arrival time only for deadlines |
+| Continuous sample clock with a fixed source anchor (**earlier candidate, bounded**) | Avoids repeated phase jumps without changing PCM, but assumes the nominal audio sample rate remains adequate | Monotonically growing phase, repeated 100-ms trips, lip sync progressively worsening in long views, or fresh sessions repeatedly starting at different A/V offsets; do not merely raise the limit |
+| Slow bounded clock recovery plus asynchronous resampling (**now selected for production development**) | Requires an explicit presentation domain, filter/rate limits and real playback qualification; it is not a capture-clock reconstruction claim | Sustained, repeatable phase slope and corroborating A/V drift favor this; audible pitch modulation, oscillating lip sync or repeated corrections after each SR would indicate chasing jitter instead |
+| Host-arrival clock or unanchored packet/frame counting | Network buffering is not capture time; independent track zeroing loses A/V offset | Latency changes with network load, burst arrivals producing speed changes, or session-dependent lip sync; arrival-derived presentation needs explicit buffering/recovery qualification and must not be called capture time |
 | Insert/drop samples or encoded packets at discontinuities | Risks clicks, lost speech and decoder-state damage; hides whether a jump was real | Audible clicks, clipped first syllables, gaps or repeated syllables at SR boundaries, and sample-count discrepancies mean the repair is damaging content |
 
 Priming-specific wrong-choice symptoms: clipped onsets suggest double pre-skip or

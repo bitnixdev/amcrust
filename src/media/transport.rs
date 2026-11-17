@@ -1,9 +1,11 @@
 //! Per-session secure UDP boundary shared by production proxies and Rust producers.
 //! No camera acquisition, timestamp rewriting, pacing or implicit RTCP generation.
 //! Session revoke is a synchronous socket-write fence, not a retraction of datagrams
-//! already accepted by the kernel. Source-generation privacy additionally requires
-//! its owner to revoke these transports before acknowledging the transition.
+//! already accepted by the kernel. Source-bound transports additionally serialize
+//! kernel writes with generation/subscription retirement; unbound adapters must
+//! still have their owner revoke before acknowledging source privacy transitions.
 use super::rtcp::{Counts, payload_octets};
+use crate::source::{Delivery, DeliveryGuard};
 use crate::srtp::SrtpSession;
 use std::{net::SocketAddr, sync::Mutex, time::Duration};
 use tokio::{
@@ -48,6 +50,7 @@ pub struct Transport {
     closed: watch::Sender<bool>,
     send_slot: AsyncMutex<()>,
     receive_slot: AsyncMutex<()>,
+    source: Option<DeliveryGuard>,
 }
 impl Transport {
     /// `wire_mtu` bounds outbound protected datagrams. Incoming feedback has an
@@ -79,11 +82,55 @@ impl Transport {
             closed: watch::channel(false).0,
             send_slot: AsyncMutex::new(()),
             receive_slot: AsyncMutex::new(()),
+            source: None,
         })
+    }
+    /// Bind permanently to the actual source generation AND subscription of this
+    /// delivery. A new generation requires a new transport; no rebinding API exists.
+    /// Retirement serializes with kernel writes, including already copied payloads.
+    pub fn new_source_bound(
+        socket: UdpSocket,
+        peer: SocketAddr,
+        key: &[u8],
+        ssrc: u32,
+        wire_mtu: usize,
+        first: &Delivery,
+    ) -> Result<Self, Error> {
+        Self::from_guard(
+            socket,
+            peer,
+            key,
+            ssrc,
+            wire_mtu,
+            first.guard().map_err(|_| Error::Revoked)?,
+        )
+    }
+    pub(crate) fn from_guard(
+        socket: UdpSocket,
+        peer: SocketAddr,
+        key: &[u8],
+        ssrc: u32,
+        wire_mtu: usize,
+        source: DeliveryGuard,
+    ) -> Result<Self, Error> {
+        source.check().map_err(|_| Error::Revoked)?;
+        let mut transport = Self::new(socket, peer, key, ssrc, wire_mtu).ok_or(Error::Packet)?;
+        transport.source = Some(source);
+        Ok(transport)
+    }
+    async fn source_retired(&self) {
+        match &self.source {
+            Some(source) => source.retired().await,
+            None => std::future::pending::<()>().await,
+        }
     }
     /// Whether transport revocation has been signaled; not a task-join acknowledgement.
     pub fn is_closed(&self) -> bool {
         *self.closed.borrow()
+            || self
+                .source
+                .as_ref()
+                .is_some_and(|source| source.check().is_err())
     }
     /// Snapshot of kernel-accepted RTP, retained after revocation. Not receiver
     /// acknowledgments. A session actor must serialize snapshot/report generation
@@ -115,7 +162,8 @@ impl Transport {
     }
     /// `current` is checked at sealing and again immediately before the nonblocking
     /// write. It must be fast, nonblocking and must not call this transport. It is
-    /// NOT an atomic source-generation fence by itself: owners must also revoke.
+    /// NOT an atomic source-generation fence by itself: use `new_source_bound` for
+    /// source consumers, or have an unbound adapter's owner explicitly revoke.
     pub async fn send_rtp(&self, packet: &[u8], current: impl Fn() -> bool) -> Result<(), Error> {
         self.send(packet, false, current).await
     }
@@ -129,7 +177,7 @@ impl Transport {
         current: impl Fn() -> bool,
     ) -> Result<(), Error> {
         let mut closed = self.closed.subscribe();
-        if *closed.borrow() {
+        if self.is_closed() {
             return Err(Error::Closed);
         }
         let _slot = self.send_slot.try_lock().map_err(|_| Error::Busy)?;
@@ -172,6 +220,7 @@ impl Transport {
             tokio::select! {
                 biased;
                 _ = closed.changed() => return Err(Error::Closed),
+                _ = self.source_retired() => { self.revoke(); return Err(Error::Closed); },
                 _ = tokio::time::sleep_until(deadline) => return Err(Error::Deadline),
                 result = self.socket.writable() => result.map_err(Error::Io)?,
             }
@@ -184,7 +233,22 @@ impl Transport {
             if !current() {
                 return Err(Error::Revoked);
             }
-            match self.socket.try_send_to(&protected, self.peer) {
+            // Producer code runs ABOVE these source read locks. Only the nonblocking
+            // syscall is inside them; retirement takes their write side before ack.
+            let write = || self.socket.try_send_to(&protected, self.peer);
+            let result = match &self.source {
+                Some(source) => source.with_current(write),
+                None => Ok(write()),
+            };
+            let result = match result {
+                Ok(result) => result,
+                Err(_) => {
+                    state.closed = true;
+                    self.closed.send_replace(true);
+                    return Err(Error::Closed);
+                }
+            };
+            match result {
                 Ok(n) if n == protected.len() => {
                     if let Some(octets) = octets {
                         state.counts.accepted(octets);
@@ -201,7 +265,7 @@ impl Transport {
     /// feedback with replay protection. A malformed datagram is a local refusal.
     pub async fn feedback(&self) -> Result<Vec<u8>, Error> {
         let mut closed = self.closed.subscribe();
-        if *closed.borrow() {
+        if self.is_closed() {
             return Err(Error::Closed);
         }
         let _slot = self.receive_slot.try_lock().map_err(|_| Error::Busy)?;
@@ -209,6 +273,7 @@ impl Transport {
         let (n, peer) = tokio::select! {
             biased;
             _ = closed.changed() => return Err(Error::Closed),
+            _ = self.source_retired() => { self.revoke(); return Err(Error::Closed); },
             result = self.socket.recv_from(&mut bytes) => result.map_err(Error::Io)?,
         };
         if peer != self.peer {

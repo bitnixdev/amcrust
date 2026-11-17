@@ -180,10 +180,17 @@ async fn rtp_viewer(
     decoder.write(sdp.as_bytes()).await;
     decoder.input.take();
     let destination = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
-    let transport =
-        Transport::new(socket, destination.into(), &key, config.ssrc, wire_mtu).unwrap();
-    assert_eq!(transport.rtp_capacity(), config.packet_bytes);
     let first = subscription.recv().await.unwrap();
+    let transport = Transport::new_source_bound(
+        socket,
+        destination.into(),
+        &key,
+        config.ssrc,
+        wire_mtu,
+        &first,
+    )
+    .unwrap();
+    assert_eq!(transport.rtp_capacity(), config.packet_bytes);
     let mut packetizer = H264::new(&first, config).unwrap();
     let mut delivery = first;
     let mut buffer = vec![0; config.packet_bytes];
@@ -231,7 +238,8 @@ async fn rtp_viewer(
             octets: payload_octets,
         }
     );
-    transport.revoke();
+    drop(subscription); // The source lease itself fences copied RTP, without explicit revoke.
+    assert!(transport.is_closed());
     assert!(matches!(
         transport.send_rtp(&buffer, || true).await,
         Err(amcrust::media::transport::Error::Closed)

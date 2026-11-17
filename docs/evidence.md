@@ -780,6 +780,61 @@ Validation passed: 39 library tests, 44 application tests, the phase-trend test,
 two retained Python sampler tests, all-target checking, strict library Clippy,
 formatting and the pinned Nix package build. Bounded self-review found no issues.
 
+#### Source-bound write fences and demand-driven recovery
+
+`Transport::new_source_bound` now binds writes to the first delivery's generation
+and subscription. Retirement synchronizes with the final nonblocking kernel write,
+not just a cooperative producer predicate. Sticky notifications wake waiting I/O;
+old transports cannot be rebound to a fresh generation. Local checks cover retirement
+between predicate and syscall, entered-write acknowledgement ordering for generation
+and subscription retirement, independent video during audio quarantine, and pending
+feedback. These are library-boundary results, not production registry injection.
+
+The read-only `camera_transport_fence::real_source_transport_fences` check passed in
+**9.03 seconds** on north-driveway. Two viewers shared one acquisition, each sending
+and authenticating **152 RTP packets** from a complete IDR. Dropping one subscription
+closed its transport while the other remained usable. Source disable fenced copied
+RTP and RTCP without explicit transport revocation. Re-enable created generation 2;
+a fresh transport authenticated another **152 packets**, while the old one stayed
+closed. Cleanup reported two acquisitions, no source faults, no subscribers and zero
+charged bytes. This checks authenticated datagrams and lifecycle, not decoded video,
+HomeKit playback or sustained recovery.
+
+A separate **10.95-second** real output check switched both Rust H.264 viewers to
+source-bound transports. Their receivers decoded **30 + 30 frames**, with **3414 / 1131**
+RTP packets at 400/1200-byte wire limits. Dropping the subscriptions fenced copied
+RTP without explicit transport revocation. The concurrent mux check retained exact
+translated PTS/DTS for **92 video / 284 AAC packets**, with **1,268,445 AVIO bytes**;
+MP4 duration differences remained **91 video / 283 AAC**, not presentation acceptance.
+Library/application tests, the repeated-failure recovery test, phase-trend check,
+all-target compilation, strict library Clippy, formatting, both sampler tests and the
+pinned Nix package build passed. The existing application atomic-deprecation warning
+remains. The external bounded self-review tool was unavailable; changes were reviewed
+locally, including lock ordering and write/retirement races.
+
+The source circuit breaker now permits fresh demand after a bounded cooldown rather
+than remaining latched until an operator reset. A local TCP peer repeatedly closed
+real native RTSP setup connections; three acquisition/cooldown cycles completed in
+**1.32 seconds** with shortened test delays, no manual reset and no revived old leases.
+Cooldown alone did not open a reader, and privacy disable continued refusing demand.
+A subsequent **5.12-second** camera check failed two native setup attempts at a local
+TCP endpoint, then relayed that same endpoint to north-driveway. Without source reset
+or URL replacement, cooldown admitted generation 3 and a complete IDR produced **152
+authenticated RTP packets**. Old subscriptions stayed retired; shutdown reported three
+acquisitions, the two injected faults, no subscribers and zero charges. The initial
+**5.04-second** run also recovered media but failed its overly strict relay-teardown
+assertion on TCP `ConnectionReset`. The corrected check allows reset/broken pipe only
+after media recovery succeeds and registry shutdown joins, and joins/aborts its relay
+on deadline. Neither run is a camera-reboot, mid-stream outage, HomeKit reconnect or
+months-long acceptance result; production recovery owners still need integration.
+
+The user selected recovered presentation timing and bounded continuous audio
+resampling for stable playback, preserving original camera clocks as diagnostics.
+Unattended recovery over months, camera reboots and network failures is an explicit
+requirement. This decision supersedes treating the strict source-anchored candidate
+as the production clock contract; it does not turn its historical failures into passes
+or claim that the recovered presentation implementation already exists.
+
 ## Actual camera observation
 
 A bounded run of the native ingest reader connected to **10.76.14.10**, main encoder

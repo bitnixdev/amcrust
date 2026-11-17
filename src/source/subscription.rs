@@ -1,4 +1,4 @@
-use super::{Generation, Terminal};
+use super::{Generation, Retirement, Terminal};
 use crate::ingest::{Packet, StreamConfiguration};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -81,15 +81,15 @@ impl SubscriptionLimits {
 }
 
 pub(super) struct Validity {
-    reason: Mutex<Option<Terminal>>,
+    reason: Retirement,
     wake: Notify,
 }
 impl Validity {
     fn reason(&self) -> Option<Terminal> {
-        *self.reason.lock().unwrap()
+        self.reason.reason()
     }
     fn retire(&self, reason: Terminal) {
-        self.reason.lock().unwrap().get_or_insert(reason);
+        self.reason.retire(reason);
         self.wake.notify_waiters();
     }
 }
@@ -135,6 +135,30 @@ pub(crate) struct DeliveryGuard {
     validity: Arc<Validity>,
 }
 impl DeliveryGuard {
+    /// Hold only across a nonblocking syscall. Never await, call a source method,
+    /// or invoke arbitrary producer code while these read locks are held.
+    pub(crate) fn with_current<T>(&self, write: impl FnOnce() -> T) -> Result<T, Terminal> {
+        let generation = self.generation.reason.0.borrow();
+        let subscription = self.validity.reason.0.borrow();
+        if let Some(reason) = *subscription {
+            return Err(reason);
+        }
+        if let Some(reason) = *generation {
+            return Err(reason);
+        }
+        Ok(write())
+    }
+    pub(crate) async fn retired(&self) {
+        let mut generation = self.generation.reason.0.subscribe();
+        let mut subscription = self.validity.reason.0.subscribe();
+        if self.check().is_err() {
+            return;
+        }
+        tokio::select! {
+            _ = generation.changed() => (),
+            _ = subscription.changed() => (),
+        }
+    }
     pub(crate) fn check(&self) -> Result<(), Terminal> {
         if let Some(reason) = self.validity.reason() {
             return Err(reason);
@@ -198,7 +222,7 @@ impl Queue {
         Arc::new(Self {
             queue: Mutex::new(VecDeque::new()),
             validity: Arc::new(Validity {
-                reason: Mutex::new(None),
+                reason: Retirement::default(),
                 wake: Notify::new(),
             }),
             budget: Arc::new(Budget {
@@ -378,11 +402,181 @@ impl Subscription {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn generation() -> Arc<Generation> {
+        Arc::new(Generation {
+            streams: vec![],
+            reason: Retirement::default(),
+            _charges: vec![],
+        })
+    }
+    fn lease(generation: &Arc<Generation>, queue: &Arc<Queue>) -> DeliveryGuard {
+        DeliveryGuard {
+            generation: generation.clone(),
+            validity: queue.validity.clone(),
+        }
+    }
+    async fn transport(
+        guard: DeliveryGuard,
+    ) -> (
+        Arc<crate::media::transport::Transport>,
+        tokio::net::UdpSocket,
+    ) {
+        let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sender = crate::media::transport::Transport::from_guard(
+            socket,
+            peer.local_addr().unwrap(),
+            &[7; 30],
+            42,
+            1200,
+            guard,
+        )
+        .unwrap();
+        (Arc::new(sender), peer)
+    }
+    const RTP: [u8; 13] = [0x80, 99, 0, 1, 0, 0, 0, 1, 0, 0, 0, 42, 0x65];
+    #[tokio::test]
+    async fn source_fence_wins_after_the_final_producer_predicate() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let generation = generation();
+        let queue = Queue::new(Tracks::Video, SubscriptionLimits::default(), vec![]);
+        let (sender, peer) = transport(lease(&generation, &queue)).await;
+        let calls = AtomicUsize::new(0);
+        let result = sender
+            .send_rtp(&RTP, || {
+                if calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                    queue.retire(Terminal::Cancelled);
+                }
+                true // Simulate stale/copy-only producer state, even at the final check.
+            })
+            .await;
+        assert!(matches!(
+            result,
+            Err(crate::media::transport::Error::Closed)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(sender.rtp_counts().packets, 0);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), peer.recv(&mut [0; 2048]))
+                .await
+                .is_err()
+        );
+    }
+    #[tokio::test]
+    async fn local_audio_retirement_preserves_video_but_generation_closes_both() {
+        use crate::media::transport::{Error, Transport};
+        let generation = generation();
+        let audio = Queue::new(
+            Tracks::AudioSampleClock,
+            SubscriptionLimits::default(),
+            vec![],
+        );
+        let video = Queue::new(Tracks::Video, SubscriptionLimits::default(), vec![]);
+        let audio_guard = lease(&generation, &audio);
+        let (a, _a_peer) = transport(audio_guard.clone()).await;
+        let (v, v_peer) = transport(lease(&generation, &video)).await;
+        let waiting = a.clone();
+        let feedback = tokio::spawn(async move { waiting.feedback().await });
+        audio.quarantine_audio();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(1), feedback)
+                .await
+                .unwrap()
+                .unwrap(),
+            Err(Error::Closed)
+        ));
+        assert!(matches!(
+            a.send_rtp(&RTP, || true).await,
+            Err(Error::Closed)
+        ));
+        v.send_rtp(&RTP, || true).await.unwrap();
+        v_peer.recv(&mut [0; 2048]).await.unwrap();
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        assert!(matches!(
+            Transport::from_guard(
+                socket,
+                v_peer.local_addr().unwrap(),
+                &[7; 30],
+                42,
+                1200,
+                audio_guard
+            ),
+            Err(Error::Revoked)
+        ));
+        let waiting = v.clone();
+        let feedback = tokio::spawn(async move { waiting.feedback().await });
+        generation.retire(Terminal::Disabled);
+        generation.retire(Terminal::Shutdown);
+        assert_eq!(generation.check(), Err(Terminal::Disabled));
+        assert!(v.is_closed());
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(1), feedback)
+                .await
+                .unwrap()
+                .unwrap(),
+            Err(Error::Closed)
+        ));
+        assert!(matches!(
+            v.send_rtp(&RTP, || true).await,
+            Err(Error::Closed)
+        ));
+        assert!(matches!(
+            v.send_rtcp(&crate::media::rtcp::Sender::new(42, [0; 16]).bye(), || true)
+                .await,
+            Err(Error::Closed)
+        ));
+        assert_eq!(v.rtp_counts().packets, 1);
+    }
+    #[test]
+    fn retirement_waits_for_an_entered_write_fence() {
+        for local in [false, true] {
+            let generation = generation();
+            let queue = Queue::new(Tracks::Video, SubscriptionLimits::default(), vec![]);
+            let guard = lease(&generation, &queue);
+            let (entered, inside) = std::sync::mpsc::channel();
+            let (release, released) = std::sync::mpsc::channel();
+            let writer = std::thread::spawn(move || {
+                guard.with_current(|| {
+                    entered.send(()).unwrap();
+                    released.recv().unwrap(); // Deliberately pause the simulated syscall.
+                })
+            });
+            inside.recv().unwrap();
+            let (started, starting) = std::sync::mpsc::channel();
+            let (ack, acknowledged) = std::sync::mpsc::channel();
+            let retiring = generation.clone();
+            let retiring_queue = queue.clone();
+            let owner = std::thread::spawn(move || {
+                started.send(()).unwrap();
+                if local {
+                    retiring_queue.retire(Terminal::Reconfigured);
+                } else {
+                    retiring.retire(Terminal::Reconfigured);
+                }
+                ack.send(()).unwrap();
+            });
+            starting.recv().unwrap();
+            let premature_ack = acknowledged.recv_timeout(Duration::from_millis(50)).is_ok();
+            release.send(()).unwrap();
+            writer.join().unwrap().unwrap();
+            owner.join().unwrap();
+            assert!(
+                !premature_ack,
+                "retirement acknowledged before the write completed"
+            );
+            acknowledged.recv().unwrap();
+            assert_eq!(
+                lease(&generation, &queue).with_current(|| panic!("retired write")),
+                Err(Terminal::Reconfigured)
+            );
+        }
+    }
+
     #[test]
     fn oversized_mapping_revokes_all_audio_but_not_shared_video() {
         let generation = Arc::new(Generation {
             streams: vec![],
-            reason: Mutex::new(None),
+            reason: Retirement::default(),
             _charges: vec![],
         });
         for tracks in [
@@ -412,7 +606,7 @@ mod tests {
     fn remapping_retires_strict_consumers_without_revoking_other_tracks() {
         let generation = Arc::new(Generation {
             streams: vec![],
-            reason: Mutex::new(None),
+            reason: Retirement::default(),
             _charges: vec![],
         });
         for tracks in [

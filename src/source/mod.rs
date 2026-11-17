@@ -56,6 +56,8 @@ pub enum Terminal {
     Residence,
     MediaSpan,
     AdmissionDeadline,
+    /// This retry burst is exhausted. Fresh demand is allowed after cooldown;
+    /// existing subscriptions never revive.
     RetryExhausted,
     WorkerFailed,
 }
@@ -76,6 +78,9 @@ pub struct Limits {
     pub reader: ingest::Limits,
     pub retry_initial: Duration,
     pub retry_max: Duration,
+    /// Cool down after a failed burst, then permit fresh demand without operator reset.
+    pub retry_cooldown: Duration,
+    /// Failed burst size before timed cooldown resets the consecutive-failure count.
     pub failures_before_reset: u32,
 }
 impl Default for Limits {
@@ -89,6 +94,7 @@ impl Default for Limits {
             reader: ingest::Limits::default(),
             retry_initial: Duration::from_millis(250),
             retry_max: Duration::from_secs(8),
+            retry_cooldown: Duration::from_secs(30),
             failures_before_reset: 5,
         }
     }
@@ -109,6 +115,8 @@ impl Limits {
             && !self.retry_initial.is_zero()
             && self.retry_max >= self.retry_initial
             && self.retry_max <= Duration::from_secs(60)
+            && self.retry_cooldown >= self.retry_max
+            && self.retry_cooldown <= Duration::from_secs(300)
             && self.failures_before_reset > 0
     }
 }
@@ -357,20 +365,44 @@ enum Command {
     Enable(bool, oneshot::Sender<()>),
     Reset(Option<CameraUrl>, oneshot::Sender<()>),
 }
+/// The watch read lock doubles as a short synchronous write fence. Retirement
+/// obtains its write lock, so it cannot acknowledge while a bound kernel write
+/// still holds the read side. Notifications wake blocked transport operations.
+struct Retirement(tokio::sync::watch::Sender<Option<Terminal>>);
+impl Default for Retirement {
+    fn default() -> Self {
+        Self(tokio::sync::watch::channel(None).0)
+    }
+}
+impl Retirement {
+    fn reason(&self) -> Option<Terminal> {
+        *self.0.borrow()
+    }
+    fn retire(&self, reason: Terminal) {
+        self.0.send_if_modified(|current| {
+            if current.is_some() {
+                false
+            } else {
+                *current = Some(reason);
+                true
+            }
+        });
+    }
+}
 struct Generation {
     streams: Vec<StreamConfiguration>,
-    reason: Mutex<Option<Terminal>>,
+    reason: Retirement,
     _charges: Vec<OwnedSemaphorePermit>,
 }
 impl Generation {
     fn check(&self) -> Result<(), Terminal> {
-        match *self.reason.lock().unwrap() {
+        match self.reason.reason() {
             Some(reason) => Err(reason),
             None => Ok(()),
         }
     }
     fn retire(&self, reason: Terminal) {
-        self.reason.lock().unwrap().get_or_insert(reason);
+        self.reason.retire(reason);
     }
 }
 struct Client {
@@ -453,6 +485,7 @@ impl Supervisor {
             if self.stop.stopped.load(Ordering::Acquire) {
                 break;
             }
+            self.refresh_retry();
             self.sweep();
             if self.clients.is_empty() && self.running.is_some() {
                 self.retire(Terminal::Cancelled).await;
@@ -523,6 +556,7 @@ impl Supervisor {
                 if reply.is_closed() {
                     return;
                 }
+                self.refresh_retry();
                 let result = if !self.enabled {
                     Err(Terminal::Disabled)
                 } else if self.failures >= self.limits.failures_before_reset {
@@ -675,7 +709,7 @@ impl Supervisor {
                 }
                 run.configuration = Some(Arc::new(Generation {
                     streams,
-                    reason: Mutex::new(None),
+                    reason: Retirement::default(),
                     _charges: charges,
                 }));
             }
@@ -789,6 +823,13 @@ impl Supervisor {
         }
         self.metrics.active.store(false, Ordering::Release);
     }
+    fn refresh_retry(&mut self) {
+        if self.failures >= self.limits.failures_before_reset && Instant::now() >= self.next_open {
+            // Only future demand is admitted. Old subscriptions/crypto epochs never
+            // revive, and an idle or privacy-disabled source is never reopened here.
+            self.failures = 0;
+        }
+    }
     fn backoff(&mut self) {
         self.metrics.faults.fetch_add(1, Ordering::Relaxed);
         self.failures = self.failures.saturating_add(1);
@@ -797,7 +838,12 @@ impl Supervisor {
             .retry_initial
             .saturating_mul(1u32 << self.failures.saturating_sub(1).min(16))
             .min(self.limits.retry_max);
-        self.next_open = Instant::now() + delay;
+        self.next_open = Instant::now()
+            + if self.failures >= self.limits.failures_before_reset {
+                self.limits.retry_cooldown
+            } else {
+                delay
+            };
     }
     async fn fault(&mut self, reason: Terminal) {
         self.retire(reason).await;
