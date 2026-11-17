@@ -5,6 +5,26 @@ the direction; [Evidence](evidence.md) separates completed experiments from depl
 Check an item only when its stated result exists. Do not restart a synthetic-proof
 milestone or add another parallel plan/proof document.
 
+## Execution guidelines
+
+- Work in larger, end-to-end chunks with a meaningful operational result, rather
+  than treating each prerequisite or intermediate edit as a release checkpoint.
+- Settle the design and explicit limits once; reopen decisions when new evidence
+  warrants it, not through repeated speculative edge-case analysis.
+- During implementation, use targeted compilation and focused regression tests
+  where a mistake would invalidate the next layer, especially codec timing,
+  ownership and privacy fences. Do not defer all testing until the end.
+- At the milestone boundary, batch the full relevant suites, one coordinated
+  authorized camera acceptance run, the Nix package build and one bounded review.
+  Repeat expensive checks only for relevant changes or failures.
+- Batch architecture/evidence/checklist updates and nonblocking cleanup near the
+  end of the chunk, then commit the coherent result. Keep cleanup needed for
+  correctness or safe integration within the implementation itself.
+- Keep progress updates to meaningful findings, decisions or blockers. Avoid
+  repeated planning, narration and checkpoint overhead without a concrete benefit.
+- Larger batches do not relax camera-access authorization, safety limits or evidence
+  requirements. Code-path completion, deployment and Apple acceptance stay distinct.
+
 ## Status
 
 - [x] Production startup/delivery metrics and read-only process sampling exist.
