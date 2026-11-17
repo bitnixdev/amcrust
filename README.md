@@ -103,14 +103,16 @@ The shell/package supplies FFmpeg 9 libraries, pkg-config and libclang/bindgen;
 `ffmpeg-sys-next` is pinned in Cargo. The Rust media library includes an encoder
 registry, joined reader supervision, bounded packet subscriptions and source-clock
 diagnostics, per-viewer H.264 RTP packetization, finite fMP4 mux jobs and AAC-to-Opus
-processing. `src/main.rs` now injects source handles into production live video;
-`src/stream/shared.rs` owns its packetization, report scheduling and joined cancellation.
+processing. `src/main.rs` injects source handles into production live video/audio;
+`src/stream/shared.rs` owns packetization, report scheduling and joined cancellation.
 Video uses explicit host-monotonic read-time presentation, preserving camera timestamps
 as diagnostics rather than trusting them for playback. This is not capture-time accuracy
-or completed audio clock recovery. Source-bound SRTP/SRTCP writes fence generation and
-subscription retirement. Video sender reports map the same monotonic domain to host UTC;
-the remaining native audio adapter still supplies its own clock pair/cadence. An explicit
-live-audio candidate anchors decoded-sample progression to 48-kHz AAC source timing
+or Apple A/V acceptance. Source-bound SRTP/SRTCP writes fence generation and
+subscription retirement. Both tracks share a session monotonic domain and host-UTC
+reports. Rust audio uses bounded continuous resampling, explicit startup history,
+and complete Opus RTP packets on a 48-kHz clock; the old audio subprocess, relay and
+timestamp rescaler are removed. Recording still uses its own FFmpeg reader.
+A separate historical live-audio candidate anchors sample progression to AAC source timing
 and supports 8/16/24/48-kHz Opus output with 20/40/60-ms frames. It refuses excessive
 phase error, stale sender reports and uncovered finite endpoints; strict timing
 remains the default. Priming/tail contracts are explicit, not assumed to work over
@@ -143,14 +145,14 @@ Video's own timing faults remain fatal. Production receiver feedback is now pars
 Rust instead of returned to FFmpeg, and live media owners join producer/transport
 teardown. These strict timing refusals no longer govern production video; its explicit
 presentation mode still enforces packet identity, codec/parameter validity, no B-frame
-reordering guesses and source retirement. Audio/recording cutover remains unfinished. Diagnostics separate reconstructed RTP duration debt,
+reordering guesses and source retirement. Recording cutover remains unfinished. Diagnostics separate reconstructed RTP duration debt,
 SR mapping changes and unexplained residuals rather than blaming all drift on SRs.
 
 All project-owned C workers and the obsolete Python/AMC2 fixture harness are removed;
 their findings and numeric records remain in [Evidence](docs/evidence.md). The read-only
 production workload sampler `scripts/ingest_baseline.py` is retained, along with its
 checks (`python3 -m unittest discover -s scripts -p 'test_*.py'`). This cleanup does not
-remove the remaining audio/recording FFmpeg camera readers; those integrations remain open.
+remove the remaining recording FFmpeg camera reader; that integration remains open.
 No system-wide FFmpeg or compiler installation is needed with this workflow.
 
 ## Running
@@ -281,10 +283,10 @@ src/
   amcrest.rs    digest-auth camera client: snapshots, RTSP URLs, event stream
   accessory.rs  HomeKit accessory: stream management + motion sensor services
   stream.rs     SetupEndpoints/SelectedRTPStreamConfiguration TLV8 negotiation
-                with shared Rust video and the remaining native audio adapter
-  srtp.rs       SRTP/SRTCP primitives and legacy FFmpeg timestamp adapter
+                with shared Rust video/audio and joined codec workers
+  srtp.rs       SRTP/SRTCP primitives
   media/transport.rs  shared secure UDP writes, accepted counts and session-stop fence
-  media/rtcp.rs  compound sender reports, session CNAME and legacy control parsing
+  media/rtcp.rs  compound sender reports, session CNAME and receiver feedback
   hsv/          recording configuration, fMP4 prebuffer, HDS codec/framing/delivery
   metrics.rs    health, media metrics and delivery outcomes
   motion.rs     AI events → motion sensor characteristic updates

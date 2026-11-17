@@ -1,78 +1,25 @@
 //! HomeKit camera RTP stream management: SetupEndpoints / SelectedRTPStreamConfiguration
-//! TLV8 negotiation, shared Rust video and the remaining native audio adapter.
+//! TLV8 negotiation and shared Rust video/audio producers.
 
 use log::{debug, warn};
 use rand::Rng;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::AsyncReadExt;
-use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
 use crate::amcrest::VideoProfile;
 use crate::metrics::{ErrorSubsystem, Metrics};
 use crate::tlv8;
 use amcrust::media::rtcp;
-use amcrust::media::transport::{Error as TransportError, RTP_OVERHEAD, Transport};
+use amcrust::media::transport::{Error as TransportError, Transport};
 
 mod shared;
 
 struct MediaProxy {
     transport: shared::Control,
-    metrics: Arc<Metrics>,
     task: Option<tokio::task::JoinHandle<()>>,
-    #[cfg(test)]
-    producer_id: Option<u32>,
 }
 impl MediaProxy {
-    /// Temporary native-producer adapter. Transport/session lifetime survives its
-    /// replacement by Rust producers; no separate, unjoined child ownership.
-    fn with_producer(mut self, mut child: Child) -> Self {
-        #[cfg(test)]
-        {
-            self.producer_id = child.id();
-        }
-        let mut media = self.task.take().expect("media task");
-        let transport = self.transport.clone();
-        let stderr = child.stderr.take();
-        let metrics = self.metrics.clone();
-        self.task = Some(tokio::spawn(async move {
-            let diagnostics = tokio::spawn(async move {
-                if let Some(mut stderr) = stderr {
-                    // Bounded drain: do not retain/log native URLs or credentials.
-                    let mut buffer = [0; 1024];
-                    while let Ok(n) = stderr.read(&mut buffer).await {
-                        if n == 0 {
-                            break;
-                        }
-                    }
-                }
-            });
-            let media_finished = tokio::select! {
-                _ = &mut media => true,
-                status = child.wait() => {
-                    if !transport.is_closed() {
-                        metrics.error(ErrorSubsystem::LiveStream);
-                        warn!("native media producer ended unexpectedly: {status:?}");
-                    }
-                    false
-                },
-            };
-            transport.revoke();
-            if !media_finished {
-                media.abort();
-                let _ = media.await;
-            }
-            if child.id().is_some() {
-                let _ = child.start_kill();
-            }
-            let _ = child.wait().await;
-            diagnostics.abort();
-            let _ = diagnostics.await;
-        }));
-        self
-    }
     async fn stop(mut self) {
         self.transport.revoke();
         if let Some(task) = self.task.take() {
@@ -148,7 +95,7 @@ struct Session {
     controller_ip: String,
     video_port: u16,
     audio_port: u16,
-    /// SRTP master key || master salt, as ffmpeg wants it.
+    /// SRTP master key || master salt for this track's independent crypto state.
     video_key: Vec<u8>,
     audio_key: Vec<u8>,
     video_ssrc: u32,
@@ -191,7 +138,8 @@ pub struct VideoSource {
 pub struct StreamManager {
     inner: Arc<Mutex<Inner>>,
     video_sources: Vec<VideoSource>,
-    audio_rtsp_url: String,
+    audio_source: amcrust::source::Source,
+    audio_pool: amcrust::media::audio::Pool,
     audio: bool,
     local_ip: IpAddr,
     metrics: Arc<Metrics>,
@@ -200,7 +148,7 @@ pub struct StreamManager {
 impl StreamManager {
     pub fn new(
         video_sources: Vec<VideoSource>,
-        audio_rtsp_url: String,
+        audio_source: amcrust::source::Source,
         audio: bool,
         local_ip: IpAddr,
         metrics: Arc<Metrics>,
@@ -212,7 +160,9 @@ impl StreamManager {
         Self {
             inner: Arc::new(Mutex::new(Inner::default())),
             video_sources,
-            audio_rtsp_url,
+            audio_source,
+            audio_pool: amcrust::media::audio::Pool::new(8, 16 * 1024 * 1024)
+                .expect("fixed audio budget"),
             audio,
             local_ip,
             metrics,
@@ -531,8 +481,10 @@ impl StreamManager {
             self.metrics.error(ErrorSubsystem::LiveStream);
             return;
         };
+        let clock = amcrust::media::presentation::PresentationClock::new();
         let video_proxy = shared::spawn(
             shared::Video {
+                clock,
                 source: video_source.source,
                 profile: video_source.profile,
                 socket: session.video_out_socket.take().unwrap(),
@@ -560,94 +512,33 @@ impl StreamManager {
         inner.video_proxies.insert(session.id.clone(), video_proxy);
         self.metrics.live_stream_started();
 
-        // Audio has its own RTSP reader/encoder process and local RTP/RTCP
-        // proxy. Nothing in this path can block or pace the video process.
-        if audio_enabled {
-            match bind_tokio_udp_pair(IpAddr::V4(Ipv4Addr::LOCALHOST)).await {
-                Ok((local_rtp, local_rtcp)) => {
-                    let local_rtp_port = local_rtp.local_addr().map(|a| a.port()).unwrap_or(0);
-                    let local_rtcp_port = local_rtcp.local_addr().map(|a| a.port()).unwrap_or(0);
-                    let audio_pkt_size = audio_wire_mtu - RTP_OVERHEAD;
-                    let audio_dest = format!(
-                        "rtp://127.0.0.1:{local_rtp_port}?rtcpport={local_rtcp_port}&pkt_size={audio_pkt_size}"
-                    );
-                    let packet_time = match audio_packet_time {
-                        20 | 40 | 60 => audio_packet_time,
-                        _ => 20,
-                    };
-                    let bitrate = format!("{}k", audio_max_bitrate.clamp(16, 64));
-                    let mut audio_cmd = Command::new("ffmpeg");
-                    audio_cmd
-                        .arg("-hide_banner")
-                        .args(["-loglevel", "warning"])
-                        .args(["-fflags", "+genpts+nobuffer"])
-                        .args(["-flags", "low_delay"])
-                        .args(["-use_wallclock_as_timestamps", "1"])
-                        .args(["-rtsp_transport", "tcp"])
-                        .args(["-allowed_media_types", "audio"])
-                        .args(["-i", &self.audio_rtsp_url])
-                        .args(["-map", "0:a:0"])
-                        .arg("-vn")
-                        .args(["-c:a", "libopus"])
-                        .args(["-application:a", "voip"])
-                        .args(["-vbr:a", "on"])
-                        .args(["-packet_loss:a", "5"])
-                        .args(["-fec:a", "1"])
-                        .args(["-frame_duration:a", &packet_time.to_string()])
-                        .args([
-                            "-af",
-                            "aresample=async=1000:min_hard_comp=0.100:first_pts=0",
-                        ])
-                        .args(["-ar", &audio_rate_hz.to_string()])
-                        .args(["-ac", "1"])
-                        .args(["-b:a", &bitrate])
-                        .args(["-payload_type", &audio_payload_type.to_string()])
-                        .args(["-ssrc", &session.audio_ssrc.to_string()])
-                        .args(["-f", "rtp"])
-                        .arg(&audio_dest)
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::piped());
-                    audio_cmd.kill_on_drop(true);
-
-                    debug!("starting audio ffmpeg → {audio_dest}");
-                    match audio_cmd.spawn() {
-                        Ok(mut child) => {
-                            let proxy = spawn_media_proxy(
-                                "audio",
-                                local_rtp,
-                                local_rtcp,
-                                session.audio_out_socket.take().unwrap(),
-                                session.controller_ip.clone(),
-                                session.audio_port,
-                                session.audio_key.clone(),
-                                session.audio_ssrc,
-                                session.rtcp_identity,
-                                audio_wire_mtu,
-                                48000 / audio_rate_hz.max(1),
-                                self.metrics.clone(),
-                            );
-                            if let Some(proxy) = proxy {
-                                inner
-                                    .audio_proxies
-                                    .insert(session.id.clone(), proxy.with_producer(child));
-                            } else {
-                                let _ = child.start_kill();
-                                let _ = child.wait().await;
-                                self.metrics.error(ErrorSubsystem::LiveStream);
-                            }
-                        }
-                        Err(e) => {
-                            self.metrics.error(ErrorSubsystem::LiveStream);
-                            warn!("failed to spawn audio ffmpeg, video remains active: {e}");
-                        }
-                    }
-                }
-                Err(e) => {
-                    self.metrics.error(ErrorSubsystem::LiveStream);
-                    warn!("could not bind audio proxy socket, audio disabled: {e}");
-                }
-            }
+        if audio_enabled
+            && audio_rtcp_interval.is_finite()
+            && (0.0..=60.0).contains(&audio_rtcp_interval)
+        {
+            let proxy = shared::spawn_audio(
+                shared::Audio {
+                    clock,
+                    source: self.audio_source.clone(),
+                    socket: session.audio_out_socket.take().unwrap(),
+                    peer: SocketAddr::new(controller_ip, session.audio_port),
+                    key: session.audio_key.clone(),
+                    ssrc: session.audio_ssrc,
+                    identity: session.rtcp_identity,
+                    mtu: audio_wire_mtu,
+                    payload: audio_payload_type,
+                    interval: std::time::Duration::from_secs_f32(audio_rtcp_interval.max(0.5)),
+                    config: amcrust::media::audio::Config {
+                        rate: audio_rate_hz,
+                        frame_ms: audio_packet_time,
+                        bitrate: u32::from(audio_max_bitrate.clamp(16, 64)) * 1000,
+                        ..Default::default()
+                    },
+                    pool: self.audio_pool.clone(),
+                },
+                self.metrics.clone(),
+            );
+            inner.audio_proxies.insert(session.id.clone(), proxy);
         }
     }
 
@@ -710,152 +601,6 @@ async fn bind_tokio_udp_pair(
         std::io::ErrorKind::AddrNotAvailable,
         "could not bind an even RTP/odd RTCP port pair",
     ))
-}
-
-/// Proxies FFmpeg's plain RTP and RTCP to the controller as SRTP/SRTCP on one
-/// multiplexed port. Authenticated controller feedback is consumed only by Rust.
-fn spawn_media_proxy(
-    label: &'static str,
-    local_rtp: tokio::net::UdpSocket,
-    local_rtcp: tokio::net::UdpSocket,
-    out_socket: tokio::net::UdpSocket,
-    controller_ip: String,
-    controller_port: u16,
-    key: Vec<u8>,
-    ssrc: u32,
-    rtcp_identity: [u8; 16],
-    wire_mtu: usize,
-    ratio: u32,
-    metrics: Arc<Metrics>,
-) -> Option<MediaProxy> {
-    let started = std::time::Instant::now();
-    let dest = SocketAddr::new(controller_ip.parse().ok()?, controller_port);
-    let transport = Arc::new(Transport::new(out_socket, dest, &key, ssrc, wire_mtu)?);
-    // Legacy FFmpeg adapter only. Rust packetizers must pass their clock unchanged.
-    let mut rescaler = amcrust::srtp::TimestampRescaler::new(ratio);
-    let sender = transport.clone();
-    let reports = rtcp::Sender::new(ssrc, rtcp_identity);
-    let connection = if label == "video" {
-        metrics.live_connection_opened();
-        Some(LiveConnection(metrics.clone()))
-    } else {
-        None
-    };
-    let owner_metrics = metrics.clone();
-    let task = tokio::spawn(async move {
-        let _connection = connection;
-        let mut receiver = rtcp::Receiver::new(ssrc);
-        let mut rtp_buf = [0u8; 2048];
-        let mut rtcp_buf = [0u8; 2048];
-        let mut sent_rtp = 0u64;
-        let mut sent_rtcp = 0u64;
-        let mut received_feedback = 0u64;
-        let mut logged_keyframe = false;
-        loop {
-            tokio::select! {
-                result = local_rtp.recv(&mut rtp_buf) => {
-                    let Ok(n) = result else { break };
-                    let packet = &mut rtp_buf[..n];
-                    if n >= 12 && packet[0] >> 6 == 2 {
-                        rescaler.rescale_rtp(packet);
-                        if let Err(error) = sender.send_rtp(packet, || true).await {
-                            if !matches!(error, TransportError::Closed) {
-                                metrics.error(ErrorSubsystem::LiveStream);
-                                warn!("{label} RTP transport stopped: {error:?}");
-                            }
-                            break;
-                        }
-                        sent_rtp += 1;
-                        if sent_rtp == 1 {
-                            if label == "video" {
-                                metrics.live_first_packet(false, started.elapsed());
-                            }
-                            debug!("{label} proxy: first RTP packet → {dest}");
-                        }
-                        if label == "video" && !logged_keyframe && h264_contains_idr(packet) {
-                            debug!("video proxy: first H.264 keyframe packet → {dest}");
-                            logged_keyframe = true;
-                            metrics.live_first_packet(true, started.elapsed());
-                        }
-                    }
-                }
-                result = local_rtcp.recv(&mut rtcp_buf) => {
-                    let Ok(n) = result else { break };
-                    let packet = &mut rtcp_buf[..n];
-                    rescaler.rescale_rtcp(packet);
-                    let control = match rtcp::local_control(packet, ssrc) {
-                        Ok(control) => control,
-                        Err(error) => {
-                            metrics.error(ErrorSubsystem::LiveStream);
-                            warn!("{label} producer RTCP refused: {error}");
-                            break;
-                        }
-                    };
-                    if let Some(clock) = control.clock {
-                        // Preserve only the explicit legacy clock pair. Counters
-                        // describe accepted encrypted writes, and CNAME is ours.
-                        let mut compound = [0u8; 80];
-                        compound[..72].copy_from_slice(&reports.report(clock, sender.rtp_counts()));
-                        let size = if control.bye {
-                            compound[72..].copy_from_slice(&reports.bye());
-                            80
-                        } else { 72 };
-                        if let Err(error) = sender.send_rtcp(&compound[..size], || true).await {
-                            if !matches!(error, TransportError::Closed) {
-                                metrics.error(ErrorSubsystem::LiveStream);
-                                warn!("{label} RTCP transport stopped: {error:?}");
-                            }
-                            break;
-                        }
-                        sent_rtcp += 1;
-                        if sent_rtcp == 1 {
-                            debug!("{label} proxy: first Rust SRTCP sender report → {dest}");
-                        }
-                    }
-                    // A bare BYE terminates locally; do not invent a clock to
-                    // build a new compound report or emit unnegotiated reduced RTCP.
-                    if control.bye { break; }
-                }
-                result = sender.feedback() => {
-                    match result {
-                        Err(TransportError::Authentication | TransportError::TooLarge) => continue,
-                        Err(TransportError::Closed) => break,
-                        Err(error) => {
-                            metrics.error(ErrorSubsystem::LiveStream);
-                            warn!("{label} feedback transport stopped: {error:?}");
-                            break;
-                        }
-                        Ok(packet) => {
-                            let feedback = match receiver.receive(&packet) {
-                                Ok(feedback) => feedback,
-                                Err(_) => {
-                                    metrics.feedback_refused();
-                                    continue;
-                                }
-                            };
-                            metrics.receiver_feedback(feedback);
-                            received_feedback += 1;
-                            if received_feedback == 1 {
-                                debug!("{label} proxy: first validated controller feedback received");
-                            }
-                            // PLI/FIR/NACK remain observable unsupported requests:
-                            // no camera write, retransmission or clock reset is implied.
-                            if feedback.bye { break; }
-                        }
-                    }
-                }
-            }
-        }
-        sender.revoke();
-        debug!("{label} receiver feedback summary: {:?}", receiver.stats());
-    });
-    Some(MediaProxy {
-        transport: shared::Control::Ready(transport),
-        metrics: owner_metrics,
-        task: Some(task),
-        #[cfg(test)]
-        producer_id: None,
-    })
 }
 
 fn h264_contains_idr(packet: &[u8]) -> bool {
@@ -1032,215 +777,6 @@ mod tests {
         assert!(!h264_contains_idr(&fua));
     }
 
-    #[test]
-    #[ignore = "internal subprocess fixture; invoked only by lifecycle tests"]
-    fn media_child_fixture() {
-        if std::env::var("AMCRUST_MEDIA_CHILD_FIXTURE").as_deref() == Ok("wait") {
-            std::thread::sleep(std::time::Duration::from_secs(60));
-        }
-    }
-    fn fixture_child(mode: &str) -> Child {
-        Command::new(std::env::current_exe().unwrap())
-            .args(["--ignored", "--exact", "stream::tests::media_child_fixture"])
-            .env("AMCRUST_MEDIA_CHILD_FIXTURE", mode)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap()
-    }
-    fn assert_reaped(pid: u32) {
-        assert!(is_reaped(pid), "producer was not reaped by its supervisor");
-    }
-    fn is_reaped(pid: u32) -> bool {
-        // Public POSIX API on the supported Darwin/Linux targets. WNOHANG=1;
-        // ECHILD=10 means our supervisor, not this assertion, already reaped it.
-        unsafe extern "C" {
-            fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-        }
-        let mut status = 0;
-        let result = unsafe { waitpid(pid.try_into().unwrap(), &mut status, 1) };
-        let error = std::io::Error::last_os_error().raw_os_error();
-        result == -1 && error == Some(10)
-    }
-
-    #[tokio::test]
-    async fn producer_exit_revokes_transport_and_releases_media_tasks() {
-        let (rtp, rtcp) = bind_tokio_udp_pair(Ipv4Addr::LOCALHOST.into())
-            .await
-            .unwrap();
-        let out = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let controller = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let metrics = Metrics::new();
-        let mut proxy = spawn_media_proxy(
-            "video",
-            rtp,
-            rtcp,
-            out,
-            "127.0.0.1".into(),
-            controller.local_addr().unwrap().port(),
-            vec![7; 30],
-            42,
-            [9; 16],
-            188,
-            1,
-            metrics.clone(),
-        )
-        .unwrap()
-        .with_producer(fixture_child("exit"));
-        let pid = proxy.producer_id.unwrap();
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            proxy.task.take().unwrap(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert_reaped(pid);
-        assert!(
-            metrics
-                .render(false)
-                .contains("amcrust_connections_open{type=\"live_stream\"} 0")
-        );
-        assert!(matches!(
-            proxy.transport.send_rtp(&[0; 12], || true).await,
-            Err(amcrust::media::transport::Error::Closed)
-        ));
-        proxy.stop().await;
-    }
-
-    #[tokio::test]
-    async fn legacy_adapter_uses_secure_transport_and_joins_stop() {
-        use std::time::Duration;
-        use tokio::net::UdpSocket;
-        use webrtc_srtp::{context::Context, protection_profile::ProtectionProfile};
-        async fn receive(socket: &UdpSocket) -> Vec<u8> {
-            let mut bytes = [0; 2048];
-            let n = tokio::time::timeout(Duration::from_secs(1), socket.recv(&mut bytes))
-                .await
-                .unwrap()
-                .unwrap();
-            bytes[..n].to_vec()
-        }
-        let (rtp, rtcp) = bind_tokio_udp_pair(Ipv4Addr::LOCALHOST.into())
-            .await
-            .unwrap();
-        let rtp_address = rtp.local_addr().unwrap();
-        let rtcp_address = rtcp.local_addr().unwrap();
-        let out = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let out_address = out.local_addr().unwrap();
-        let controller = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let producer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let metrics = Metrics::new();
-        let proxy = spawn_media_proxy(
-            "audio",
-            rtp,
-            rtcp,
-            out,
-            "127.0.0.1".into(),
-            controller.local_addr().unwrap().port(),
-            vec![7; 30],
-            42,
-            [9; 16],
-            188,
-            3,
-            metrics.clone(),
-        )
-        .unwrap();
-        let proxy = proxy.with_producer(fixture_child("wait"));
-        let pid = proxy.producer_id.unwrap();
-        let fence = proxy.transport.clone();
-        let mut crypto = Context::new(
-            &[7; 16],
-            &[7; 14],
-            ProtectionProfile::Aes128CmHmacSha1_80,
-            None,
-            None,
-        )
-        .unwrap();
-        let mut packet = vec![0x80, 110, 0, 1, 0, 0, 3, 0xe8, 0, 0, 0, 42, 0x55];
-        producer.send_to(&packet, rtp_address).await.unwrap();
-        let first = crypto.decrypt_rtp(&receive(&controller).await).unwrap();
-        let origin = u32::from_be_bytes(first[4..8].try_into().unwrap());
-        packet[3] = 2;
-        packet[4..8].copy_from_slice(&1960u32.to_be_bytes());
-        producer.send_to(&packet, rtp_address).await.unwrap();
-        let second = crypto.decrypt_rtp(&receive(&controller).await).unwrap();
-        assert_eq!(
-            u32::from_be_bytes(second[4..8].try_into().unwrap()),
-            origin.wrapping_add(320)
-        );
-        let mut report = vec![0x80, 200, 0, 6, 0, 0, 0, 42];
-        report.extend_from_slice(&[0; 8]);
-        report.extend_from_slice(&1960u32.to_be_bytes());
-        report.extend_from_slice(&[0; 8]);
-        producer.send_to(&report, rtcp_address).await.unwrap();
-        let control = crypto.decrypt_rtcp(&receive(&controller).await).unwrap();
-        assert_eq!(&control[16..20], &second[4..8]);
-        assert_eq!(control.len(), 72);
-        assert_eq!(&control[8..16], &report[8..16]);
-        assert_eq!(&control[20..28], &[0, 0, 0, 2, 0, 0, 0, 2]);
-        assert_eq!(&control[38..70], b"09090909090909090909090909090909");
-        let feedback = [0x80, 201, 0, 1, 0, 0, 0, 99];
-        let encrypted = crypto.encrypt_rtcp(&feedback).unwrap();
-        controller.send_to(&encrypted, out_address).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while !metrics.render(false).contains("kind=\"datagram\"} 1") {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), producer.recv(&mut [0; 2048]))
-                .await
-                .is_err()
-        );
-        let malformed = [0x81, 201, 0, 1, 0, 0, 0, 99];
-        controller
-            .send_to(&crypto.encrypt_rtcp(&malformed).unwrap(), out_address)
-            .await
-            .unwrap();
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while !metrics.render(false).contains("kind=\"refused\"} 1") {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        let mut registry = registry();
-        let manager = StreamManager::new(
-            vec![VideoSource {
-                source: register(&mut registry, 1, "rtsp://unused.invalid".into()),
-                profile: VideoProfile::LIVE_720P,
-            }],
-            "rtsp://unused.invalid".into(),
-            true,
-            Ipv4Addr::LOCALHOST.into(),
-            metrics,
-        );
-        manager
-            .inner
-            .lock()
-            .await
-            .audio_proxies
-            .insert(vec![1], proxy);
-        manager.end_session(Some(vec![1])).await;
-        manager.stop_stream().await;
-        registry.shutdown().await.unwrap();
-        assert_reaped(pid);
-        assert!(matches!(
-            fence.send_rtp(&packet, || true).await,
-            Err(amcrust::media::transport::Error::Closed)
-        ));
-        drop(fence);
-        // Explicit stop joins before returning, releasing all three owned sockets.
-        let _rtp = UdpSocket::bind(rtp_address).await.unwrap();
-        let _rtcp = UdpSocket::bind(rtcp_address).await.unwrap();
-        let _out = UdpSocket::bind(out_address).await.unwrap();
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "real north-driveway camera, serial read-only access; production video control/teardown, not playback"]
     async fn real_production_feedback_and_joined_teardown() {
@@ -1258,7 +794,7 @@ mod tests {
         };
         let manager = StreamManager::new(
             vec![source.clone()],
-            url,
+            source.source.clone(),
             false,
             Ipv4Addr::LOCALHOST.into(),
             metrics.clone(),
@@ -1298,13 +834,6 @@ mod tests {
                 0.5,
             )
             .await;
-        let pid = manager
-            .inner
-            .lock()
-            .await
-            .video_proxies
-            .get(&id)
-            .and_then(|p| p.producer_id);
         let mut crypto = Context::new(
             &[7; 16],
             &[7; 14],
@@ -1342,9 +871,6 @@ mod tests {
             let task = manager.inner.lock().await.video_proxies.get_mut(&id)
                 .and_then(|p| p.task.take()).ok_or("missing media owner")?;
             task.await.map_err(|e| e.to_string())?;
-            if pid.is_some() {
-                return Err("shared video unexpectedly spawned a native producer".into());
-            }
             if !metrics.render(false).contains("kind=\"bye\"} 1") || !metrics.render(false).contains("kind=\"pli\"} 1") {
                 return Err("receiver feedback was not handled locally".into());
             }
@@ -1353,9 +879,6 @@ mod tests {
         }).await;
         manager.stop_stream().await;
         registry.shutdown().await.unwrap();
-        if let Some(pid) = pid {
-            assert_reaped(pid);
-        }
         assert!(
             metrics
                 .render(false)

@@ -11,8 +11,9 @@ Former experimental implementation names below are provenance, not current entry
 
 Production live video now consumes encoder-keyed Rust shared acquisition, H.264
 packetization, explicit host-monotonic presentation and Rust-scheduled reports.
-Its per-viewer FFmpeg command and local video relay are removed. Live audio and
-recording still open separate FFmpeg camera readers; full cutover is unfinished.
+Both live tracks now use shared acquisition; their FFmpeg commands, local relays and
+legacy timestamp rescaler are removed. Recording still opens a separate FFmpeg reader;
+full cutover is unfinished.
 The production-path checks below are not deployment or Apple playback acceptance. Production instrumentation added first RTP/IDR timing and recording
 delivery outcomes (`end_sent`, `cancelled`, `source_unavailable`, `write_error`).
 `end_sent` is a successful write, not confirmed iCloud storage. The process sampler in
@@ -21,9 +22,48 @@ are not RTSP session counts and summed RSS may double-count shared pages.
 
 The unused C-worker draft (`native/`, `native-media.nix`) has been removed and
 `src/ingest.rs` replaced by a Rust libavformat acquisition boundary. It is compiled
-as application library code and is now wired into `src/main.rs` for live video.
-MediaMTX was investigated but not added or launched. Audio/recording integration and
+as application library code and is wired into `src/main.rs` for live video/audio.
+MediaMTX was investigated but not added or launched. Recording integration and
 Apple acceptance remain separate requirements.
+
+### Production live audio cutover
+
+Shared main-encoder AAC now feeds joined, thread-bound Rust decode/resample/Opus workers.
+Both tracks receive one session presentation clock and independent source-bound crypto
+transports. Removed live audio's FFmpeg command/UDP relay, native child adapter/lifecycle
+fixtures, timestamp rescaler and native sender-report extractor. Recording remains legacy.
+
+Read-only checks on north-driveway, without retained captures or encoder writes:
+- Initial production A/V: **2.43 s**, **222 video / 100 audio RTP**, **96,000** decoded
+  untrimmed Opus samples at 48 kHz, 16-kHz/20-ms encoding, one acquisition. Audio BYE
+  joined/released its worker while video stayed active; final source charges zero.
+- An initial matrix attempt timed out after 8-kHz/20-ms; no diagnostic identified its
+  cause. A logged retry passed eleven combinations then refused a **6,946-tick /
+  144.7-ms positive arrival excursion** at 48-kHz/60-ms. Neither run is a pass.
+- The explicit presentation policy now holds rate correction during positive arrival
+  excursions ≤500 ms for <500 ms, without changing the anchor or discarding samples.
+  Negative >100-ms, larger or persistent errors still fail. The historical candidate's
+  limits are unchanged. Local tests cover catch-up and persistent-gap refusal.
+- Final matrix **13.21 s**: all **8/16/24/48-kHz × 20/40/60-ms** configurations each
+  delivered **25 authenticated, independently decoded** RTP packets with exact fixed
+  48-kHz timestamp steps. One acquisition and released codec reservations.
+- Production A/V **60.03 s**: **9,347 video / 2,980 audio RTP**, **2,860,800** decoded
+  Opus samples at 48 kHz. Both tracks sent authenticated reports, one acquisition;
+  audio BYE joined/released its worker without stopping video, then zero source charges.
+- Final-code repeats: matrix **13.31 s** passed all twelve combinations; production
+  A/V **2.30 s**, **225 video /100 audio RTP**, with the same teardown checks.
+
+Startup explicitly counts decoder warmup/probe-backlog samples before selecting the
+single anchor, bounded to two seconds. Complete live Opus packets include codec preroll;
+no container skip command is assumed over RTP. No finite tail completion is claimed.
+Six-hour ±0.1% drift simulation exercises the rate controller, not six hours of hardware.
+These checks do not establish Apple playback, physical lip sync, long-run burst quality,
+in-session outage recovery, compatible codec deduplication, recording or deployment.
+
+Validation: **47 library +45 application tests**, recovery/phase-trend checks,
+all-target compilation, strict library Clippy, formatting, two sampler tests and the
+pinned Nix package passed. The bounded self-review returned no findings. Existing
+application `fetch_update` deprecation warnings remain unrelated to this increment.
 
 ### Rust acquisition increment
 

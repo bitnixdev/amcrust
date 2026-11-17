@@ -27,11 +27,6 @@ pub struct ClockPair {
     pub rtp: u32,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct LocalControl {
-    pub clock: Option<ClockPair>,
-    pub bye: bool,
-}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     Malformed,
@@ -89,75 +84,6 @@ impl Sender {
     }
 }
 
-/// Extract the legacy producer's explicit clock and terminal BYE. Validates bounded
-/// compound framing and SR/BYE shapes, ignoring other framed blocks (including the
-/// producer's SDES). This is not a receiver-feedback parser or a clock estimator.
-pub fn local_control(bytes: &[u8], ssrc: u32) -> Result<LocalControl, Error> {
-    if bytes.is_empty() || bytes.len() > 2048 {
-        return Err(Error::Malformed);
-    }
-    let mut result = LocalControl::default();
-    let mut rest = bytes;
-    while !rest.is_empty() {
-        if rest.len() < 4 || rest[0] >> 6 != 2 {
-            return Err(Error::Malformed);
-        }
-        let size = (usize::from(u16::from_be_bytes([rest[2], rest[3]])) + 1) * 4;
-        if size > rest.len() {
-            return Err(Error::Malformed);
-        }
-        let count = usize::from(rest[0] & 31);
-        let mut block = &rest[..size];
-        if rest[0] & 0x20 != 0 {
-            let padding = usize::from(block[size - 1]);
-            if size != rest.len() || padding == 0 || padding > size - 4 {
-                return Err(Error::Malformed);
-            }
-            block = &block[..size - padding];
-        }
-        match block[1] {
-            200 => {
-                if block.len() != 28 + count * 24 {
-                    return Err(Error::Malformed);
-                }
-                if block[4..8] != ssrc.to_be_bytes() {
-                    return Err(Error::WrongSsrc);
-                }
-                if result.clock.is_some() {
-                    return Err(Error::DuplicateReport);
-                }
-                result.clock = Some(ClockPair {
-                    ntp: u64::from_be_bytes(block[8..16].try_into().unwrap()),
-                    rtp: u32::from_be_bytes(block[16..20].try_into().unwrap()),
-                });
-            }
-            203 => {
-                let end = 4 + count * 4;
-                if count == 0 || block.len() < end {
-                    return Err(Error::Malformed);
-                }
-                if block.len() > end {
-                    let reason_end = end + 1 + usize::from(block[end]);
-                    if reason_end > block.len()
-                        || block.len() - reason_end > 3
-                        || block[reason_end..].iter().any(|b| *b != 0)
-                    {
-                        return Err(Error::Malformed);
-                    }
-                }
-                result.bye |= block[4..end]
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .any(|id| *id == ssrc.to_be_bytes());
-            }
-            _ => (),
-        }
-        rest = &rest[size..];
-    }
-    Ok(result)
-}
-
 /// RFC 3550 payload accounting, also refusing malformed CSRC/extension/padding
 /// lengths before encryption. The caller separately bounds total datagram size.
 pub(crate) fn payload_octets(bytes: &[u8]) -> Result<u32, Error> {
@@ -203,60 +129,20 @@ mod tests {
             octets: 2300,
         };
         let video = Sender::new(42, [7; 16]).report(clock, counts);
-        assert_eq!(
-            local_control(&video, 42).unwrap(),
-            LocalControl {
-                clock: Some(clock),
-                bye: false
-            }
-        );
+        assert_eq!(&video[..8], &[0x80, 200, 0, 6, 0, 0, 0, 42]);
+        assert_eq!(&video[8..16], &clock.ntp.to_be_bytes());
+        assert_eq!(&video[16..20], &clock.rtp.to_be_bytes());
         assert_eq!(&video[20..28], &[0, 0, 0, 17, 0, 0, 8, 252]);
         assert_eq!(&video[28..38], &[0x81, 202, 0, 10, 0, 0, 0, 42, 1, 32]);
         assert_eq!(&video[70..], &[0, 0]);
-        let compound = [video.as_slice(), &Sender::new(42, [7; 16]).bye()].concat();
-        assert_eq!(
-            local_control(&compound, 42).unwrap(),
-            LocalControl {
-                clock: Some(clock),
-                bye: true
-            }
-        );
         let audio = Sender::new(43, [7; 16]).report(clock, counts);
         assert_eq!(&video[38..70], &audio[38..70]);
         assert_ne!(
             &video[38..70],
             &Sender::new(42, [8; 16]).report(clock, counts)[38..70]
         );
-        assert!(
-            local_control(&Sender::new(42, [7; 16]).bye(), 42)
-                .unwrap()
-                .bye
-        );
-        assert!(
-            !local_control(&Sender::new(43, [7; 16]).bye(), 42)
-                .unwrap()
-                .bye
-        );
-    }
-    #[test]
-    fn framing_and_ambiguous_reports_are_refused() {
-        let report =
-            Sender::new(42, [7; 16]).report(ClockPair { ntp: 1, rtp: 2 }, Counts::default());
-        assert_eq!(local_control(&report, 43), Err(Error::WrongSsrc));
-        let duplicate = [report.as_slice(), &report[..28]].concat();
-        assert_eq!(local_control(&duplicate, 42), Err(Error::DuplicateReport));
-        for n in 0..report.len() {
-            if n != 28 {
-                assert!(local_control(&report[..n], 42).is_err());
-            }
-        }
-        let mut padded_first = report;
-        padded_first[0] |= 0x20;
-        assert!(local_control(&padded_first, 42).is_err());
-        let mut bad_count = report;
-        bad_count[0] |= 1;
-        assert!(local_control(&bad_count, 42).is_err());
-        assert!(local_control(&[0x81, 203, 0, 0], 42).is_err());
+        let compound = [video.as_slice(), &Sender::new(42, [7; 16]).bye()].concat();
+        assert!(Receiver::new(42).receive(&compound).unwrap().bye);
     }
     #[test]
     fn payload_counts_exclude_csrc_extensions_and_padding() {

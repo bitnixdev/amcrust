@@ -272,6 +272,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         timing: amcrust::source::Timing::Presentation,
         ..Default::default()
     })?;
+    let main_source = source_registry.register(
+        amcrust::source::SourceKey {
+            camera: 1,
+            encoder: amcrust::source::Encoder::Main,
+        },
+        amcrust::ingest::CameraUrl::new(camera.rtsp_url(0))?,
+    )?;
     let mut video_sources = Vec::new();
     if let Some(profile) = live_720_profile {
         video_sources.push(VideoSource {
@@ -287,13 +294,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some(main_profile) = hsv_state.selected_main_profile().await {
         video_sources.push(VideoSource {
-            source: source_registry.register(
-                amcrust::source::SourceKey {
-                    camera: 1,
-                    encoder: amcrust::source::Encoder::Main,
-                },
-                amcrust::ingest::CameraUrl::new(camera.rtsp_url(0))?,
-            )?,
+            source: main_source.clone(),
             profile: main_profile,
         });
     }
@@ -302,7 +303,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let streams = StreamManager::new(
         video_sources,
-        camera.rtsp_url(0),
+        main_source,
         args.audio,
         local_ip,
         metrics.clone(),

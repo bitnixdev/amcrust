@@ -7,6 +7,9 @@ use std::time::{Duration, Instant};
 pub enum ClockPolicy {
     #[default]
     Strict,
+    /// Host-monotonic presentation with bounded continuous resampling. Construct
+    /// through Transcoder::new_presented, not the source-clock candidate API.
+    Presentation,
     /// Anchor once to the first decoded source PTS, then count actual 48-kHz PCM
     /// samples. Never chase later SR phase steps. Limits are operational refusal
     /// budgets, NOT measured perceptual tolerances. Requires 48-kHz AAC input;
@@ -29,7 +32,7 @@ impl ClockPolicy {
     }
     pub(super) fn valid(self) -> bool {
         match self {
-            Self::Strict => true,
+            Self::Strict | Self::Presentation => true,
             Self::AnchoredSamples {
                 max_phase_samples,
                 report_timeout,

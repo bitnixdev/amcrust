@@ -2,6 +2,7 @@
 //! Shared-source media producers are not yet connected to HomeKit.
 pub mod audio;
 mod audio_clock;
+mod audio_recovery;
 pub mod fmp4;
 pub mod presentation;
 pub mod rtcp;

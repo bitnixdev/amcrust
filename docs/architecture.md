@@ -12,17 +12,17 @@ completed work and its limitations are in [Evidence](evidence.md). The
 
 | Area | Current state | Destination |
 |---|---|---|
-| Camera acquisition | Live viewers share Rust libavformat readers by encoder; audio and recording still open their own FFmpeg readers | One Rust-owned libavformat acquisition per active encoder |
+| Camera acquisition | Live video/audio share Rust libavformat readers by encoder; recording still opens its own FFmpeg reader | One Rust-owned libavformat acquisition per active encoder |
 | Live video | Shared Rust H.264 packetization, host-monotonic presentation and Rust-scheduled SRTP/SRTCP; no video child process or local video relay | Shared encoded H.264, Rust per-viewer packetization and existing encryption/control integration |
-| Live audio | Per-viewer FFmpeg AAC decode/Opus encode | Rust-owned FFmpeg-library audio processing shared where negotiated settings match |
+| Live audio | Shared AAC acquisition, joined Rust AAC/resample/Opus workers and independent transports | Rust-owned FFmpeg-library audio processing shared where negotiated settings match |
 | Recording | Persistent FFmpeg reader/mux, Rust fMP4 prebuffer and HDS delivery | Shared packet subscriptions, Rust-owned mux/lifetimes, existing HomeKit/HDS integration |
 | Experiments | Retained numeric findings; obsolete C/Python fixture harness removed | Behavioral evidence to carry forward, not a second production implementation |
-| Rust acquisition boundary | `src/main.rs` creates the registry and injects source handles into live video; joined supervisors and bounded subscriptions own libavformat | Connect live audio and recording to those same encoder owners |
+| Rust acquisition boundary | `src/main.rs` creates the registry and injects source handles into live video/audio; joined supervisors and bounded subscriptions own libavformat | Connect recording to those same encoder owners |
 
-**Production live video has switched; full audio/recording cutover is unfinished.**
+**Production live video/audio have switched; recording cutover is unfinished.**
 Real checks exercise this application path, but are not deployment or Apple acceptance.
-The project-owned C workers/probe packaging and the per-viewer video FFmpeg command
-are removed. No selectable legacy video fallback remains.
+The project-owned C workers/probe packaging and both per-viewer FFmpeg commands
+are removed. No selectable legacy live fallback remains.
 
 ## Intended data flow
 
@@ -56,7 +56,7 @@ viewer, recording session or requested output format.
   access to private FFmpeg structs. `ffmpeg-sys-next` is pinned to 9.1.1 against
   Nix FFmpeg 9.0.2. `src/ingest.rs` contains the acquisition FFI ownership boundary;
   `src/media/fmp4.rs` owns the finite mux boundary and `src/media/audio.rs` owns
-  codec/resampler state. Production mux/audio integration remains to be implemented.
+  codec/resampler state. Production recording mux integration remains to be implemented.
 - Blocking I/O belongs off the async executor, with interruptible reads, deadlines and
   explicit shutdown/join. If process isolation proves necessary, use a Rust worker
   with owned lifetime; do not reinstate the standalone C-worker architecture.
@@ -75,7 +75,7 @@ The user selected **stable playback with an explicit recovered presentation cloc
 not source-derived capture-time fidelity. Cameras are underpowered, untrusted long-term
 clock sources; production must recover unattended across months of operation, camera
 reboots, network outages and other failures. This is the implementation direction,
-not a claim that continuous audio recovery or full recording presentation is implemented.
+not a claim that unattended in-session recovery or full recording presentation is implemented.
 Production video now uses host-monotonic packet-read times; that initial presentation
 model still needs sustained, network-burst and paired-client A/V qualification.
 
@@ -279,14 +279,13 @@ writes. Reservations are logical ownership bounds, not FFmpeg allocator/RSS meas
 ## Implemented secure transport boundary
 
 `media::transport::Transport` is now the **only production live SRTP/SRTCP socket-write
-path**, used by the Rust video owner and remaining audio adapter in `src/stream.rs`. It owns the UDP socket, fixed peer, outgoing SSRC and cryptographic state.
+path**, used by the Rust video/audio owners in `src/stream.rs`. It owns the UDP socket, fixed peer, outgoing SSRC and cryptographic state.
 It does not acquire media, pace packets, rescale timestamps or invent sender reports.
-The legacy timestamp adapter stays at the FFmpeg boundary only; Rust audio's 48-kHz
-presentation timestamps must not pass through it.
+The legacy timestamp adapter is removed; Rust audio RTP always uses 48-kHz timing.
 
 Outgoing protected datagrams must fit the configured wire limit (maximum 2048 bytes), including
-10 bytes for SRTP or 14 for SRTCP. Production reserves SRTP overhead in FFmpeg's packet
-size, caps requested MTUs at 1378 bytes and refuses requests below 188 rather than
+10 bytes for SRTP or 14 for SRTCP. Production reserves SRTP overhead before packetization,
+caps requested MTUs at 1378 bytes and refuses requests below 188 rather than
 sending beyond them; invalid audio MTU disables audio without stopping video.
 One send and one receive operation may be active per transport; concurrent calls are
 refused, not queued. A write has a 250-ms readiness budget. WouldBlock retries reuse
@@ -313,20 +312,19 @@ feedback, including retirement between a producer predicate and the syscall. No
 per-transport callback registry or rebinding is needed. Subscription-local audio
 failure leaves unrelated video transports usable; generation retirement closes both.
 Already copied plaintext cannot bypass the fence, even with a stale `true` predicate.
-The Rust video owner now uses this binding. Its pending-start control fences stop
+Both Rust live owners now use this binding. Its pending-start control fences stop
 before subscription/first IDR, refuses late transport installation, joins cancellation
 and releases retired transport/source references even while an ended HAP entry remains.
-The unbound constructor remains only for the native audio adapter; recording-copy
-privacy is still separate integration work.
+The unbound constructor remains a library/test facility, not a production live path;
+recording-copy privacy is still separate integration work.
 Aggregate source/output accounting and recording-copy fences remain TODO.
 
 Real-source H.264 from two Rust viewers decrypts/decodes through independent FFmpeg SRTP
 receivers. This is not Home app acceptance. Production video no longer uses the FFmpeg
-executable or its RTP/report clock. Live audio still uses that native adapter; its
-clock pairs/cadence remain supplied by FFmpeg.
+executable or its RTP/report clock. Live audio has also replaced that adapter with
+Rust-owned codec workers and presentation/report timing.
 Authenticated receiver feedback is now consumed in Rust, not sent back to FFmpeg.
-Recovered audio presentation/report clocks, receiver priming and audio/recording
-shared-acquisition injection remain required before the remaining readers can be removed.
+Receiver priming/playback qualification and recording integration remain required.
 
 ### Rust-owned receiver feedback and live lifetime
 
@@ -346,19 +344,17 @@ claimed by removing the legacy feedback-forwarding socket path. Unknown framed b
 are counted without retained payloads. SDES/BYE lengths and final-only padding are
 checked; an authenticated BYE for the bound participant terminates this track.
 
-The production media owner then revokes writes and joins its native producer/reaper
-and diagnostic drain. Explicit HAP stop/replacement fences all affected tracks before
+The production media owner revokes writes and joins its Rust producer, including
+native codec cleanup on the blocking audio worker. Explicit HAP stop/replacement fences all affected tracks before
 awaiting any owner. Unexpected producer exit also revokes media; video transport
 lifetime, not stale child-map membership, drives the active-live gauge. Fixed-label
 `amcrust_receiver_feedback_total` counters distinguish accepted datagrams, report
 packets, requests, unsupported blocks, BYE and semantic refusal. Authentication/replay
-refusals remain at the transport boundary. Native stderr is drained in fixed-size
-chunks without retaining/logging potentially credential-bearing strings.
+refusals remain at the transport boundary. Live producers no longer have child stderr.
 
-A real production video-path check decrypted 100 RTP packets and an SR, sent RR,
-PLI and BYE, and observed producer exit/reaping without a HAP stop request. This was
-not Apple playback, shared acquisition, video decode or clock qualification; the
-input, RTP producer clock/cadence and audio/recording producers are still legacy.
+The historical native-adapter check decrypted 100 RTP packets and an SR, sent RR,
+PLI and BYE, and observed producer reaping. That adapter is now removed; subsequent
+shared video/audio checks are recorded separately in Evidence, not Apple acceptance.
 
 ### Rust-owned outbound sender reports
 
@@ -376,34 +372,54 @@ They are kernel acceptance, **not receiver acknowledgment**. The session actor m
 serialize its count snapshot/report construction with its sends; the production proxy
 already does this in one task.
 
-Production no longer forwards the FFmpeg sender-report payload verbatim. Its adapter
-validates bounded compound framing and SR/BYE shapes, extracts the existing rescaled
-clock pair and builds Rust SR/SDES with actual accepted counts. The legacy clock and
-report cadence are unchanged. Other framed blocks, including FFmpeg's host-derived
-SDES, are not forwarded. BYE accompanying an SR is appended to that compound; a bare
-BYE retires the adapter without inventing a clock or sending unnegotiated reduced-size
-RTCP. Controller feedback is now consumed by the Rust receiver described above.
-
-Video now owns its host presentation-to-NTP pairing, report schedule and source
-retirement fence. **Remaining integration:** implement and qualify recovered audio
-presentation/report timing and common A/V behavior, plus recording. Recovery actions
-for receiver keyframe/retransmission requests are not implemented.
+Both live producers now own host presentation-to-NTP pairing, report scheduling and
+source retirement fencing. The native report extractor and timestamp rescaler are
+removed. Each session gives both tracks the same monotonic clock and CNAME, with
+independent RTP origins and crypto state. Recording and actual common A/V playback
+qualification remain open. Keyframe/retransmission requests are observed, not fulfilled.
 A report formatter is not a clock policy or an audio preroll/trim contract. Neither
 this API nor the accepted-write counters establishes Apple playback or common A/V
 capture-clock accuracy.
 
+## Production recovered audio
+
+The joined blocking worker in `src/stream/shared/audio.rs` consumes shared main-encoder
+AAC without opening another reader. `Transcoder::new_presented` gives a private decoder
+packet copy a sample ordinal; original shared PTS/DTS and diagnostics remain unchanged.
+Bounded pre-admission decoding warms AAC history and excludes probe backlog until a
+paced observation; skipped startup samples are counted explicitly. Admission is limited
+to two seconds of time/samples. The first admitted frame chooses the sole anchor in the
+session's common monotonic domain. No subsequent frame is discarded or reanchored.
+
+A 1/16 low-pass and ten-second proportional horizon drive public
+`swr_set_compensation`, capped at ±5000 ppm. Normal phase is ±100 ms; a **positive**
+late-arrival excursion up to 500 ms holds the existing correction for less than 500 ms,
+allowing an intact delayed burst to catch up without silence, dropping or reanchoring.
+Larger, negative >100-ms, or persistent excursions fail the processor. Phase/peak and
+late-observation counters remain visible. This is a new arrival-jitter policy, not a
+change to the historical source-clock candidate's limits.
+
+RTP sends complete Opus packets, including initial codec preroll, on a fixed 48-kHz
+clock for all negotiated encoder rates. No container skip metadata is presumed to
+travel over RTP; timestamping includes native codec lookahead. Live stop does not flush
+or claim a finite tail. Presentation-mode finite finish/coverage APIs are refused.
+Eight jobs/16 MiB of logical reservations bound application audio processing; matching
+viewers still have separate codec state, not deduplicated processing. Stop/BYE/source
+retirement fences sends and joins native cleanup. A stopped audio owner does not stop
+healthy video. This does not establish Apple priming behavior, physical lip sync,
+network-burst playback quality, or automatic in-session recovery across an outage.
+
 ## Implemented audio-processing boundary
 
-`media::audio::Transcoder` owns AAC-LC decoding, fixed-ratio libswresample conversion,
+`media::audio::Transcoder` owns AAC-LC decoding, libswresample conversion,
 a bounded PCM FIFO and libopus encoding on one blocking media worker. Configuration
 covers rate, channels, bitrate, frame duration, VBR, FEC and expected loss; application
 mode is fixed to voice. The admission pool limits jobs and retained output, but does
 not yet share/deduplicate encoders with matching source/configuration. Native channel
 layout, rate and sample format changes are refused rather than reused in an old resampler.
 
-Decoder-frame PTS and sample counts are checked independently of private encoder sample
-ordinals. No asynchronous resampling, silence injection, source-sample dropping or
-wall-clock timestamp substitution is used. `Transcoder::new` retains strict timing:
+The strict/source-candidate constructors check decoder-frame PTS independently of
+private encoder sample ordinals and do not asynchronously resample. `Transcoder::new` retains strict timing:
 `source_timestamp_48k` refuses observed clock contradictions and uncovered priming/tail
 ranges. The explicit candidate below is a separately selected, guarded clock model,
 not permission to promote arbitrary encoder ordinals to RTP timestamps. A locally
@@ -415,9 +431,8 @@ converts them exactly to the Opus decoder's fixed 48-kHz domain. Output access h
 two-second residence limit; reservations stay charged until held packets drop. Explicit
 finish flushes decoder, resampler and encoder tails; source EOF/cancellation is not
 finish. Codec decoding/count checks are not continuous-source PCM equality, listening
-acceptance or a production audio path. The observed real-camera clock contradictions
-remain a blocker for unqualified transport integration, not a reason to adopt
-unanchored packet-order clocks.
+acceptance. The historical source-clock contradictions are retained diagnostics,
+not qualification gates for the explicit presentation path below.
 
 ### Historical source-anchored candidate and revisit guide
 

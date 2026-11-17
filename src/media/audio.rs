@@ -3,16 +3,21 @@
 //! executor task. No I/O, camera reader or detached worker is opened by this layer.
 //!
 //! Codec sample ordinals are PRIVATE encoder bookkeeping, not source clocks.
-//! Decoding/resampling/encoding never inserts silence, drops decoded samples or
-//! applies asynchronous clock compensation. Non-contiguous source timestamps are
-//! retained as evidence; strict timing refuses them. An explicit experimental
-//! source-anchored sample policy permits bounded phase error for 48-kHz AAC input; it
-//! never reanchors, compensates samples, or implies HomeKit playback acceptance.
+//! Strict/source-anchored policies never asynchronously compensate samples; source
+//! contradictions remain evidence. Explicit presentation mode warms decoder history
+//! before one host-monotonic anchor, then continuously resamples within bounded
+//! limits without silence, post-admission drops or reanchoring. Neither mode implies
+//! HomeKit playback acceptance; presentation mode cannot complete a finite cut.
 //!
 //! This is the processing boundary, not a production audio pool/transport. Both
 //! Config and ClockPolicy belong in any future generation-scoped sharing key.
 pub use super::audio_clock::{ClockPolicy, ClockStatus};
+pub use super::audio_recovery::RecoveryStatus;
 use super::{Error, audio_clock::SampleClock, rescale};
+use super::{
+    audio_recovery::{Recovery, Startup},
+    presentation::PresentationClock,
+};
 use crate::{
     ingest::{Cancellation, Codec, SenderReport, TimeBase},
     source::{Delivery, DeliveryGuard},
@@ -88,7 +93,8 @@ impl Pool {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClockMismatch {
-    /// Exact source-clock sample units, at the decoder's input sample rate.
+    /// Decoder-input sample units. Presentation mode uses a private ordinal;
+    /// source timestamp health must instead be read from the source diagnostics.
     pub expected: i64,
     pub actual: i64,
 }
@@ -97,6 +103,8 @@ pub struct Stats {
     pub input_packets: u64,
     /// Source-rate samples per channel, not a presentation-time counter.
     pub decoded_samples: u64,
+    /// Explicit live pre-admission decoder warmup; never claimed as audible output.
+    pub preroll_samples: u64,
     /// Target-rate samples per channel, including the resampler's finite tail.
     pub resampled_samples: u64,
     pub encoded_packets: u64,
@@ -109,6 +117,7 @@ pub struct Stats {
     pub last_sender_report: Option<SenderReport>,
 }
 struct Clock {
+    presentation_origin: Option<i64>,
     first_pts: Option<i64>,
     previous_end: Option<i64>,
     mismatch: Option<ClockMismatch>,
@@ -359,6 +368,40 @@ impl OpusPacket {
         let p = unsafe { &*self.raw };
         Ok((p.pts, p.duration))
     }
+    /// Live RTP contract: send the complete Opus packet, including its initial
+    /// codec preroll, at this 48-kHz timestamp. RTP carries no OpusHead/trim command;
+    /// receivers decode the preroll rather than silently discarding a first packet.
+    /// This API never grants finite tail padding or HSV completion.
+    pub fn live_timestamp_48k(&self) -> Result<i64, Error> {
+        self.check()?;
+        let skip = self.decoder_skip()?.unwrap_or_default();
+        let clock = self.job.clock.lock().unwrap_or_else(|p| p.into_inner());
+        if clock.samples.policy != ClockPolicy::Presentation {
+            return Err(Error::Configuration);
+        }
+        let p = unsafe { &*self.raw };
+        let factor = (48000 / self.job.config.rate) as i128;
+        let padding = self.job.initial_padding as i128;
+        let header = &self.job.header;
+        if header.len() < 19
+            || &header[..8] != b"OpusHead"
+            || i128::from(u16::from_le_bytes([header[10], header[11]])) != padding * factor
+        {
+            return Err(Error::Configuration);
+        }
+        if (p.pts as i128) < -padding
+            || p.duration != (self.job.config.rate * self.job.config.frame_ms as u32 / 1000) as i64
+            || skip.end != 0
+            || (skip.start != 0 && skip.start as i128 != padding * factor)
+            || p.pts as i128 + p.duration as i128 > clock.converted_samples as i128
+        {
+            return Err(Error::Incomplete);
+        }
+        i64::try_from(
+            clock.presentation_origin.ok_or(Error::Clock)? as i128 + p.pts as i128 * factor,
+        )
+        .map_err(|_| Error::Clock)
+    }
     pub fn config(&self) -> Config {
         self.job.config
     }
@@ -378,7 +421,7 @@ impl OpusPacket {
         self.check()?;
         let skip = self.decoder_skip()?.unwrap_or_default();
         let clock = self.job.clock.lock().unwrap_or_else(|p| p.into_inner());
-        if clock.samples.policy == ClockPolicy::Strict {
+        if !matches!(clock.samples.policy, ClockPolicy::AnchoredSamples { .. }) {
             return Err(Error::Configuration);
         }
         clock.samples.ready(Instant::now())?;
@@ -412,6 +455,9 @@ impl OpusPacket {
             return Err(Error::Incomplete);
         }
         let clock = self.job.clock.lock().unwrap_or_else(|p| p.into_inner());
+        if clock.samples.policy == ClockPolicy::Presentation {
+            return Err(Error::Configuration);
+        }
         clock.samples.ready(Instant::now())?;
         if clock.samples.policy == ClockPolicy::Strict && clock.mismatch.is_some() {
             return Err(Error::Clock);
@@ -561,6 +607,12 @@ pub struct Transcoder {
     first_sequence: u64,
     sequence: Option<u64>,
     pending_pts: VecDeque<i64>,
+    pending_arrivals: VecDeque<Instant>,
+    next_decoder_sample: i64,
+    recovery: Option<Recovery>,
+    presentation: Option<PresentationClock>,
+    startup: Startup,
+    presentation_armed: bool,
     stats: Stats,
     finished: bool,
     _thread_bound: PhantomData<Rc<()>>,
@@ -598,7 +650,36 @@ impl Transcoder {
         pool: &Pool,
         cancellation: Cancellation,
     ) -> Result<Self, Error> {
-        if !config.valid() || !policy.valid() {
+        Self::new_timed(first, config, policy, None, pool, cancellation)
+    }
+    pub fn new_presented(
+        first: &Delivery,
+        config: Config,
+        clock: PresentationClock,
+        pool: &Pool,
+        cancellation: Cancellation,
+    ) -> Result<Self, Error> {
+        Self::new_timed(
+            first,
+            config,
+            ClockPolicy::Presentation,
+            Some(clock),
+            pool,
+            cancellation,
+        )
+    }
+    fn new_timed(
+        first: &Delivery,
+        config: Config,
+        policy: ClockPolicy,
+        presentation: Option<PresentationClock>,
+        pool: &Pool,
+        cancellation: Cancellation,
+    ) -> Result<Self, Error> {
+        if !config.valid()
+            || !policy.valid()
+            || (policy == ClockPolicy::Presentation) != presentation.is_some()
+        {
             return Err(Error::Configuration);
         }
         let permits = vec![
@@ -611,11 +692,11 @@ impl Transcoder {
                 .try_acquire_many_owned(RESERVATION as u32)
                 .map_err(|_| Error::Limit)?,
         ];
-        if first.timing()? != crate::source::Timing::Source {
+        if (first.timing()? == crate::source::Timing::Presentation) != presentation.is_some() {
             return Err(Error::Configuration);
         }
         let packet = first.packet()?;
-        if policy != ClockPolicy::Strict
+        if matches!(policy, ClockPolicy::AnchoredSamples { .. })
             && (packet.sender_report().is_none()
                 || packet.producer_reference().is_none_or(|r| r.flags != 24))
         {
@@ -631,7 +712,8 @@ impl Transcoder {
         {
             return Err(Error::Configuration);
         }
-        if policy != ClockPolicy::Strict && parameters.sample_rate != 48000 {
+        if matches!(policy, ClockPolicy::AnchoredSamples { .. }) && parameters.sample_rate != 48000
+        {
             return Err(Error::Configuration);
         }
         let input_layout = Layout::copy(&parameters.ch_layout)?;
@@ -650,9 +732,16 @@ impl Transcoder {
             "AAC parameters",
         )?;
         unsafe {
-            (*decoder.0).pkt_timebase = av::AVRational {
-                num: stream.time_base.numerator,
-                den: stream.time_base.denominator,
+            (*decoder.0).pkt_timebase = if presentation.is_some() {
+                av::AVRational {
+                    num: 1,
+                    den: parameters.sample_rate,
+                }
+            } else {
+                av::AVRational {
+                    num: stream.time_base.numerator,
+                    den: stream.time_base.denominator,
+                }
             };
             (*decoder.0).thread_count = 1;
         }
@@ -708,6 +797,7 @@ impl Transcoder {
             cancellation,
             failure: Mutex::new(None),
             clock: Mutex::new(Clock {
+                presentation_origin: None,
                 first_pts: None,
                 previous_end: None,
                 mismatch: None,
@@ -740,17 +830,33 @@ impl Transcoder {
             fifo,
             job,
             stream: stream.index,
-            input_clock: stream.time_base,
+            input_clock: if presentation.is_some() {
+                TimeBase {
+                    numerator: 1,
+                    denominator: parameters.sample_rate,
+                }
+            } else {
+                stream.time_base
+            },
             input_rate: parameters.sample_rate as u32,
             input_layout,
             next_encoder_sample: 0,
             first_sequence: packet.sequence(),
             sequence: None,
             pending_pts: VecDeque::new(),
+            pending_arrivals: VecDeque::new(),
+            next_decoder_sample: 0,
+            recovery: presentation.map(|_| Recovery::new(packet.received_at())),
+            presentation,
+            startup: Startup::new(packet.received_at()),
+            presentation_armed: false,
             stats: Stats::default(),
             finished: false,
             _thread_bound: PhantomData,
         })
+    }
+    pub fn recovery_status(&self) -> Option<RecoveryStatus> {
+        self.recovery.as_ref().map(Recovery::status)
     }
     pub fn clock_status(&self) -> ClockStatus {
         self.job
@@ -789,19 +895,26 @@ impl Transcoder {
         if self.pending_pts.len() >= 8 {
             return Err(Error::Limit);
         }
-        if self
-            .job
-            .clock
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .samples
-            .policy
-            != ClockPolicy::Strict
+        if self.recovery.is_none()
+            && matches!(
+                self.job
+                    .clock
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .samples
+                    .policy,
+                ClockPolicy::AnchoredSamples { .. }
+            )
             && packet.producer_reference().is_none_or(|r| r.flags != 24)
         {
             return Err(Error::Clock);
         }
-        let pts = packet.pts().ok_or(Error::Clock)?;
+        let pts = if self.recovery.is_some() {
+            self.next_decoder_sample
+        } else {
+            packet.pts().ok_or(Error::Clock)?
+        };
+        self.pending_arrivals.push_back(packet.received_at());
         self.pending_pts.push_back(pts);
         self.sequence = Some(packet.sequence());
         self.stats.input_packets += 1;
@@ -817,10 +930,32 @@ impl Transcoder {
             }
             self.stats.last_sender_report = Some(sr);
         }
-        native(
-            unsafe { av::avcodec_send_packet(self.decoder.0, packet.as_ptr()) },
-            "send AAC",
-        )?;
+        if self.recovery.is_some() {
+            // A private decoder copy, never a rewrite of the shared source packet.
+            let copy = Packet::new()?;
+            native(
+                unsafe { av::av_packet_ref(copy.0, packet.as_ptr()) },
+                "copy AAC",
+            )?;
+            unsafe {
+                (*copy.0).pts = pts;
+                (*copy.0).dts = pts;
+                (*copy.0).duration = 1024;
+            }
+            self.next_decoder_sample = self
+                .next_decoder_sample
+                .checked_add(1024)
+                .ok_or(Error::Limit)?;
+            native(
+                unsafe { av::avcodec_send_packet(self.decoder.0, copy.0) },
+                "send AAC",
+            )?;
+        } else {
+            native(
+                unsafe { av::avcodec_send_packet(self.decoder.0, packet.as_ptr()) },
+                "send AAC",
+            )?;
+        }
         let mut output = Vec::new();
         self.decode(&mut output, false)?;
         Ok(output)
@@ -853,6 +988,32 @@ impl Transcoder {
                 || self.pending_pts.pop_front() != Some(f.pts)
             {
                 return Err(Error::Configuration);
+            }
+            let arrived = self.pending_arrivals.pop_front().ok_or(Error::Order)?;
+            if self.recovery.is_some() && f.nb_samples != 1024 {
+                return Err(Error::Configuration);
+            }
+            self.stats.decoded_samples += f.nb_samples as u64;
+            if self.recovery.is_some() && !self.presentation_armed {
+                // Decode probe backlog/one AAC history packet before choosing the
+                // single live anchor. Never change that anchor after output starts.
+                if !self
+                    .startup
+                    .admit(arrived, self.input_rate, f.nb_samples as u32)?
+                {
+                    self.stats.preroll_samples += f.nb_samples as u64;
+                    continue;
+                }
+                self.presentation_armed = true;
+                self.recovery = Some(Recovery::new(arrived));
+                self.job
+                    .clock
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .presentation_origin = Some(
+                    i64::try_from(self.presentation.ok_or(Error::Clock)?.ticks(arrived, 48000))
+                        .map_err(|_| Error::Clock)?,
+                );
             }
             let sample_pts = rescale(
                 f.pts as i128,
@@ -894,7 +1055,6 @@ impl Transcoder {
                         .ok_or(Error::Clock)?,
                 );
             }
-            self.stats.decoded_samples += f.nb_samples as u64;
             if self.resampler.is_null() {
                 native(
                     unsafe {
@@ -915,6 +1075,20 @@ impl Transcoder {
                 native(
                     unsafe { av::swr_init(self.resampler) },
                     "initialize resampler",
+                )?;
+            }
+            if let Some(recovery) = &mut self.recovery {
+                let rate = self.job.config.rate;
+                let delayed = unsafe { av::swr_get_delay(self.resampler, rate as i64) };
+                if delayed < 0 {
+                    return Err(Error::Clock);
+                }
+                let projected = (self.stats.resampled_samples as i128 + delayed as i128)
+                    * (48000 / rate) as i128;
+                let delta = recovery.step(arrived, projected, rate)?;
+                native(
+                    unsafe { av::swr_set_compensation(self.resampler, delta, rate as i32) },
+                    "audio clock compensation",
                 )?;
             }
             self.convert(f.extended_data.cast(), f.nb_samples)?;
@@ -989,7 +1163,7 @@ impl Transcoder {
                 return Err(Error::Incomplete);
             }
             // Deliberately private codec sample ordinal. Never a source PTS or an
-            // async resampling policy; source timing is independently checked above.
+            // policy. Presentation explicitly installs bounded compensation below.
             unsafe {
                 (*frame.0).pts = self.next_encoder_sample;
             }
@@ -1064,6 +1238,9 @@ impl Transcoder {
     }
     fn finish_inner(&mut self) -> Result<Vec<OpusPacket>, Error> {
         self.job.check()?;
+        if self.recovery.is_some() {
+            return Err(Error::Configuration);
+        }
         if self.finished {
             return Err(Error::Closed);
         }
@@ -1115,6 +1292,7 @@ mod presentation_tests {
         let mut samples = SampleClock::new(ClockPolicy::candidate(), Instant::now());
         samples.status.decoded_samples = decoded;
         Clock {
+            presentation_origin: None,
             first_pts: Some(-16),
             previous_end: None,
             mismatch: None,

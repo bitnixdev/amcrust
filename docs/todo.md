@@ -138,12 +138,17 @@ the production integration below. Removing probes is not the acquisition cutover
 
 ## 3. Wire consumers and remove direct camera readers
 
-- [ ] `src/main.rs`: finish shared service injection for audio/recording. Live video now
-  receives source handles, not URLs; only its acquisition owner receives credentials.
-  The legacy audio/recording callers still need migration.
+- [ ] `src/main.rs`: finish shared service injection for recording. Live video/audio
+  receive source handles, not URLs; their acquisition owners receive credentials.
+  The legacy recording caller still needs migration.
 - [ ] `src/stream.rs`: remove direct RTSP opens for video and audio. Feed encoded H.264
   into Rust RTP packetization with the negotiated MTU/payload type and fresh per-viewer
   transport state. Keep existing `src/srtp.rs` encryption/control integration working.
+  - [x] Replace the live audio FFmpeg command/relay with a joined Rust worker consuming
+    the shared main source. Give both tracks a common session clock; generate audio
+    RTP/RTCP in Rust and remove the legacy timestamp rescaler/report extractor.
+    Real 60-second A/V and all twelve negotiated audio formats decoded successfully.
+    This does not complete Apple playback, pooling or outage recovery acceptance.
   - [x] Replace the production video FFmpeg reader/RTP command and local video relay
     with a shared-source Rust producer. Own presentation timestamps, SR scheduling,
     feedback and cancellation; protect pending startup and release ended-owner resources.
@@ -176,8 +181,8 @@ the production integration below. Removing probes is not the acquisition cutover
       current host-NTP/RTP pairs; schedule reports in Rust using the negotiated minimum
       interval. Preserve original camera timestamps and first clock contradictions.
       Reject reordered B slices, corruption and mismatched negotiated dimensions.
-    - [ ] Replace the audio adapter, qualify common A/V presentation and recovery,
-      then verify Home app playback. Read-time video timestamps alone do not establish
+    - [ ] Qualify common A/V presentation and recovery, then verify Home app playback.
+      The audio adapter has been replaced. Read-time video timestamps alone do not establish
       burst handling, physical synchronization or audio priming.
 - [ ] Live audio: use shared AAC input; own FFmpeg-library decode/Opus encode in Rust.
   Pool only compatible negotiated settings and isolate encoder/subscriber failures.
@@ -246,7 +251,8 @@ the production integration below. Removing probes is not the acquisition cutover
       - [ ] Resolve sustained drift/clock recovery: the candidate independently hit
         4816 samples/100⅓ ms at 97.36 s. Do not increase its phase budget or reanchor
         to conceal this. The user has now selected recovered presentation timing;
-        implement and qualify it before production use.
+        a separate bounded presentation resampler is now wired into production;
+        sustained Apple playback and unattended outage recovery remain unqualified.
     - [x] Extend the candidate to 8/16/24/48-kHz output and 20/40/60-ms frames.
       Keep all timing/trims in the 48-kHz decoder domain; explicitly trim only a
       sub-encoder-sample finite excess. Undercoverage is refused, not padded or
@@ -257,9 +263,8 @@ the production integration below. Removing probes is not the acquisition cutover
       packets; do not hide initial clipping, noise or end padding by dropping them.
   - [ ] Share processing only for matching source generation and negotiated settings;
     the current audio pool bounds jobs, but does not yet deduplicate encoders.
-    Connect audio RTP/RTCP/SRTP and production lifecycle/metrics. New Opus timing is
-    already in 48-kHz units: do not apply the legacy FFmpeg proxy's rate rescaling
-    again when replacing that reader/transport path.
+    Audio RTP/RTCP/SRTP and joined production lifecycle are connected. The removed
+    legacy rescaler is not applied: all Opus RTP timing uses 48-kHz units.
 - [ ] `src/hsv/recording.rs` / `src/hsv/fmp4.rs`: remove the recording camera reader;
   consume generation-bound shared packets, mux through FFmpeg bindings and preserve
   correct initialization, prebuffer, actual-IDR start, historical/live order and cuts.

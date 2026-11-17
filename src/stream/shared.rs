@@ -1,5 +1,6 @@
 //! Shared-reader live video. No child producer, local RTP relay, or camera URL.
 use super::*;
+mod audio;
 use amcrust::{
     media::{
         presentation::PresentationClock,
@@ -7,6 +8,7 @@ use amcrust::{
     },
     source::{Source, SubscriptionLimits, Tracks},
 };
+pub(super) use audio::{Audio, spawn as spawn_audio};
 use std::sync::Mutex as SyncMutex;
 use std::time::Duration;
 
@@ -40,6 +42,7 @@ mod tests {
         let metrics = Metrics::new();
         let proxy = spawn(
             Video {
+                clock: PresentationClock::new(),
                 source: source.clone(),
                 profile: VideoProfile::LIVE_1080P,
                 socket,
@@ -57,6 +60,32 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        let audio_pool = amcrust::media::audio::Pool::new(1, 2 * 1024 * 1024).unwrap();
+        let audio_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let audio_address = audio_socket.local_addr().unwrap();
+        let audio = spawn_audio(
+            Audio {
+                clock: PresentationClock::new(),
+                source: source.clone(),
+                socket: audio_socket,
+                peer: "127.0.0.1:9".parse().unwrap(),
+                key: vec![8; 30],
+                ssrc: 43,
+                identity: [0; 16],
+                mtu: 1200,
+                payload: 110,
+                interval: Duration::from_secs(1),
+                config: Default::default(),
+                pool: audio_pool.clone(),
+            },
+            metrics.clone(),
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::timeout(Duration::from_secs(1), audio.stop())
+            .await
+            .unwrap();
+        let _audio_released = tokio::net::UdpSocket::bind(audio_address).await.unwrap();
+        assert_eq!(audio_pool.reserved_bytes(), 0);
         tokio::time::timeout(Duration::from_secs(1), proxy.stop())
             .await
             .unwrap();
@@ -106,6 +135,7 @@ mod tests {
         let a = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let b = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let make = |socket, peer, ssrc| Video {
+            clock: PresentationClock::new(),
             source: source.clone(),
             profile: VideoProfile::LIVE_1080P,
             socket,
@@ -228,46 +258,31 @@ mod tests {
 }
 
 #[derive(Clone)]
-pub(super) enum Control {
-    Ready(Arc<Transport>),
-    Pending(Arc<Pending>),
-}
-pub(super) struct Pending {
+pub(super) struct Control(Arc<Pending>);
+struct Pending {
     state: SyncMutex<(bool, Option<Arc<Transport>>)>,
     closed: tokio::sync::watch::Sender<bool>,
 }
 impl Control {
     fn pending() -> Self {
-        Self::Pending(Arc::new(Pending {
+        Self(Arc::new(Pending {
             state: SyncMutex::new((false, None)),
             closed: tokio::sync::watch::channel(false).0,
         }))
     }
     pub(super) fn revoke(&self) {
-        match self {
-            Self::Ready(transport) => transport.revoke(),
-            Self::Pending(pending) => {
-                let mut state = pending.state.lock().unwrap();
-                state.0 = true;
-                if let Some(transport) = state.1.take() {
-                    // Ended HAP entries must not pin retired source descriptors or sockets.
-                    transport.revoke();
-                }
-                pending.closed.send_replace(true);
-            }
+        let mut state = self.0.state.lock().unwrap();
+        state.0 = true;
+        if let Some(transport) = state.1.take() {
+            transport.revoke();
         }
+        self.0.closed.send_replace(true);
     }
     pub(super) fn is_closed(&self) -> bool {
-        match self {
-            Self::Ready(t) => t.is_closed(),
-            Self::Pending(p) => *p.closed.borrow(),
-        }
+        *self.0.closed.borrow()
     }
     fn install(&self, transport: Arc<Transport>) -> Result<(), TransportError> {
-        let Self::Pending(pending) = self else {
-            return Err(TransportError::Closed);
-        };
-        let mut state = pending.state.lock().unwrap();
+        let mut state = self.0.state.lock().unwrap();
         if state.0 || state.1.is_some() {
             transport.revoke();
             return Err(TransportError::Closed);
@@ -276,25 +291,11 @@ impl Control {
         Ok(())
     }
     async fn cancelled(&self) {
-        let Self::Pending(pending) = self else {
-            return std::future::pending().await;
-        };
-        let mut closed = pending.closed.subscribe();
+        let mut closed = self.0.closed.subscribe();
         if *closed.borrow() {
             return;
         }
         let _ = closed.changed().await;
-    }
-    #[cfg(test)]
-    pub(super) async fn send_rtp(
-        &self,
-        packet: &[u8],
-        current: impl Fn() -> bool,
-    ) -> Result<(), TransportError> {
-        match self {
-            Self::Ready(t) => t.send_rtp(packet, current).await,
-            Self::Pending(_) => Err(TransportError::Closed),
-        }
     }
 }
 struct Finish(Control);
@@ -305,6 +306,7 @@ impl Drop for Finish {
 }
 
 pub(super) struct Video {
+    pub clock: PresentationClock,
     pub source: Source,
     pub profile: VideoProfile,
     pub socket: tokio::net::UdpSocket,
@@ -339,16 +341,13 @@ pub(super) fn spawn(video: Video, metrics: Arc<Metrics>) -> MediaProxy {
     });
     MediaProxy {
         transport: control,
-        metrics,
         task: Some(task),
-        #[cfg(test)]
-        producer_id: None,
     }
 }
 type Failure = Box<dyn std::error::Error + Send + Sync>;
 async fn run(video: Video, control: &Control, metrics: &Metrics) -> Result<(), Failure> {
     let started = std::time::Instant::now();
-    let clock = PresentationClock::new();
+    let clock = video.clock;
     let mut subscription = video
         .source
         .subscribe(Tracks::Video, SubscriptionLimits::default())
