@@ -57,6 +57,7 @@ pub struct HsvState {
     path: PathBuf,
     configuration_lock: Mutex<()>,
     recorder_lock: Mutex<()>,
+    camera_lock: Mutex<()>,
     stopped: AtomicBool,
     capabilities: EncoderCapabilities,
 }
@@ -117,6 +118,7 @@ impl HsvState {
             path,
             configuration_lock: Mutex::new(()),
             recorder_lock: Mutex::new(()),
+            camera_lock: Mutex::new(()),
             stopped: AtomicBool::new(false),
             capabilities,
         })
@@ -310,8 +312,30 @@ impl HsvState {
     }
 
     /// Starts or stops the recording pipeline according to the current state.
+    /// Serialize camera mode changes across live acquisition and recording.
+    /// A successful return means both source retirement and recorder joins completed.
+    pub async fn set_camera_active(
+        self: &Arc<Self>,
+        streams: &crate::stream::StreamManager,
+        active: bool,
+    ) -> Result<(), amcrust::source::Terminal> {
+        let _guard = self.camera_lock.lock().await;
+        if self.stopped.load(Ordering::SeqCst) {
+            return Err(amcrust::source::Terminal::Shutdown);
+        }
+        self.homekit_active.store(active, Ordering::SeqCst);
+        let result = streams.set_enabled(active).await;
+        if result.is_err() {
+            self.homekit_active.store(false, Ordering::SeqCst);
+        }
+        self.sync_recorder().await;
+        self.persist().await;
+        result
+    }
+
     pub async fn shutdown(&self) {
         self.stopped.store(true, Ordering::SeqCst);
+        let _camera = self.camera_lock.lock().await;
         let _guard = self.recorder_lock.lock().await;
         self.recorder.stop().await;
     }

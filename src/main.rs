@@ -309,6 +309,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         local_ip,
         metrics.clone(),
     );
+    // Apply persisted privacy before exposing any media consumer or HAP endpoint.
+    streams
+        .set_enabled(hsv_state.homekit_active.load(Ordering::SeqCst))
+        .await?;
     let hds = HdsServer::new(
         args.name.clone(),
         args.hds_port,
@@ -396,7 +400,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 metrics.snapshot_request();
                 let periodic_ok = hsv.periodic_snapshots.load(Ordering::SeqCst);
                 let event_ok = hsv.event_snapshots.load(Ordering::SeqCst);
-                let allowed = match reason {
+                let allowed = hsv.homekit_active.load(Ordering::SeqCst) && match reason {
                     Some(0) => periodic_ok,
                     Some(1) => event_ok,
                     _ => periodic_ok && event_ok,
@@ -414,6 +418,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return Ok(hap::pointer::SnapshotResult::HapStatus(status));
                 }
                 let result = snapshots.get_scaled(width, height).await;
+                // Recheck camera-off after asynchronous fetching. Snapshot-cache
+                // epochs and final HTTP socket fencing remain separate work.
+                if !hsv.homekit_active.load(Ordering::SeqCst) {
+                    return Ok(hap::pointer::SnapshotResult::HapStatus(-70412));
+                }
                 match &result {
                     Ok(image) => {
                         metrics.snapshot_success();

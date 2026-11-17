@@ -32,18 +32,20 @@ milestone or add another parallel plan/proof document.
   completed within their recorded scope; their useful findings are consolidated.
 - [x] A native reader sampled the authorized real camera. This was not a Rust-only
   bridge run, decoded-view acceptance or a production cutover.
-- [ ] Rust-only shared acquisition is implemented and connected to production.
+- [x] Rust-owned shared acquisition is connected to live video/audio and recording;
+  no legacy media-reader fallback remains.
 - [x] All project-owned C required for the application is replaced; obsolete C is removed.
 - [ ] Real-device live/audio/HSV, privacy, recovery and resource acceptance pass.
 
-**Current priority:** implement the user-selected recovered presentation clock and
-connect production consumers. Preserve camera clocks as diagnostics, not trusted
-long-term playback authority. Unattended recovery across outages/reboots is required;
-repeating strict candidate qualification is not a production cutover prerequisite.
+**Current priority:** operational acceptance and remaining configuration/privacy,
+recovery and resource work. Production uses recovered presentation timing and shared
+acquisition; camera clocks remain diagnostics, not trusted playback authority.
+Unattended recovery across outages/reboots remains required. Do not restart completed
+reader cutovers or strict candidate qualification as prerequisites.
 
-## 1. Replace the C-based draft with Rust (start here)
+## 1. Replace the C-based draft with Rust
 
-- [ ] Choose and pin Rust bindings compatible with the FFmpeg libraries in Nix. Check
+- [x] Choose and pin Rust bindings compatible with the FFmpeg libraries in Nix. Check
   public packet side-data/RTCP metadata, codec parameters, time bases, read interruption,
   muxing and AAC/Opus APIs against the real camera. Use audited Rust FFI where needed;
   no custom C shim, private FFmpeg structs or new relay dependency.
@@ -56,10 +58,10 @@ repeating strict candidate qualification is not a production cutover prerequisit
   - [x] Characterize real sender-report cadence and public packet clock metadata in
     the Rust source owner. Two read-only 60-/20-second generation pairs exposed
     report-boundary AAC jumps, variable duration debt and SR/PRFT provenance (Evidence).
-  - [ ] Settle the observed clock contradictions and recording presentation policy.
-    AAC duration debt reached 30–73 ms at the sampled window ends; report-derived
-    PRFT is not an independent capture clock. Codec success and a common-looking
-    epoch do not establish a usable continuous transport/presentation clock.
+  - [x] Select and implement recovered live/recording presentation, retaining original
+    clock contradictions as evidence rather than silently repairing them. SR/PRFT is
+    not an independent capture clock. Sustained/Apple presentation acceptance is in
+    section 4; choosing this policy does not resolve physical capture timing.
 - [x] Replace the unfinished `src/ingest.rs` worker/IPC implementation with Rust-owned
   library acquisition. Reuse sound contracts, not its standalone-C process assumptions.
 - [x] Define owned packet/configuration/error types, reference lifetimes, thread-safety
@@ -67,15 +69,15 @@ repeating strict candidate qualification is not a production cutover prerequisit
   credential-bearing URLs in native-library diagnostics as well as Rust logs.
   The blocking reader is thread-bound; immutable packet/configuration owners cross
   threads. Deadlines and sticky cancellation interrupt library I/O; Drop closes it.
-  `src/source/` now adds joined supervision and bounded subscriptions. Production
-  injection and copied-output/transport privacy are still section 2/3 work.
+  `src/source/` supplies joined supervision and bounded subscriptions. Production
+  injection and final RTP/HDS write fencing are connected (sections 2/3).
 - [x] Complete every applicable row below; update Cargo/Nix and remove stale entrypoints.
 
 | Project C / related scaffolding | Required Rust replacement or removal |
 |---|---|
-| `native/ingest.c` | **Removed.** `src/ingest.rs` owns libavformat open/read/interrupt/close, codec metadata and packet/side-data lifetimes; no production consumer is connected yet |
+| `native/ingest.c` | **Removed.** `src/ingest.rs` owns libavformat open/read/interrupt/close, codec metadata and packet/side-data lifetimes; all production media consumers are connected |
 | `probes/ingest_worker.c` | **Removed.** Retired the experimental fixture exporter; acquisition lives in the Rust library |
-| `native/output.c` | **Unused C draft removed.** `src/media/rtp.rs` packetizes H.264; `src/media/fmp4.rs` owns finite packet-copy mux jobs. Production transport/recording integration remains |
+| `native/output.c` | **Unused C draft removed.** `src/media/rtp.rs` packetizes H.264; `src/media/fmp4.rs` owns finite packet-copy mux jobs. Production RTP/HDS integration is connected |
 | `probes/mux_worker.c` | **Removed.** Rust muxing copies public codec parameters directly and owns packets/AVIO cleanup; the experimental sink and launchers are retired |
 | `probes/packet_wire.h` | **Removed.** Typed Rust packets replace worker IPC; retained numeric JSON evidence does not need an AMC2 parser |
 | `nix/packages/native-media.nix` | **Removed.** Application package and dev shell now supply FFmpeg libraries, pkg-config and bindgen dependencies |
@@ -86,18 +88,18 @@ repeating strict candidate qualification is not a production cutover prerequisit
 no project-owned `.c`/`.h` is needed to build or run amcrust. Removing obsolete
 probe-only code is preferable to porting an unused IPC architecture just to keep it.
 This does not require rewriting FFmpeg itself. The project-owned C/scaffolding cleanup
-is complete; the direct FFmpeg camera readers and unresolved media policies still need
-the production integration below. Removing probes is not the acquisition cutover.
+and production media-reader replacement are complete. The retained diagnostics and
+upstream FFmpeg libraries are not legacy acquisition fallbacks.
 
 ## 2. Make shared acquisition the production owner
 
-- [ ] Registry: one acquisition per active camera encoder, shared by all consumers
+- [x] Registry: one acquisition per active camera encoder, shared by all consumers
   needing it. Main audio/video/recording share one main source; Sub Stream 2 is separate.
   - [x] Implement the encoder-keyed Rust registry and non-secret source handles.
     Real library consumers shared one main RTSP socket; adding Sub Stream 2 used two.
   - [x] Inject encoder-keyed sources into production live video; remove video URLs
     from downstream `VideoSource` handles and join the registry at application shutdown.
-  - [ ] Connect live audio and recording to the same owners (section 3).
+  - [x] Connect live audio and recording to the same owners (section 3).
 - [ ] Supervisor: startup/read deadlines, bounded retry/backoff, generation reset,
   parameter changes, idle stop, cancellation and deterministic resource cleanup.
   - [x] Own one blocking reader job per active source; revoke before interrupt/join;
@@ -128,7 +130,7 @@ the production integration below. Removing probes is not the acquisition cutover
     correction is imposed. A bounded first-failure record now distinguishes metadata
     refusal from missing/non-increasing media timestamps and survives retirement.
     Common A/V timing and priming acceptance remain open.
-- [ ] Fanout: current-IDR/SPS/PPS admission, independent bounded subscriptions, charged
+- [x] Fanout: current-IDR/SPS/PPS admission, independent bounded subscriptions, charged
   outstanding deliveries, residence limits and first-cause terminal notification.
   - [x] Implement Annex-B single-SPS/PPS slice-reference admission, no GOP replay,
     packet/count/byte/per-track-span limits including handed-out deliveries, residence
@@ -315,8 +317,18 @@ the production integration below. Removing probes is not the acquisition cutover
     incomplete coverage; mark HDS end only after local mux finish. Clean duration/size
     cuts are wired, but automatic Apple continuation is unqualified. Accepted TCP/AVIO
     bytes still do not acknowledge a stored recording.
-- [ ] `src/accessory.rs`: complete whole-camera privacy/configuration transitions
-  across live sessions as well as recording.
+- [ ] `src/accessory.rs`: complete privacy/configuration behavior across all media.
+  - [x] Wire HomeKit Camera Active to live admission, all registered encoder sources
+    and recording. Camera-off discards prepared sessions, revokes and joins live/HSV;
+    enable needs fresh demand/session setup. Apply persisted privacy before HAP startup.
+    Two real off/on cycles authenticated live A/V and refused retained recording output.
+  - [x] Retain live owner join handles across cancelled teardown and permanently close
+    admission on shutdown; remove the old remove/drain-before-await ownership pattern.
+  - [ ] Fence snapshot-cache epochs and final HTTP writes, including off/on overlap;
+    current request checks are not final-write permission. Qualify per-stream Active
+    behavior and other Home camera modes separately.
+  - [ ] Retire affected shared sources before encoder changes and refresh live profile
+    selection; recording-only reconciliation is not complete configuration ownership.
   - [x] Join recording disable/configuration replacement and preserve live subscribers;
     simultaneous production live A/V survived recording stop in the 60-second check.
     Recording output-rate changes no longer reconfigure acquisition audio.
@@ -384,7 +396,8 @@ not the physical camera: coordinate any existing instance controlling that encod
   dependencies, without project C workers or system-wide tool installation.
   - [x] Check in `.envrc` so direnv loads the pinned native build dependencies; ignore
     its local cache and document approval plus hook-free Cargo commands.
-- [ ] README accurately describes the implemented pipeline and operating requirements.
+- [x] README describes the implemented shared pipeline, retained FFmpeg uses and
+  separate outstanding deployment/acceptance requirements.
   Remove obsolete research entrypoints when no longer useful; retain compact findings
   and raw numeric artifacts only where they still explain a decision.
 

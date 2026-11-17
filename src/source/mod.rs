@@ -199,8 +199,8 @@ impl Source {
             })?;
         answer.await.map_err(|_| Terminal::Shutdown)?
     }
-    /// Existing subscriptions are retired, never silently re-enabled. This does
-    /// not yet revoke copies in the legacy HomeKit transport/recording paths.
+    /// Existing subscriptions are retired, never silently re-enabled. Production
+    /// RTP and recording write guards carry this retirement to their final syscall.
     pub async fn set_enabled(&self, enabled: bool) -> Result<(), Terminal> {
         let (reply, answer) = oneshot::channel();
         self.tx

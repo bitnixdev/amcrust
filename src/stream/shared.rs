@@ -279,7 +279,7 @@ struct Pending {
     closed: tokio::sync::watch::Sender<bool>,
 }
 impl Control {
-    fn pending() -> Self {
+    pub(super) fn pending() -> Self {
         Self(Arc::new(Pending {
             state: SyncMutex::new((false, None)),
             closed: tokio::sync::watch::channel(false).0,

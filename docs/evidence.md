@@ -28,6 +28,42 @@ as application library code and is wired into `src/main.rs` for live video/audio
 MediaMTX was investigated but not added or launched. Apple HSV acceptance, full live
 privacy transitions and unattended recovery remain separate requirements.
 
+### Camera-off integration and retained live join ownership
+
+HomeKit Camera Active now gates setup/start, clears prepared sessions and disables all
+of this application's encoder sources, then joins live and recording work before
+acknowledgment. Startup applies persisted privacy before HAP exposure. Re-enable permits
+new demand/setup only; shutdown permanently refuses it. The old live teardown's
+remove/drain-before-await pattern is gone: maps retain join handles across cancelled
+waits. Snapshot request checks now honor camera-off, but are not final HTTP write fences.
+
+The user confirmed north-driveway was idle for one serial, read-only check. No encoder
+settings were changed and no recordings retained. The **17.26-s** check ran two cycles:
+- Generation **1**: **179 authenticated video /25 audio RTP**, then a **751,341-byte**
+  recording fragment. Camera-off joined the source/live/recording owners and refused
+  that retained fragment's write permission.
+- Generation **2**, after fresh enable/setup: **100 video /79 audio RTP**, then a
+  **682,369-byte** recording fragment with the same retirement outcome.
+- Each cycle used one acquisition, left no active source, released the Opus pool, and
+  reached zero source charges after retained fragment/clip permissions were dropped.
+  The test authenticates RTP; it does not decode or establish Apple playback.
+
+Local tests cover two encoder owners with stalled acquisition, simultaneous live A/V
+startup plus recording, prepared-session rejection, persisted mode, old-session replay,
+fresh acquisition after re-enable, permanent shutdown admission and cancelled join
+ownership. Already accepted kernel bytes remain unretractable. A cancelled mode change
+is not an acknowledged completion; callers may repeat reconciliation.
+
+Validation passed: **49 library +58 application tests**, focused recovery/phase-trend
+checks, all-target compilation, strict library Clippy, formatting, two sampler tests
+and the pinned Nix package. The bounded review returned no findings. The existing
+metrics `fetch_update` deprecation warning is unchanged.
+
+Snapshot-cache epochs/final HTTP writes (especially off/on overlap), per-stream Active,
+encoder-change source retirement/profile refresh, Apple camera-mode/HSV behavior and
+unattended recovery remain open. These results do not complete whole-camera privacy
+or a deployed Home acceptance run.
+
 ### Shared recording cutover and removal of the last media reader
 
 The user explicitly confirmed the camera was idle for serial, read-only checks.

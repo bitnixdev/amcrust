@@ -348,6 +348,26 @@ lock before acknowledging changes. Whole-camera live privacy transitions, automa
 controller outage recovery, allocator-wide accounting, and Apple recording acceptance
 remain separate open work.
 
+## Camera-mode lifetime
+
+HomeKit Camera Active now reconciles live admission, all encoder sources and recording
+under serialized mode ownership. Off revokes live controls and clears prepared sessions,
+disables source owners (invalidating escaped recording/RTP grants), then joins live and
+recording work before acknowledging. On allows fresh demand/setup; no old session or
+grant is revived. Startup applies persisted privacy before exposing HAP consumers.
+Shutdown permanently closes live admission, including against concurrent enable calls.
+
+Live teardown retains owners in their maps and awaits borrowed join handles. Cancelling
+a wait therefore leaves the join owned for a later teardown, rather than detaching it
+via remove/drain-before-await. An interrupted mode change is not an acknowledged
+completion; it can be reconciled again. Recording-only disable remains independent.
+
+This is the RTSP/live/recording boundary, not complete camera-wide privacy acceptance.
+Snapshot handlers check Camera Active before and after fetching, but snapshot cache
+epochs, off/on overlap and the HAP server's final HTTP write still need fencing.
+Per-stream Active behavior, encoder-change retirement/profile updates, real Home mode
+transitions and long outage/reboot recovery remain open.
+
 ## Implemented secure transport boundary
 
 `media::transport::Transport` is now the **only production live SRTP/SRTCP socket-write

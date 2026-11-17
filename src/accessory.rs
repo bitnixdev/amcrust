@@ -192,7 +192,7 @@ impl CameraAccessory {
         motion_vehicle.inner_mut().status_tampered = None;
         motion_vehicle.active.set_value(json!(1u8)).await?;
 
-        let operating_mode = build_operating_mode(id, hsv).await?;
+        let operating_mode = build_operating_mode(id, hsv, streams).await?;
         let recording_management = build_recording_management(id, hsv).await?;
         let data_stream = build_data_stream(id, hds, secret_slot).await?;
         let microphone = if streams.audio_enabled() {
@@ -279,7 +279,11 @@ async fn build_stream_management(
     Ok(svc)
 }
 
-async fn build_operating_mode(id: u64, hsv: &Arc<HsvState>) -> Result<CameraOperatingModeService> {
+async fn build_operating_mode(
+    id: u64,
+    hsv: &Arc<HsvState>,
+    streams: &StreamManager,
+) -> Result<CameraOperatingModeService> {
     let mut svc = CameraOperatingModeService::new(IID_OPERATING_MODE, id);
 
     svc.event_snapshots_active
@@ -298,13 +302,13 @@ async fn build_operating_mode(id: u64, hsv: &Arc<HsvState>) -> Result<CameraOper
         .set_value(json!(hsv.homekit_active.load(Ordering::SeqCst)))
         .await?;
     let hsv_ = hsv.clone();
+    let streams_ = streams.clone();
     svc.homekit_camera_active
         .on_update_async(Some(move |_: bool, new: bool| {
             let hsv = hsv_.clone();
+            let streams = streams_.clone();
             async move {
-                hsv.homekit_active.store(new, Ordering::SeqCst);
-                hsv.sync_recorder().await;
-                hsv.persist().await;
+                hsv.set_camera_active(&streams, new).await?;
                 Ok(())
             }
             .boxed()

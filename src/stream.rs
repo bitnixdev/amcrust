@@ -13,6 +13,8 @@ use crate::tlv8;
 use amcrust::media::rtcp;
 use amcrust::media::transport::{Error as TransportError, Transport};
 
+#[cfg(test)]
+mod privacy_tests;
 mod shared;
 
 struct MediaProxy {
@@ -20,17 +22,23 @@ struct MediaProxy {
     task: Option<tokio::task::JoinHandle<()>>,
 }
 impl MediaProxy {
-    async fn stop(mut self) {
+    async fn join(&mut self) {
         self.transport.revoke();
-        if let Some(task) = self.task.take() {
+        if let Some(task) = self.task.as_mut() {
             let _ = task.await;
         }
+        self.task = None;
+    }
+
+    #[cfg(test)]
+    async fn stop(mut self) {
+        self.join().await;
     }
 }
 impl Drop for MediaProxy {
     fn drop(&mut self) {
         // Wake media and its supervisor. Aborting the supervisor would lose the
-        // explicit wait/reap; Drop signals, stop() additionally joins.
+        // explicit join; Drop signals, owned teardown additionally joins.
         self.transport.revoke();
     }
 }
@@ -107,6 +115,8 @@ struct Session {
 
 #[derive(Default)]
 struct Inner {
+    disabled: bool,
+    shutdown: bool,
     /// Prepared sessions and running streams, keyed by HAP session id.
     sessions: std::collections::HashMap<Vec<u8>, Session>,
     video_proxies: std::collections::HashMap<Vec<u8>, MediaProxy>,
@@ -118,6 +128,22 @@ struct Inner {
 }
 
 impl Inner {
+    // Keep owners in the maps across awaits: cancellation must not detach a join.
+    async fn stop(&mut self, session: Option<&[u8]>) {
+        self.revoke_transports(session);
+        for (id, owner) in self.audio_proxies.iter_mut().chain(&mut self.video_proxies) {
+            if session.is_none_or(|session| session == id.as_slice()) {
+                owner.join().await;
+            }
+        }
+        self.audio_proxies
+            .retain(|id, _| session.is_some_and(|session| session != id.as_slice()));
+        self.video_proxies
+            .retain(|id, _| session.is_some_and(|session| session != id.as_slice()));
+        self.sessions
+            .retain(|id, _| session.is_some_and(|session| session != id.as_slice()));
+    }
+
     fn revoke_transports(&self, session: Option<&[u8]>) {
         for (id, proxy) in self.video_proxies.iter().chain(&self.audio_proxies) {
             if session.is_none_or(|session| session == id.as_slice()) {
@@ -200,6 +226,15 @@ impl StreamManager {
             return;
         };
 
+        // Serialize admission, socket reservation and publication with privacy.
+        let mut inner = self.inner.lock().await;
+        if inner.disabled || inner.shutdown {
+            inner.setup_response = tlv8::Writer::new()
+                .bytes(SETUP_SESSION_ID, &session_id)
+                .u8(SETUP_STATUS, 2)
+                .build();
+            return;
+        }
         let addr_items = tlv8::find(&items, SETUP_ADDRESS)
             .map(|v| tlv8::parse(v))
             .unwrap_or_default();
@@ -296,7 +331,6 @@ impl StreamManager {
             .u32(SETUP_AUDIO_SSRC, session.audio_ssrc)
             .build();
 
-        let mut inner = self.inner.lock().await;
         inner.sessions.insert(session_id, session);
         inner.setup_response = response;
     }
@@ -311,10 +345,19 @@ impl StreamManager {
         }
     }
 
-    /// StreamingStatus TLV: always report available — we serve one stream per
-    /// controller session concurrently.
+    /// Report unavailable while privacy or shutdown closes admission.
     pub async fn streaming_status(&self) -> Vec<u8> {
-        tlv8::Writer::new().u8(0x01, 0).build()
+        let inner = self.inner.lock().await;
+        tlv8::Writer::new()
+            .u8(
+                0x01,
+                if inner.disabled || inner.shutdown {
+                    2
+                } else {
+                    0
+                },
+            )
+            .build()
     }
 
     /// Handles a controller write to SelectedRTPStreamConfiguration.
@@ -439,6 +482,9 @@ impl StreamManager {
         }
         let mut inner = self.inner.lock().await;
 
+        if inner.disabled || inner.shutdown {
+            return;
+        }
         let session = match &session_id {
             Some(sid) => inner.sessions.remove(sid),
             // No session id in the request: only unambiguous with one session.
@@ -453,15 +499,8 @@ impl StreamManager {
             return;
         };
 
-        // Fence both tracks before the first awaited cleanup.
-        inner.revoke_transports(Some(&session.id));
-        // Tear down any previous stream for this session first.
-        if let Some(proxy) = inner.audio_proxies.remove(&session.id) {
-            proxy.stop().await;
-        }
-        if let Some(proxy) = inner.video_proxies.remove(&session.id) {
-            proxy.stop().await;
-        }
+        // Fence both tracks and retain their joins before replacing the session.
+        inner.stop(Some(&session.id)).await;
         debug!(
             "selected live audio: Opus mono {}Hz, {}ms packets, payload {}, max {}kbps, RTCP {:.3}s",
             audio_rate_hz,
@@ -545,34 +584,66 @@ impl StreamManager {
     /// Ends the stream for one session (or all, if no id was given).
     async fn end_session(&self, session_id: Option<Vec<u8>>) {
         let mut inner = self.inner.lock().await;
-        inner.revoke_transports(session_id.as_deref());
-        match session_id {
-            Some(sid) => {
-                if let Some(proxy) = inner.audio_proxies.remove(&sid) {
-                    proxy.stop().await;
-                }
-                if let Some(proxy) = inner.video_proxies.remove(&sid) {
-                    proxy.stop().await;
-                }
-                inner.sessions.remove(&sid);
-            }
-            None => {
-                for (_, proxy) in inner.audio_proxies.drain() {
-                    proxy.stop().await;
-                }
-                for (_, proxy) in inner.video_proxies.drain() {
-                    proxy.stop().await;
-                }
-                inner.sessions.clear();
-            }
-        }
+        inner.stop(session_id.as_deref()).await;
     }
 
-    /// Stops all streams; used on shutdown.
-    pub async fn stop_stream(&self) {
-        self.end_session(None).await;
+    /// Camera-wide RTSP privacy. Sources retire recording as well as live grants.
+    /// Re-enable permits fresh demand only; old sessions/keys are never revived.
+    pub async fn set_enabled(&self, enabled: bool) -> Result<(), amcrust::source::Terminal> {
         let mut inner = self.inner.lock().await;
+        if enabled && inner.shutdown {
+            return Err(amcrust::source::Terminal::Shutdown);
+        }
+        if enabled && !inner.disabled {
+            return Ok(());
+        }
+        self.reconcile_enabled(&mut inner, enabled).await
+    }
+
+    async fn reconcile_enabled(
+        &self,
+        inner: &mut Inner,
+        enabled: bool,
+    ) -> Result<(), amcrust::source::Terminal> {
+        inner.disabled = true;
+        inner.revoke_transports(None);
+        inner.sessions.clear();
         inner.setup_response.clear();
+        let mut failure = None;
+        for source in self
+            .video_sources
+            .iter()
+            .map(|v| &v.source)
+            .chain(std::iter::once(&self.audio_source))
+        {
+            if let Err(error) = source.set_enabled(enabled).await {
+                failure = Some(error);
+            }
+        }
+        if enabled && failure.is_some() {
+            // Fail closed if only part of the source set could be enabled.
+            for source in self
+                .video_sources
+                .iter()
+                .map(|v| &v.source)
+                .chain(std::iter::once(&self.audio_source))
+            {
+                let _ = source.set_enabled(false).await;
+            }
+        }
+        inner.stop(None).await;
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        inner.disabled = !enabled;
+        Ok(())
+    }
+
+    /// Permanently close admission before joining shutdown work.
+    pub async fn stop_stream(&self) {
+        let mut inner = self.inner.lock().await;
+        inner.shutdown = true;
+        let _ = self.reconcile_enabled(&mut inner, false).await;
     }
 }
 
@@ -741,14 +812,14 @@ pub fn supported_rtp_config() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn registry() -> amcrust::source::Registry {
+    pub(super) fn registry() -> amcrust::source::Registry {
         amcrust::source::Registry::new(amcrust::source::Limits {
             timing: amcrust::source::Timing::Presentation,
             ..Default::default()
         })
         .unwrap()
     }
-    fn register(
+    pub(super) fn register(
         registry: &mut amcrust::source::Registry,
         camera: u64,
         url: String,
