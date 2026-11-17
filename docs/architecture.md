@@ -12,17 +12,19 @@ completed work and its limitations are in [Evidence](evidence.md). The
 
 | Area | Current state | Destination |
 |---|---|---|
-| Camera acquisition | Live video/audio share Rust libavformat readers by encoder; recording still opens its own FFmpeg reader | One Rust-owned libavformat acquisition per active encoder |
+| Camera acquisition | Live video, audio and recording share Rust libavformat readers by encoder | One Rust-owned libavformat acquisition per active encoder |
 | Live video | Shared Rust H.264 packetization, host-monotonic presentation and Rust-scheduled SRTP/SRTCP; no video child process or local video relay | Shared encoded H.264, Rust per-viewer packetization and existing encryption/control integration |
 | Live audio | Shared AAC acquisition, joined Rust AAC/resample/Opus workers and independent transports | Rust-owned FFmpeg-library audio processing shared where negotiated settings match |
-| Recording | Persistent FFmpeg reader/mux, Rust fMP4 prebuffer and HDS delivery | Shared packet subscriptions, Rust-owned mux/lifetimes, existing HomeKit/HDS integration |
+| Recording | Shared packet history, recovered AAC, joined clip-local Rust mux and source-fenced HDS | Shared packet subscriptions, Rust-owned mux/lifetimes, existing HomeKit/HDS integration |
 | Experiments | Retained numeric findings; obsolete C/Python fixture harness removed | Behavioral evidence to carry forward, not a second production implementation |
-| Rust acquisition boundary | `src/main.rs` creates the registry and injects source handles into live video/audio; joined supervisors and bounded subscriptions own libavformat | Connect recording to those same encoder owners |
+| Rust acquisition boundary | `src/main.rs` injects the same main source into live video/audio and HSV; joined supervisors and bounded subscriptions own libavformat | Qualify sustained operation and integrate aggregate metrics |
 
-**Production live video/audio have switched; recording cutover is unfinished.**
-Real checks exercise this application path, but are not deployment or Apple acceptance.
-The project-owned C workers/probe packaging and both per-viewer FFmpeg commands
-are removed. No selectable legacy live fallback remains.
+**All production media paths have switched to shared Rust ownership.**
+Real checks exercise this wiring, but are not deployment or HSV Apple acceptance.
+The user confirmed Home live playback and that the audio wire-clock correction fixed
+its gaps. C workers, per-viewer FFmpeg commands, the recording reader/mux command,
+relays and timestamp filters are removed. No selectable legacy media fallback remains.
+JPEG snapshot scaling still uses an executable, not a second RTSP acquisition.
 
 ## Intended data flow
 
@@ -37,7 +39,7 @@ One amcrust instance per camera
               ├─ Live video → independent RTP/RTCP → SRTP/SRTCP per viewer
               ├─ Live audio → compatible shared AAC→Opus processing
               │                → independent RTP/RTCP/SRTP per viewer
-              └─ Recording → bounded prebuffer/history → clip-local cut
+              └─ Recording → recovered AAC + encoded video history → clip-local cut
                               → libavformat fMP4 → owned HDS output job
 ```
 
@@ -56,7 +58,8 @@ viewer, recording session or requested output format.
   access to private FFmpeg structs. `ffmpeg-sys-next` is pinned to 9.1.1 against
   Nix FFmpeg 9.0.2. `src/ingest.rs` contains the acquisition FFI ownership boundary;
   `src/media/fmp4.rs` owns the finite mux boundary and `src/media/audio.rs` owns
-  codec/resampler state. Production recording mux integration remains to be implemented.
+  codec/resampler state. `media::recording` normalizes recording media without opening
+  a reader; `hsv::fmp4` owns history, clip admission and joined application workers.
 - Blocking I/O belongs off the async executor, with interruptible reads, deadlines and
   explicit shutdown/join. If process isolation proves necessary, use a Rust worker
   with owned lifetime; do not reinstate the standalone C-worker architecture.
@@ -75,7 +78,7 @@ The user selected **stable playback with an explicit recovered presentation cloc
 not source-derived capture-time fidelity. Cameras are underpowered, untrusted long-term
 clock sources; production must recover unattended across months of operation, camera
 reboots, network outages and other failures. This is the implementation direction,
-not a claim that unattended in-session recovery or full recording presentation is implemented.
+not a claim that unattended in-session recovery or Apple recording presentation is qualified.
 Production video now uses host-monotonic packet-read times; that initial presentation
 model still needs sustained, network-burst and paired-client A/V qualification.
 
@@ -262,48 +265,88 @@ last packet or camera NTP. All AUs are passed through without timestamp clamping
 frame dropping; this does not guarantee jitter smoothing or physical lip sync.
 
 `media::fmp4::Muxer` uses public FFmpeg parameter-copy, packet-reference and custom AVIO
-APIs for finite H.264/AAC or video-only output. Its first input must be the source-issued
-IDR used to create it. A single exact video-PTS origin shifts every track; unrepresentable
-shifts/rescales are refused. No guessed clocks or independent track zeroing are added.
-FFmpeg derives MP4 sample durations from DTS where the camera's declared durations
-conflict; the real check records this difference, not a presentation acceptance claim.
-Covering AAC history, decoder preroll, actual clip cuts and tail policy remain unresolved.
+APIs for finite H.264/AAC or video-only output. Its first video input must be the
+source-issued IDR used to create it. The strict diagnostic constructor retains exact
+source-PTS translation and its historical sample-duration discrepancy evidence.
+Production uses `new_presented`, normalized video stamps and recovered AAC from the
+same actual subscription, not merely an equal generation number. Encoder parameters
+are copied from the AAC encoder and cannot be mixed with another codec job. The
+video IDR is the common origin; converting that origin to the AAC sample grid rounds
+down by less than one sample. Tracks are never independently zeroed.
 
 Mux state is thread-bound and should run on a blocking media worker. A shared pool
 reserves finite input/output and chunk allowances before admission. Copied chunks keep
 the job reservation and source grant, rechecking cancellation, lifetime and generation
 before access. Abandonment is not finish; explicit finish is only local mux completion.
-These checks cannot retract already borrowed/copied bytes and do not yet fence HDS
-writes. Reservations are logical ownership bounds, not FFmpeg allocator/RSS measurements.
+`WriteGuard` carries source/subscription, cancellation, job failure and lifetime
+permission into HDS's final syscall gates. Already accepted kernel bytes cannot be
+retracted. Reservations are logical ownership bounds, not FFmpeg allocator/RSS measurements.
 
-## Recording delivery ownership during cutover
+## Production shared recording
 
-The remaining native recorder has a serialized, joined owner rather than detached parser
-and stderr tasks. Replacing/stopping it revokes its output epoch before awaiting native
-termination/reaping and the fixed-buffer diagnostic drain. Final recorder-handle drop
-signals cancellation; it does not pretend to acknowledge an asynchronous join. Probe
-diagnostics are bounded and do not return credential-bearing native stderr.
+The recorder receives the main `Source`, never an RTSP URL. One joined blocking
+processor consumes an AudioVideo subscription (Video when recording audio is off).
+Video stays encoded. Before video admission, a counted, at-most-15-second warmup uses
+the lower arrival envelope and declared frame cadence; a later actual IDR chooses the
+sole anchor after at least one second. Thereafter the same bounded recovery controller
+used by audio adjusts video durations, at ±5000 ppm, without losing/repeating an AU or
+reanchoring. This assumes the configured encoded cadence; large cadence changes,
+reordered pictures and unsupported phase/gaps fail the epoch rather than guessing.
 
-Init segments and fragments carry that epoch through snapshot/broadcast delivery. HDS
-writes hold both recording and stream gates only across nonblocking TCP writes; encryption,
-copies, readiness waits and producer work run outside them. Revoke wakes pending writes.
-Every frame has a five-second write deadline; an interrupted frame poisons its connection
-to prevent appending another frame to a partial ciphertext. Already accepted kernel bytes
-cannot be revoked. Control frames are separately scoped, not media permission.
+A single continuous AAC worker per recording epoch reuses the Rust decoder/resampler
+core and emits mono 32/48-kHz AAC-LC, with private encoder ordinals in a common host
+presentation domain. This is lossy re-encoding, not AAC packet-copy. Original camera
+packets and timing diagnostics are unchanged. Its planar-float output, AAC parameters
+and 1024-sample units are distinct from Opus wire semantics. The production camera
+configuration keeps acquisition AAC at 48 kHz; changing recording output rate alone
+does not reconfigure the source or interrupt live audio.
 
-The recorder bounds boxes/fragments at 16 MiB, initialization at 1 MiB, and retained
-prebuffer at 32 MiB/eight fragments. The live broadcast retains four fragments; this is
-not a complete source/history/mux reservation ledger. Snapshot plus subscription and
-fragment publication are serialized to avoid a duplicated historical/live boundary.
-HDS bounds prepared sessions at sixteen and connections at eight, joins active delivery
-on close/error, and joins connection tasks on server shutdown. The recording busy slot
-belongs to the delivery owner, never an unjoined predecessor's close callback.
+History owns charged video deliveries and bounded encoded-AAC outputs. Snapshot and
+live subscription are atomic with publication. A clip chooses the latest actual IDR
+at or before the requested prebuffer start, so the window may extend backward by a
+GOP. AAC starts at least two complete AUs before that IDR. Each clip gets new
+initialization and relative timing, not a reused persistent-mux init. Negative AAC
+preroll and MP4 front edits remain explicit; decoder-state/physical onset equivalence
+on Apple devices is not inferred from successful FFmpeg decoding.
 
-Configuration/flag reconciliation reads desired state after obtaining ownership; a stale
-callback cannot restart recording after a disable acknowledgement. Recording camera-active
-writes now await reconciliation. These gates still represent a legacy recorder epoch:
-Rust shared-source/mux binding, history/cut policy, whole-camera live privacy and Apple
-recording acceptance remain open.
+Finishing freezes the video selection and waits up to two seconds for covering AAC.
+The last whole AAC AU may extend past video by at most one AU plus the sub-sample
+origin quantization; there is no silence insertion, partial-AU trim or fabricated
+video hold. Already overextended audio, lost input, missing coverage or mux failure
+refuses completion. HDS retains one fragment and labels it final only after explicit
+successful mux completion. Streams request a clean cut after the eight-second
+post-motion tail, 60 seconds of delivery, or 48 MiB of selected input. Subsequent
+controller requests select overlapping history. Automatic Apple continuation is
+unqualified; an accessory-generated EndSent is not an iCloud acknowledgment.
+
+Bounds are separate and concrete:
+- History: 12 seconds, 12 MiB and 1536 entries; the source subscription also caps
+  1024 charged packets, 12 MiB, and 20-second residence/span. Fresh processing and
+  history admission are checked separately from retained-history residence.
+- AAC: one 12-MiB logical job reservation, at most 1024 eight-KiB output packets,
+  and 16-second output residence. This does not measure native RSS.
+- Mux: one admitted clip with a 140-MiB logical pool; 64 MiB each of finite input
+  and output, 16384 packets/chunks, and a 120-second hard lifetime. Clean cuts aim
+  to finish before those hard refusal limits.
+- Live history broadcast: 128 frames; clip output: two messages with two-second
+  input/output-pressure deadlines. MP4 boxes/fragments cap at 16 MiB, init at 1 MiB.
+- HDS retains its sixteen prepared-session/eight-connection bounds and five-second
+  frame-write deadline. Partial ciphertext poisons the connection.
+
+Configuration, recording epoch, source/mux and stream gates compose at the final
+nonblocking HDS write. Encryption, copying and readiness waits stay outside them.
+Source retirement also invalidates retained init/media bytes. Stop revokes first,
+then joins the history processor and all admitted mux workers. Join handles remain
+owned if an awaiting stop is cancelled. Drop only signals cancellation. The recording
+busy slot belongs to the delivery owner, not stale ACK/close callbacks.
+
+After failure, the history supervisor clears the failed epoch and retries fresh
+subscriptions with a bounded 1..30-second backoff. It never revives old output grants;
+fresh history and a new controller stream are required. Recording disable leaves live
+subscriptions valid. Reconciliation reads current desired state under its ownership
+lock before acknowledging changes. Whole-camera live privacy transitions, automatic
+controller outage recovery, allocator-wide accounting, and Apple recording acceptance
+remain separate open work.
 
 ## Implemented secure transport boundary
 
@@ -346,16 +389,16 @@ Already copied plaintext cannot bypass the fence, even with a stale `true` predi
 Both Rust live owners now use this binding. Its pending-start control fences stop
 before subscription/first IDR, refuses late transport installation, joins cancellation
 and releases retired transport/source references even while an ended HAP entry remains.
-The unbound constructor remains a library/test facility, not a production live path;
-recording-copy privacy is still separate integration work.
-Aggregate source/output accounting and recording-copy fences remain TODO.
+The unbound constructor remains a library/test facility, not a production live path.
+Recording uses its own source-bound mux/write guard and composed HDS leases.
+Allocator-wide accounting and whole-camera privacy transitions remain TODO.
 
 Real-source H.264 from two Rust viewers decrypts/decodes through independent FFmpeg SRTP
 receivers. This is not Home app acceptance. Production video no longer uses the FFmpeg
 executable or its RTP/report clock. Live audio has also replaced that adapter with
 Rust-owned codec workers and presentation/report timing.
 Authenticated receiver feedback is now consumed in Rust, not sent back to FFmpeg.
-Receiver priming/playback qualification and recording integration remain required.
+Receiver priming, sustained playback and Apple recording qualification remain required.
 
 ### Rust-owned receiver feedback and live lifetime
 
@@ -406,8 +449,8 @@ already does this in one task.
 Both live producers now own host presentation-to-NTP pairing, report scheduling and
 source retirement fencing. The native report extractor and timestamp rescaler are
 removed. Each session gives both tracks the same monotonic clock and CNAME, with
-independent RTP origins and crypto state. Recording and actual common A/V playback
-qualification remain open. Keyframe/retransmission requests are observed, not fulfilled.
+independent RTP origins and crypto state. Apple recording and measured common A/V
+playback qualification remain open. Keyframe/retransmission requests are observed, not fulfilled.
 A report formatter is not a clock policy or an audio preroll/trim contract. Neither
 this API nor the accepted-write counters establishes Apple playback or common A/V
 capture-clock accuracy.

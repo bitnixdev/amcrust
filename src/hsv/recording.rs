@@ -1,5 +1,6 @@
 //! HSV recording state: supported/selected recording configuration TLVs,
-//! persistence, and camera encoder adjustment so recordings are stream-copied.
+//! persistence and shared-source recording configuration. Video stays encoded;
+//! recording audio uses bounded recovered resampling and AAC encoding.
 
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
@@ -68,6 +69,7 @@ impl HsvState {
         motion_active: Arc<AtomicBool>,
         metrics: Arc<Metrics>,
         capabilities: EncoderCapabilities,
+        source: amcrust::source::Source,
     ) -> Arc<Self> {
         let path = PathBuf::from(data_dir).join("hsv.json");
         let persisted: PersistedState = std::fs::read(&path)
@@ -93,11 +95,12 @@ impl HsvState {
                     .and_then(|raw| parse_selected(&raw))
             })
             .filter(|selected| {
-                capabilities.recording_attributes().contains(&(
-                    selected.width,
-                    selected.height,
-                    selected.fps,
-                ))
+                supported_selection(selected)
+                    && capabilities.recording_attributes().contains(&(
+                        selected.width,
+                        selected.height,
+                        selected.fps,
+                    ))
             });
 
         Arc::new(Self {
@@ -108,7 +111,7 @@ impl HsvState {
             periodic_snapshots: AtomicBool::new(persisted.periodic_snapshots),
             homekit_active: AtomicBool::new(persisted.homekit_active),
             selected: Mutex::new(selected),
-            recorder: Recorder::new(metrics),
+            recorder: Recorder::new(source, metrics),
             motion_active,
             camera,
             path,
@@ -172,11 +175,13 @@ impl HsvState {
             warn!("could not parse selected recording configuration");
             return;
         };
-        if !self.capabilities.recording_attributes().contains(&(
-            config.width,
-            config.height,
-            config.fps,
-        )) {
+        if !supported_selection(&config)
+            || !self.capabilities.recording_attributes().contains(&(
+                config.width,
+                config.height,
+                config.fps,
+            ))
+        {
             warn!(
                 "rejecting unsupported recording configuration {}x{}@{}",
                 config.width, config.height, config.fps
@@ -206,7 +211,7 @@ impl HsvState {
 
         let recorder_guard = self.recorder_lock.lock().await;
         // The camera may reset its RTSP encoder when these settings change.
-        // Stop ffmpeg first, then restart it against the configured stream.
+        // Revoke and join recording first; never rebind a clip to new settings.
         self.recorder.stop().await;
         if current
             .as_ref()
@@ -246,7 +251,8 @@ impl HsvState {
     }
 
     /// Adjusts the camera's main-stream encoder to exactly match the selected
-    /// recording configuration, so ffmpeg can stream-copy.
+    /// video configuration. Keep acquisition AAC at 48 kHz; the Rust recording
+    /// encoder owns the independently negotiated 32/48-kHz output rate.
     async fn apply_camera_settings(&self, config: &SelectedConfig) {
         let gop = config.fps as u32 * config.iframe_interval_ms / 1000;
         let video_bitrate_kbps = self
@@ -256,14 +262,7 @@ impl HsvState {
             .map_or(config.video_bitrate_kbps, |max| {
                 config.video_bitrate_kbps.min(max)
             });
-        let audio_hz: u32 = match config.audio_sample_rate {
-            0 => 8000,
-            1 => 16000,
-            2 => 24000,
-            3 => 32000,
-            4 => 44100,
-            _ => 48000,
-        };
+        let audio_hz = 48000;
         match self
             .camera
             .ensure_recording_encoder(
@@ -337,7 +336,9 @@ impl HsvState {
                 };
                 self.recorder
                     .start(RecorderConfig {
-                        rtsp_url: self.camera.rtsp_url(0),
+                        width: config.width,
+                        height: config.height,
+                        audio_bitrate: config.audio_bitrate_kbps.saturating_mul(1000),
                         audio: self.audio_active.load(Ordering::SeqCst),
                         fps: config.fps,
                         audio_sample_rate_hz,
@@ -365,13 +366,21 @@ impl HsvState {
     }
 }
 
+fn supported_selection(config: &SelectedConfig) -> bool {
+    config.prebuffer_ms <= PREBUFFER_MS
+        && (1..=FRAGMENT_MS).contains(&config.fragment_ms)
+        && (1..=FRAGMENT_MS).contains(&config.iframe_interval_ms)
+        && u32::from(config.fps) * config.iframe_interval_ms >= 1000
+        && config.audio_channels == 1
+        && matches!(config.audio_sample_rate, 3 | 5)
+        && (16..=192).contains(&config.audio_bitrate_kbps)
+}
 fn same_encoder_settings(left: &SelectedConfig, right: &SelectedConfig) -> bool {
     left.width == right.width
         && left.height == right.height
         && left.fps == right.fps
         && left.video_bitrate_kbps == right.video_bitrate_kbps
         && left.iframe_interval_ms == right.iframe_interval_ms
-        && left.audio_sample_rate == right.audio_sample_rate
 }
 
 // --- Supported configuration TLVs ---
@@ -429,7 +438,7 @@ pub fn supported_video_recording_config(attributes: &[(u16, u16, u8)]) -> Vec<u8
 }
 
 pub fn supported_audio_recording_config() -> Vec<u8> {
-    // AAC-LC mono; the camera can be set to 32 or 48 kHz.
+    // AAC-LC mono; Rust emits either rate from the shared 48-kHz acquisition.
     let params = tlv8::Writer::new()
         .u8(0x01, 1) // channels
         .u8(0x02, 0) // variable bitrate
@@ -556,6 +565,16 @@ mod tests {
         assert_eq!(parsed.iframe_interval_ms, 4000);
         assert_eq!(parsed.audio_sample_rate, 5);
         assert_eq!(parsed.audio_bitrate_kbps, 96);
+        assert!(!supported_selection(&parsed)); // Parsed is not the same as admitted.
+        let mut supported = parsed.clone();
+        supported.prebuffer_ms = PREBUFFER_MS;
+        assert!(supported_selection(&supported));
+        let mut changed = supported.clone();
+        changed.audio_sample_rate = 3;
+        assert!(supported_selection(&changed));
+        assert!(same_encoder_settings(&supported, &changed)); // Output-only change.
+        changed.audio_channels = 2;
+        assert!(!supported_selection(&changed));
     }
 
     #[test]

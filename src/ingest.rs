@@ -127,6 +127,15 @@ impl Drop for CodecParameters {
     }
 }
 impl CodecParameters {
+    /// Copies an encoder's public parameters; the context must remain valid for
+    /// this synchronous call. The returned owner has no encoder-thread affinity.
+    pub(crate) unsafe fn from_encoder(context: *const av::AVCodecContext) -> Option<Self> {
+        let parameters = Self(NonNull::new(unsafe { av::avcodec_parameters_alloc() })?);
+        if unsafe { av::avcodec_parameters_from_context(parameters.0.as_ptr(), context) } < 0 {
+            return None;
+        }
+        Some(parameters)
+    }
     // Only audited Rust FFI consumers may borrow this; never hand it to an API
     // that mutates/frees the source parameters. Use avcodec_parameters_copy.
     pub(crate) fn as_ptr(&self) -> *const av::AVCodecParameters {

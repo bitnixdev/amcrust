@@ -113,17 +113,17 @@ the production integration below. Removing probes is not the acquisition cutover
   - [x] Implement Annex-B single-SPS/PPS slice-reference admission, no GOP replay,
     packet/count/byte/per-track-span limits including handed-out deliveries, residence
     expiry and first-cause terminal wakeups. Real slow/expired consumers failed locally.
-  - [ ] Integrate with transports and recording history; verify decoded-view behavior.
-    AudioVideo admission alone does not provide covering AAC history for recording.
+  - [x] Integrate transports and recording history with real decoded-output checks.
+    AudioVideo admission alone is not history: a separate bounded recording owner
+    now supplies IDR selection and recovered-AAC preroll for clip-local mux jobs.
 - [ ] Configuration/privacy: apply changes through the owner, retire affected generations
   before reopening, revoke cached/pinned/copied output, and stop transport work promptly.
   - [x] Retire source grants and clear queued deliveries before awaited cleanup;
     held deliveries reject access while retaining charges until dropped. Main source
     replacement left Sub Stream 2 running in the real check.
-  - [ ] Fence actual transport writes and recording copies; borrowed/escaped data
-    cannot be retracted by this cooperative library layer. Session-owned live UDP
-    writes now have a revoke-before-join fence. Production source binding and
-    recording-copy fences remain open.
+  - [x] Fence actual live transport and copied HDS writes with source/subscription
+    retirement plus session/configuration/job gates. Already kernel-accepted bytes
+    cannot be retracted. Real fMP4/HDS checks refuse retained output after source disable.
   - [x] Bind library transports to source-generation and subscription retirement gates.
     Real authenticated RTP exercised local cancellation, independent video, source
     disable, copied-RTP/RTCP refusal and fresh-generation isolation. Predicate/syscall
@@ -133,15 +133,17 @@ the production integration below. Removing probes is not the acquisition cutover
   - [x] Bound registry entries, subscriber slots, handoff/descriptor/delivery byte
     charges per source and registry; expose typed source snapshots and aggregate bytes.
     Charges are conservative logical ownership accounting, not allocator/RSS limits.
-  - [ ] Connect Prometheus metrics and recording-job/copy/history budgets; evaluate
-    aggregate pressure and matched real production workloads.
+  - [x] Bound recording history, AAC jobs/outputs, clip jobs, selected input, emitted
+    bytes and HDS queues; retain charges with escaped output permissions.
+  - [ ] Connect complete Prometheus source/job accounting and evaluate aggregate
+    pressure, actual native RSS and matched real production workloads.
 
 ## 3. Wire consumers and remove direct camera readers
 
-- [ ] `src/main.rs`: finish shared service injection for recording. Live video/audio
-  receive source handles, not URLs; their acquisition owners receive credentials.
-  The legacy recording caller still needs migration.
-- [ ] `src/stream.rs`: remove direct RTSP opens for video and audio. Feed encoded H.264
+- [x] `src/main.rs`: inject the same main source into live video/audio and recording.
+  Consumer configuration contains no camera URL. A 60-second production A/V plus
+  recording check used one acquisition and preserved live owners after recording stop.
+- [x] `src/stream.rs`: remove direct RTSP opens for video and audio. Feed encoded H.264
   into Rust RTP packetization with the negotiated MTU/payload type and fresh per-viewer
   transport state. Keep existing `src/srtp.rs` encryption/control integration working.
   - [x] Replace the live audio FFmpeg command/relay with a joined Rust worker consuming
@@ -157,8 +159,9 @@ the production integration below. Removing probes is not the acquisition cutover
   - [x] Implement per-viewer single-NAL/FU-A packetization with independent sequence,
     clock origin, SSRC/payload/MTU configuration, current in-band SPS/PPS and AU marker.
     Two real-source plaintext RTP receivers decoded at 400-/1200-byte packet limits.
-  - [ ] Connect session transport, RTCP and SRTP/SRTCP; reserve authentication overhead
-    from the negotiated MTU and verify Home app playback.
+  - [x] Connect session transport, RTCP and SRTP/SRTCP; reserve authentication overhead
+    from the negotiated MTU. The user confirmed Home playback and corrected audio;
+    measured synchronization and unattended recovery remain acceptance work below.
     - [x] Route existing production video/audio adapters through the shared Rust
       secure UDP transport; remove their inline encryption/socket-write path. Bound
       protected datagrams, reserve SRTP overhead, authenticate/replay-check feedback
@@ -266,14 +269,17 @@ the production integration below. Removing probes is not the acquisition cutover
     Audio RTP/RTCP/SRTP and joined production lifecycle are connected. The removed
     legacy rescaler is not restored. Internal timing stays in 48-kHz units; the
     HomeKit boundary now maps RTP and RTCP together to the negotiated rate.
-- [ ] `src/hsv/recording.rs` / `src/hsv/fmp4.rs`: remove the recording camera reader;
+- [x] `src/hsv/recording.rs` / `src/hsv/fmp4.rs`: remove the recording camera reader;
   consume generation-bound shared packets, mux through FFmpeg bindings and preserve
   correct initialization, prebuffer, actual-IDR start, historical/live order and cuts.
   - [x] Implement a thread-bound finite Rust libavformat muxer, full parameter/side-data
     copying, deterministic stream selection and exact common-origin translation.
-  - [ ] Add covering AAC/history selection and production fragment/prebuffer/HDS wiring.
-    Current mux input is an admitted live suffix, not a completed recording-cut policy.
-- [ ] Recording output: keep ownership through muxing and HDS delivery, including
+  - [x] Add bounded shared history and clip-local initialization, IDR start, at least
+    two AAC preroll AUs, atomic snapshot/live handoff and covered whole-AU tail selection.
+    Recording AAC is continuously recovered/re-encoded, not original AAC packet-copy.
+    Two successive clips each at 32 kHz, 48 kHz and video-only decoded with continuous
+    durations and covering tails; this is not Apple priming/seek acceptance.
+- [x] Recording output: keep ownership through muxing and HDS delivery, including
   pending writes, timeout, cancellation, repeated cancellation and temporary storage.
   Separate accepted bytes, local finish/end-write and confirmed user-visible recording.
   - [x] Bound finite mux input/output bytes, packets, chunks, lifetime and aggregate
@@ -284,18 +290,26 @@ the production integration below. Removing probes is not the acquisition cutover
     recording producers, diagnostic drains, delivery tasks and HDS server shutdown;
     serialize reconciliation and await recording disable before acknowledging it.
     Real fMP4 bytes exercised HDS authentication and retained-fragment refusal.
-  - [ ] Bind that boundary to Rust source/mux/history grants and complete recording
-    history/cuts. The current recorder epoch still owns a legacy reader, not a Rust
-    source subscription. Accepted TCP/AVIO bytes do not acknowledge a recording.
-- [ ] `src/accessory.rs`: connect HomeKit privacy/configuration transitions to source,
-  session and output ownership; ensure disabling recording alone does not break live view.
-- [ ] `apply-settings --write`: exercise the replacement production recording path,
-  not an old direct-reader diagnostic that gives misleading acceptance results.
-- [ ] Remove obsolete commands, structures, worker selection and build/runtime deps.
-  No feature flag, fallback, duplicate implementation or per-consumer direct RTSP reader.
+  - [x] Bind HDS permissions to Rust source/mux/history grants. Revoke before joining
+    history and clip workers; retain join ownership across cancelled waits. Refuse
+    incomplete coverage; mark HDS end only after local mux finish. Clean duration/size
+    cuts are wired, but automatic Apple continuation is unqualified. Accepted TCP/AVIO
+    bytes still do not acknowledge a stored recording.
+- [ ] `src/accessory.rs`: complete whole-camera privacy/configuration transitions
+  across live sessions as well as recording.
+  - [x] Join recording disable/configuration replacement and preserve live subscribers;
+    simultaneous production live A/V survived recording stop in the 60-second check.
+    Recording output-rate changes no longer reconfigure acquisition audio.
+- [x] Route `apply-settings --write`'s probe through the production shared-source
+  history/recovered-AAC/mux path. The mutation-bearing CLI was not run in this increment;
+  validation remained serial/read-only against the authorized camera.
+- [x] Remove obsolete media commands, children, timestamp filters and their native
+  lifecycle-test executable dependency. No selectable legacy media fallback or
+  per-consumer RTSP reader remains. JPEG snapshot scaling still needs the executable.
 
 **Exit:** one coherent production path covers live video, live audio and recording.
-Do not mark this done just because an isolated Rust reader can obtain packets.
+The production wiring/removal exit is met. Deployment, Apple HSV acceptance, full
+privacy and sustained recovery/resource qualification remain separate requirements.
 
 ## 4. Run and evaluate the real replacement (alongside integration)
 
@@ -318,8 +332,8 @@ not the physical camera: coordinate any existing instance controlling that encod
     seconds advance approximately correctly, but audio is silent roughly 3/5 of the time.
   - [x] Correct HomeKit audio RTP/RTCP clock units without changing canonical PCM timing;
     test all negotiated-rate/packet-time combinations, offsets, wrap and sender reports.
-  - [ ] Have the user listen again after deploying the clock correction. Do not mark
-    intermittent audio resolved from raw decode/count tests alone.
+  - [x] Obtain post-fix listening confirmation: the user said “that fixed the audio.”
+    This is real Home audio feedback, not measured physical lip sync or a long soak.
 - [ ] Ask the user to trigger/evaluate HSV: pre-event content, clip beginning/end,
   audio, playback/seek, successive events and an actual recording appearing in Home.
 - [ ] Settle start/end presentation with those devices. Characterize the remaining
@@ -341,6 +355,9 @@ not the physical camera: coordinate any existing instance controlling that encod
 
 - [ ] Aggregate limits and overlapping/duration-driven recording cuts behave correctly
   under real load, not merely within one bounded diagnostic job.
+  - [x] Decode two successive clips from each shared recording epoch at 32/48 kHz and
+    video-only; observe one acquisition and zero released-output charges.
+  - [ ] Qualify automatic controller continuation and high-pressure size/duration cuts.
 - [ ] Required camera clock/codec representations are supported or explicitly refused
   with useful diagnostics; no unsupported case receives guessed timing/admission.
 - [ ] Nix package/service and the documented Cargo workflow provide the Rust library

@@ -1,4 +1,21 @@
 use super::*;
+fn recording_source(url: String) -> (amcrust::source::Registry, amcrust::source::Source) {
+    let mut registry = amcrust::source::Registry::new(amcrust::source::Limits {
+        timing: amcrust::source::Timing::Presentation,
+        ..Default::default()
+    })
+    .unwrap();
+    let source = registry
+        .register(
+            amcrust::source::SourceKey {
+                camera: 1,
+                encoder: amcrust::source::Encoder::Main,
+            },
+            amcrust::ingest::CameraUrl::new(url).unwrap(),
+        )
+        .unwrap();
+    (registry, source)
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real north-driveway; serial read-only recording/HDS fence, not Apple acceptance"]
@@ -7,38 +24,64 @@ async fn real_recording_bytes_are_fenced_after_stop() {
     dotenvy::dotenv().ok();
     let user = std::env::var("AMCREST_USERNAME").unwrap();
     let password = std::env::var("AMCREST_PASSWORD").unwrap();
-    let recorder = Recorder::new(Metrics::new());
+    let (mut registry, source) = recording_source(format!(
+        "rtsp://{user}:{password}@10.76.14.10:554/cam/realmonitor?channel=1&subtype=0"
+    ));
+    let mut viewer = source
+        .subscribe(amcrust::source::Tracks::Video, Default::default())
+        .await
+        .unwrap();
+    let first = viewer.recv().await.unwrap();
+    let (width, height) = first.configuration().unwrap()[first.packet().unwrap().stream_index()]
+        .parameters
+        .dimensions();
+    drop(first);
+    let (stop_viewer, stopped) = tokio::sync::oneshot::channel::<()>();
+    let viewer = tokio::spawn(async move {
+        tokio::pin!(stopped);
+        let mut count = 0;
+        loop {
+            tokio::select! { _ = &mut stopped => break, packet = viewer.recv() => { if packet.is_err() { break; } count += 1; } }
+        }
+        count
+    });
+    let recorder = Recorder::new(source.clone(), Metrics::new());
     recorder
         .start(RecorderConfig {
-            rtsp_url: format!(
-                "rtsp://{user}:{password}@10.76.14.10:554/cam/realmonitor?channel=1&subtype=0"
-            ),
+            width: width.try_into().unwrap(),
+            height: height.try_into().unwrap(),
             audio: true,
             fps: 15,
             audio_sample_rate_hz: 48000,
+            audio_bitrate: 64000,
             fragment_ms: 4000,
             prebuffer_ms: 4000,
         })
         .await;
-    let ready = timeout(Duration::from_secs(20), async {
+    let mut clip = timeout(Duration::from_secs(25), async {
         loop {
-            let (init, fragments, _) = recorder.snapshot_and_subscribe().await;
-            if let Some(init) = init {
-                if let Some(fragment) = fragments.into_iter().next() {
-                    break (init, fragment);
-                }
+            if let Ok(clip) = recorder.open().await {
+                break clip;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await;
-    let (init, fragment) = match ready {
-        Ok(ready) => ready,
-        Err(error) => {
-            recorder.stop().await;
-            panic!("recording startup: {error}");
-        }
-    };
+    .await
+    .unwrap();
+    let (init, fragment) = timeout(Duration::from_secs(5), async {
+        let init = match clip.messages.recv().await.unwrap() {
+            crate::hsv::fmp4::Message::Init(init) => init,
+            _ => panic!("missing init"),
+        };
+        let fragment = match clip.messages.recv().await.unwrap() {
+            crate::hsv::fmp4::Message::Media(fragment) => fragment,
+            _ => panic!("missing media"),
+        };
+        (init, fragment)
+    })
+    .await
+    .unwrap();
+    assert_eq!(source.snapshot().open_attempts, 1);
     let (writer, mut peer) = pair().await;
     let writer = Arc::new(Mutex::new(writer));
     let expected = init.data.len() + fragment.data.len();
@@ -94,7 +137,12 @@ async fn real_recording_bytes_are_fenced_after_stop() {
         Ok::<_, String>(())
     }
     .await;
+    source.set_enabled(false).await.unwrap();
     recorder.stop().await;
+    clip.stop().await;
+    let _ = stop_viewer.send(());
+    assert!(viewer.await.unwrap() > 0);
+    registry.shutdown().await.unwrap();
     result.unwrap();
     let (received, frames, mut peer) = timeout(Duration::from_secs(3), receive)
         .await
@@ -121,8 +169,12 @@ async fn real_recording_bytes_are_fenced_after_stop() {
             .await
             .is_err()
     );
+    drop(init);
+    drop(fragment);
+    drop(clip);
+    assert_eq!(source.snapshot().charged_bytes, 0);
     eprintln!(
-        "Recording HDS: {received} actual fMP4 bytes in {frames} authenticated frames; joined stop; retained old fragment refused after stop"
+        "Recording HDS: {received} actual fMP4 bytes in {frames} authenticated frames; one acquisition; joined stop; retained old fragment refused after source retirement; zero released-output charges"
     );
 }
 
@@ -222,6 +274,7 @@ async fn shutdown_joins_unidentified_connections_and_closes_admission() {
     use crate::amcrest::{AmcrestClient, EncoderCapabilities};
     let metrics = Metrics::new();
     let path = std::env::temp_dir().join(format!("amcrust-unused-hds-{}", rand::random::<u64>()));
+    let (mut registry, source) = recording_source("rtsp://127.0.0.1:9/main".into());
     let state = HsvState::load(
         "test".into(),
         path.to_str().unwrap(),
@@ -229,6 +282,7 @@ async fn shutdown_joins_unidentified_connections_and_closes_admission() {
         Arc::new(AtomicBool::new(false)),
         metrics.clone(),
         EncoderCapabilities::default(),
+        source,
     );
     let server = HdsServer::new("test".into(), 0, state, metrics.clone());
     let (port, _) = server.setup(&[3; 32], &[4; 32]).await.unwrap();
@@ -242,6 +296,7 @@ async fn shutdown_joins_unidentified_connections_and_closes_admission() {
     assert_eq!(peer.read(&mut [0]).await.unwrap(), 0);
     assert!(server.setup(&[3; 32], &[4; 32]).await.is_err());
     server.shutdown().await;
+    registry.shutdown().await.unwrap();
     assert!(
         metrics
             .render(false)

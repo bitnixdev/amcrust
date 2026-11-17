@@ -12,9 +12,11 @@ Former experimental implementation names below are provenance, not current entry
 Production live video now consumes encoder-keyed Rust shared acquisition, H.264
 packetization, explicit host-monotonic presentation and Rust-scheduled reports.
 Both live tracks now use shared acquisition; their FFmpeg commands, local relays and
-legacy timestamp rescaler are removed. Recording still opens a separate FFmpeg reader;
-full cutover is unfinished.
-The production-path checks below are not deployment or Apple playback acceptance. Production instrumentation added first RTP/IDR timing and recording
+legacy timestamp rescaler are removed. Recording now consumes the same main source
+through bounded history, recovered AAC and clip-local Rust mux jobs; the last recording
+reader/mux command and timestamp filters are removed. This is production code wiring,
+not a claim that this new recording build has been deployed or accepted by Apple.
+The user has separately confirmed Home live playback and the audio clock correction. Production instrumentation added first RTP/IDR timing and recording
 delivery outcomes (`end_sent`, `cancelled`, `source_unavailable`, `write_error`).
 `end_sent` is a successful write, not confirmed iCloud storage. The process sampler in
 `scripts/ingest_baseline.py` avoids command lines/environment values; process counts
@@ -22,9 +24,85 @@ are not RTSP session counts and summed RSS may double-count shared pages.
 
 The unused C-worker draft (`native/`, `native-media.nix`) has been removed and
 `src/ingest.rs` replaced by a Rust libavformat acquisition boundary. It is compiled
-as application library code and is wired into `src/main.rs` for live video/audio.
-MediaMTX was investigated but not added or launched. Recording integration and
-Apple acceptance remain separate requirements.
+as application library code and is wired into `src/main.rs` for live video/audio and HSV.
+MediaMTX was investigated but not added or launched. Apple HSV acceptance, full live
+privacy transitions and unattended recovery remain separate requirements.
+
+### Shared recording cutover and removal of the last media reader
+
+The user explicitly confirmed the camera was idle for serial, read-only checks.
+No encoder settings were changed, no captures were retained, and no old/new reader
+was shipped side by side. `RecorderConfig` no longer carries a URL. Main video, live
+Opus and recording receive the same encoder-keyed Rust source.
+
+Recording now has a joined source/history processor and separately joined finite
+mux jobs. Video is packet-copied with bounded recovered cadence. AAC is decoded,
+continuously resampled and **re-encoded**, not packet-copied. The 32/48-kHz output
+choice is separate from the production camera's fixed 48-kHz acquisition setting.
+A later IDR follows counted video startup calibration; audio uses the existing
+bounded startup/recovery core. There is no post-admission AU dropping, silence
+insertion, reanchoring, source-timestamp mutation or widened historical clock budget.
+
+Each clip selects an actual IDR covering the requested prebuffer, at least two AAC
+preroll AUs and a fresh init segment. It waits for covering AAC before explicit mux
+finish; whole-AU excess plus sub-sample origin quantization is reported as such, not
+a sample-exact end trim. Retained output keeps configuration/source/mux permission
+through encryption to the final HDS syscall. Stop joins history and admitted clip
+workers, including when a prior join wait was cancelled. Failed epochs retry fresh
+subscriptions; they do not revive an old HDS stream or crypto/session owner.
+
+Real outcomes:
+- Initial three-mode matrix: **38.58 s**, 90 video frames each, 191 AAC packets at
+  32 kHz, 285 at 48 kHz, and zero for video-only; all decoded and covered their tails.
+- Expanded **48.80-s** matrix exercised **two successive clips per recording epoch**.
+  Each mode reused the same acquisition, including across mode changes. FFprobe
+  verified actual IDR/zero video start, negative AAC preroll, contiguous DTS/duration,
+  selected mono AAC rate and final coverage. FFmpeg decoded both tracks with no errors:
+
+  | Output | Clip | Video / AAC packets | Fragments | Bytes |
+  |---|---:|---:|---:|---:|
+  | 32 kHz | 1 | 90 / 190 | 2 | 1,331,523 |
+  | 32 kHz | 2 | 127 / 267 | 3 | 1,910,906 |
+  | 48 kHz | 1 | 90 / 285 | 2 | 1,276,171 |
+  | 48 kHz | 2 | 126 / 397 | 3 | 1,840,515 |
+  | Video only | 1 | 90 / 0 | 2 | 1,194,684 |
+  | Video only | 2 | 123 / 0 | 3 | 1,732,323 |
+
+- Final repeat **48.92 s** passed the same six clip cases with explicit AAC-LC
+  profile checks and empty decoder error output (32-kHz AAC counts 190/265,
+  48-kHz 285/398, video counts 90/126, 90/126 and 90/124).
+- **60.08-s production live A/V plus recording:** one main acquisition,
+  **9,314 video /2,976 audio RTP**, **2,856,960** decoded untrimmed 48-kHz Opus samples;
+  recording produced **9,416,376 bytes /13 fragments** and completed locally. Recording
+  stop left both live owners current; audio BYE then joined only its worker while
+  video stayed active. All released source and codec charges returned to zero.
+- **12.54-s HDS fence check:** **748,190 actual fMP4 bytes in four authenticated frames**,
+  one acquisition, joined teardown and retained-output refusal after source disable.
+  A preceding **12.55-s** run exposed a test expectation error: it expected zero source
+  charges while retained source-bound leases still owned **1,576 metadata bytes**.
+  The final check verifies zero only after releasing those escaped permissions;
+  retirement never pretends retained memory has been freed.
+- Local checks cover six-hour ±0.1% video-cadence drift with repeated 145-ms IDR
+  serialization bursts, contiguous durations/no admitted frame loss, unsupported
+  gaps/admission timeout, incremental/malformed MP4 boxes, parent-lease retirement,
+  cancelled join ownership, and stop/drop during stalled Rust acquisition.
+
+The obsolete recording command, child/parser/stderr lifecycle, timestamp bitstream
+filters and their native executable test input are removed. `apply-settings --write`
+now calls the same Rust recording pipeline, but that mutation-bearing CLI was not run.
+JPEG snapshot scaling and ignored external decode checks still use the executable.
+
+Validation passed: **49 library +56 application tests**, focused source-recovery and
+phase-trend checks, all-target compilation, strict library Clippy, formatting, two
+sampler tests and the pinned Nix package without the old native recording-test input.
+One bounded self-review returned no findings. The existing metrics `fetch_update`
+deprecation warning remains unrelated to this cutover.
+
+These checks do **not** establish Home/iCloud recording, Apple priming or physical
+lip sync, seek behavior, automatic continuation after duration/size cuts, whole-camera
+privacy, allocator-wide RSS bounds or months-long outage/reboot recovery. The
+configured video cadence must remain within the explicit recovery policy; unsupported
+cadence changes fail rather than invent timing.
 
 ### Home playback report and HomeKit audio wire-clock correction
 
@@ -39,7 +117,7 @@ while a 20-ms packet contains **960 decoded samples at 48 kHz**. Correct-pitch p
 with roughly two-thirds gaps is consistent with that mismatch. Existing
 [go2rtc HAP code](https://github.com/AlexxIT/go2rtc/blob/master/pkg/opus/homekit.go)
 explicitly uses the requested rate for its HomeKit timestamp exception. This is strong
-diagnostic support, not a post-fix observation from the user's device.
+diagnostic support. The user subsequently confirmed: **“that fixed the audio.”**
 
 The application boundary now converts signed, unwrapped canonical offsets to the
 negotiated rate before adding/wrapping the session RTP origin, and creates RTCP clock
@@ -61,12 +139,14 @@ wire-clock assertion was wrong for this HAP boundary and did not prove Home play
 Validation passed: **47 library +53 application tests**, focused recovery/phase-trend
 checks, all-target compilation, strict library Clippy, formatting, two sampler tests
 and the pinned Nix package. Bounded self-review returned no findings.
-The correction is not deployed by these checks; the user must confirm audio continuity
-in Home after rebuilding/restarting. HSV still uses its legacy recording reader.
+The checks alone did not deploy or establish listening quality. The subsequent user
+confirmation establishes that the reported Home audio gaps were fixed; it does not
+identify Apple OS/build, measure lip sync or constitute a sustained soak.
 
 ### Recording ownership before the reader replacement
 
-The recording reader/mux is **still the legacy FFmpeg process**. Its detached parser
+At this earlier stage the recording reader/mux was **still the legacy FFmpeg process**.
+It has since been replaced by the shared path described above. Its detached parser
 and stderr tasks, signal-only stop, and unfenced HDS writes have been replaced with
 joined ownership and recording-epoch/stream retirement gates. Revoke serializes with
 the final nonblocking TCP syscall, after encryption/copying; bytes already accepted
@@ -80,7 +160,7 @@ Recording reconciliation reads current desired state under its own lock. The cam
 callback now awaits recording reconciliation rather than acknowledging a detached task.
 Application shutdown retires recording and joins HDS connections. Old stream acknowledgments
 with a different stream ID cannot terminate the current owner or release its busy slot.
-This does **not** establish complete camera-wide live privacy or Rust-source recording binding.
+Those earlier checks did **not** establish complete camera-wide live privacy or Rust-source recording binding.
 
 Local checks cover entered-write retirement ordering, copied-byte refusal, an unread TCP
 peer, truncated-frame poisoning, stalled native reader stop/drop, and shutdown of an

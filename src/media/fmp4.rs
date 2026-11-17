@@ -9,7 +9,7 @@
 //! evidence records that disagreement; this layer does not claim duration equality
 //! or production presentation acceptance.
 //! Finish means local mux completion, never source EOF or confirmed Home recording.
-use super::{Error, rescale};
+use super::{Error, audio::AacPacket, rescale};
 use crate::{
     ingest::{Cancellation, Codec, TimeBase},
     source::{Delivery, DeliveryGuard, nals},
@@ -73,15 +73,18 @@ struct Job {
     cancellation: Cancellation,
     deadline: Instant,
     failure: Mutex<Option<Error>>,
+    retired: tokio::sync::watch::Sender<bool>,
     _permits: Vec<OwnedSemaphorePermit>,
 }
 impl Job {
     fn fail(&self, error: Error) -> Error {
-        *self
+        let failure = *self
             .failure
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .get_or_insert(error)
+            .get_or_insert(error);
+        self.retired.send_replace(true);
+        failure
     }
     fn check(&self) -> Result<(), Error> {
         if let Some(error) = *self.failure.lock().unwrap_or_else(|p| p.into_inner()) {
@@ -105,7 +108,44 @@ pub struct Chunk {
     bytes: Vec<u8>,
     job: Arc<Job>,
 }
+/// Revocable output permission retained with copied/encrypted recording bytes.
+#[derive(Clone)]
+pub struct WriteGuard(Arc<Job>);
+impl WriteGuard {
+    pub fn current(&self) -> bool {
+        self.0.check().is_ok()
+    }
+    /// Hold only across a nonblocking syscall, never producer work or an await.
+    pub fn write<T>(&self, syscall: impl FnOnce() -> T) -> Result<T, Error> {
+        self.0.check()?;
+        let failure = self.0.failure.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(error) = *failure {
+            return Err(error);
+        }
+        if self.0.cancellation.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        if Instant::now() >= self.0.deadline {
+            return Err(Error::Deadline);
+        }
+        self.0.source.with_current(syscall).map_err(Error::from)
+    }
+    pub async fn retired(&self) {
+        let mut closed = self.0.retired.subscribe();
+        if self.0.check().is_err() {
+            return;
+        }
+        tokio::select! {
+            _ = self.0.source.retired() => (),
+            _ = closed.changed() => (),
+            _ = tokio::time::sleep_until(self.0.deadline.into()) => (),
+        }
+    }
+}
 impl Chunk {
+    pub fn guard(&self) -> WriteGuard {
+        WriteGuard(self.job.clone())
+    }
     pub fn bytes(&self) -> Result<&[u8], Error> {
         self.job.check()?;
         Ok(&self.bytes)
@@ -212,6 +252,8 @@ pub struct Muxer {
     sequence: Option<u64>,
     chunks: usize,
     finished: bool,
+    presented: bool,
+    audio_parameters: Option<Arc<crate::ingest::CodecParameters>>,
     _thread_bound: PhantomData<Rc<()>>,
 }
 impl Drop for Muxer {
@@ -245,6 +287,37 @@ impl Muxer {
         limits: Limits,
         cancellation: Cancellation,
     ) -> Result<Self, Error> {
+        Self::new_inner(first, audio, pool, limits, cancellation, None, None)
+    }
+    /// Clip-local muxing of recovered recording media. The IDR's normalized video
+    /// coordinate is the common origin; covering AAC preroll may remain negative.
+    pub fn new_presented(
+        first: &Delivery,
+        video_origin: i64,
+        audio: Option<&AacPacket>,
+        pool: &Pool,
+        limits: Limits,
+        cancellation: Cancellation,
+    ) -> Result<Self, Error> {
+        Self::new_inner(
+            first,
+            audio.is_some(),
+            pool,
+            limits,
+            cancellation,
+            Some(video_origin),
+            audio,
+        )
+    }
+    fn new_inner(
+        first: &Delivery,
+        audio: bool,
+        pool: &Pool,
+        limits: Limits,
+        cancellation: Cancellation,
+        presented_origin: Option<i64>,
+        encoded_audio: Option<&AacPacket>,
+    ) -> Result<Self, Error> {
         if limits.input_bytes == 0
             || limits.output_bytes == 0
             || limits.packets == 0
@@ -271,7 +344,7 @@ impl Muxer {
                 .try_acquire_many_owned(reserve)
                 .map_err(|_| Error::Limit)?,
         ];
-        if first.timing()? != crate::source::Timing::Source {
+        if (first.timing()? == crate::source::Timing::Presentation) != presented_origin.is_some() {
             return Err(Error::Configuration);
         }
         let packet = first.packet()?;
@@ -283,15 +356,22 @@ impl Muxer {
         if audio && !streams.iter().any(|s| s.codec == Codec::Aac) {
             return Err(Error::Configuration);
         }
-        let origin = packet.pts().ok_or(Error::Clock)?;
+        let origin = match presented_origin {
+            Some(origin) => origin,
+            None => packet.pts().ok_or(Error::Clock)?,
+        };
         let job = Arc::new(Job {
             source: first.guard()?,
             cancellation,
             deadline: Instant::now() + limits.lifetime,
             failure: Mutex::new(None),
+            retired: tokio::sync::watch::channel(false).0,
             _permits: permits,
         });
         job.check()?;
+        if let Some(audio) = encoded_audio {
+            job.source.accepts_guard(audio.guard())?;
+        }
         let mut muxer = Self {
             format: ptr::null_mut(),
             io: ptr::null_mut(),
@@ -310,6 +390,8 @@ impl Muxer {
             sequence: None,
             chunks: 0,
             finished: false,
+            presented: presented_origin.is_some(),
+            audio_parameters: encoded_audio.map(|packet| packet.parameters().clone()),
             _thread_bound: PhantomData,
         };
         native(
@@ -341,29 +423,53 @@ impl Muxer {
             if stream.is_null() {
                 return Err(Error::Allocation);
             }
+            let parameters = if codec == Codec::Aac {
+                encoded_audio
+                    .map(|a| a.parameters())
+                    .unwrap_or(&source.parameters)
+            } else {
+                &source.parameters
+            };
+            let input_clock = if presented_origin.is_some() {
+                TimeBase {
+                    numerator: 1,
+                    denominator: if codec == Codec::H264 {
+                        90000
+                    } else {
+                        parameters.audio_format().0
+                    },
+                }
+            } else {
+                source.time_base
+            };
             native(
-                unsafe {
-                    av::avcodec_parameters_copy((*stream).codecpar, source.parameters.as_ptr())
-                },
+                unsafe { av::avcodec_parameters_copy((*stream).codecpar, parameters.as_ptr()) },
                 "copy codec parameters",
             )?;
             unsafe {
                 (*(*stream).codecpar).codec_tag = 0;
                 (*stream).time_base = av::AVRational {
-                    num: source.time_base.numerator,
-                    den: source.time_base.denominator,
+                    num: input_clock.numerator,
+                    den: input_clock.denominator,
                 };
             }
-            let denominator = source.time_base.denominator as i64;
+            let denominator = input_clock.denominator as i64;
             let gcd = unsafe { av::av_gcd(timescale, denominator) };
             timescale = timescale
                 .checked_mul(denominator / gcd)
                 .filter(|v| *v <= i32::MAX as i64)
                 .ok_or(Error::Clock)?;
-            let shift = rescale(origin as i128, video.time_base, source.time_base)?;
+            let shift = if presented_origin.is_some() {
+                i64::try_from(
+                    (i128::from(origin) * i128::from(input_clock.denominator)).div_euclid(90000),
+                )
+                .map_err(|_| Error::Clock)?
+            } else {
+                rescale(origin as i128, video.time_base, source.time_base)?
+            };
             muxer.tracks[source.index] = Some(Track {
                 output: unsafe { (*stream).index as usize },
-                input_clock: source.time_base,
+                input_clock,
                 shift,
                 last_dts: None,
                 started: false,
@@ -394,6 +500,9 @@ impl Muxer {
             (*muxer.format).pb = muxer.io;
             (*muxer.format).flags |= av::AVFMT_FLAG_CUSTOM_IO;
             (*muxer.format).avoid_negative_ts = av::AVFMT_AVOID_NEG_TS_DISABLED;
+            if muxer.presented {
+                (*muxer.format).max_interleave_delta = 500_000;
+            }
         }
         let mut options = Dictionary(ptr::null_mut());
         options.set(c"movflags", c"frag_keyframe+delay_moov+default_base_moof")?;
@@ -418,11 +527,30 @@ impl Muxer {
         Ok(())
     }
     pub fn push(&mut self, delivery: &Delivery) -> Result<(), Error> {
-        let result = self.push_inner(delivery);
+        let result = self.push_inner(delivery, None);
         result.map_err(|error| self.job.fail(error))
     }
-    fn push_inner(&mut self, delivery: &Delivery) -> Result<(), Error> {
+    pub fn push_presented_video(
+        &mut self,
+        delivery: &Delivery,
+        pts: i64,
+        duration: i64,
+    ) -> Result<(), Error> {
+        if delivery.configuration()?[delivery.packet()?.stream_index()].codec != Codec::H264 {
+            return Err(self.job.fail(Error::Configuration));
+        }
+        let result = self.push_inner(delivery, Some((pts, duration)));
+        result.map_err(|error| self.job.fail(error))
+    }
+    fn push_inner(
+        &mut self,
+        delivery: &Delivery,
+        presentation: Option<(i64, i64)>,
+    ) -> Result<(), Error> {
         self.job.check()?;
+        if self.presented != presentation.is_some() {
+            return Err(Error::Configuration);
+        }
         if self.finished {
             return Err(Error::Closed);
         }
@@ -442,11 +570,15 @@ impl Muxer {
         else {
             return Ok(());
         };
-        let (pts, dts) = (
-            packet.pts().ok_or(Error::Clock)?,
-            packet.dts().ok_or(Error::Clock)?,
-        );
-        if track.last_dts.is_some_and(|last| dts <= last) || packet.duration() <= 0 {
+        let (pts, dts, duration) = match presentation {
+            Some((pts, duration)) => (pts, pts, duration),
+            None => (
+                packet.pts().ok_or(Error::Clock)?,
+                packet.dts().ok_or(Error::Clock)?,
+                packet.duration(),
+            ),
+        };
+        if track.last_dts.is_some_and(|last| dts <= last) || duration <= 0 {
             return Err(Error::Clock);
         }
         let total = self
@@ -480,8 +612,7 @@ impl Muxer {
                 track.input_clock,
                 output_clock,
             )?;
-            (*copy.0).duration =
-                rescale(packet.duration() as i128, track.input_clock, output_clock)?;
+            (*copy.0).duration = rescale(duration as i128, track.input_clock, output_clock)?;
             (*copy.0).stream_index = track.output as i32;
             (*copy.0).pos = -1;
             if delivery.configuration()?[packet.stream_index()].codec == Codec::H264 {
@@ -499,6 +630,73 @@ impl Muxer {
         self.packets += 1;
         let code = unsafe { av::av_interleaved_write_frame(self.format, copy.0) };
         self.check_native(code, "mux packet")
+    }
+    pub fn guard(&self) -> WriteGuard {
+        WriteGuard(self.job.clone())
+    }
+    pub fn push_aac(&mut self, packet: &AacPacket) -> Result<(), Error> {
+        let result = self.push_aac_inner(packet);
+        result.map_err(|error| self.job.fail(error))
+    }
+    fn push_aac_inner(&mut self, packet: &AacPacket) -> Result<(), Error> {
+        self.job.check()?;
+        if !self.presented
+            || self.finished
+            || self
+                .audio_parameters
+                .as_ref()
+                .is_none_or(|p| !Arc::ptr_eq(p, packet.parameters()))
+        {
+            return Err(Error::Configuration);
+        }
+        self.job.source.accepts_guard(packet.guard())?;
+        let (pts, duration, rate) = packet.position()?;
+        let bytes = packet.data()?.len();
+        let track = self
+            .tracks
+            .iter_mut()
+            .flatten()
+            .find(|track| track.output == 1)
+            .ok_or(Error::Configuration)?;
+        if track.input_clock.denominator != rate as i32
+            || track.last_dts.is_some_and(|last| pts <= last)
+        {
+            return Err(Error::Clock);
+        }
+        let total = self.input_bytes.checked_add(bytes).ok_or(Error::Limit)?;
+        if total > self.limits.input_bytes || self.packets >= self.limits.packets {
+            return Err(Error::Limit);
+        }
+        let copy = MutablePacket(unsafe { av::av_packet_alloc() });
+        if copy.0.is_null() {
+            return Err(Error::Allocation);
+        }
+        native(
+            unsafe { av::av_packet_ref(copy.0, packet.as_ptr()) },
+            "reference recovered AAC",
+        )?;
+        let stream = unsafe { &**(*self.format).streams.add(track.output) };
+        let output_clock = TimeBase {
+            numerator: stream.time_base.num,
+            denominator: stream.time_base.den,
+        };
+        unsafe {
+            (*copy.0).pts = rescale(
+                i128::from(pts) - i128::from(track.shift),
+                track.input_clock,
+                output_clock,
+            )?;
+            (*copy.0).dts = (*copy.0).pts;
+            (*copy.0).duration = rescale(i128::from(duration), track.input_clock, output_clock)?;
+            (*copy.0).stream_index = track.output as i32;
+            (*copy.0).pos = -1;
+        }
+        track.last_dts = Some(pts);
+        track.started = true;
+        self.input_bytes = total;
+        self.packets += 1;
+        let code = unsafe { av::av_interleaved_write_frame(self.format, copy.0) };
+        self.check_native(code, "mux recovered AAC")
     }
     /// Drains emitted bytes without flushing/finishing the media selection. A
     /// chunk may split MP4 boxes; downstream framing must not assume one fragment.

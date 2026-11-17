@@ -107,6 +107,14 @@ impl Decoder {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real camera; serial read-only production A/V, not Apple playback"]
 async fn real_production_audio_and_video_share_source() {
+    production_av(false).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real camera; serial read-only production A/V plus shared recording"]
+async fn real_production_av_and_recording_share_source() {
+    production_av(true).await;
+}
+async fn production_av(recording: bool) {
     let _ = env_logger::Builder::new()
         .is_test(true)
         .filter_level(log::LevelFilter::Warn)
@@ -182,8 +190,61 @@ async fn real_production_audio_and_video_share_source() {
     let seconds: u64 = std::env::var("AMCRUST_LIVE_AUDIO_SECONDS")
         .ok()
         .map(|v| v.parse().unwrap())
-        .unwrap_or(2);
+        .unwrap_or(if recording { 20 } else { 2 });
     assert!((2..=1800).contains(&seconds));
+    let recording_task = if recording {
+        assert!((20..=90).contains(&seconds));
+        let recorder = crate::hsv::fmp4::Recorder::new(source.clone(), metrics.clone());
+        Some(tokio::spawn(async move {
+            use crate::hsv::fmp4::{Message, RecorderConfig};
+            recorder
+                .start(RecorderConfig {
+                    width: 1920,
+                    height: 1080,
+                    fps: 15,
+                    audio: true,
+                    audio_sample_rate_hz: 48000,
+                    audio_bitrate: 64000,
+                    fragment_ms: 4000,
+                    prebuffer_ms: 4000,
+                })
+                .await;
+            let mut clip = tokio::time::timeout(Duration::from_secs(25), async {
+                loop {
+                    if let Ok(clip) = recorder.open().await {
+                        break clip;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let finish_at = tokio::time::Instant::now() + Duration::from_secs(seconds - 15);
+            let deadline = finish_at + Duration::from_secs(5);
+            let mut finishing = false;
+            let mut bytes = 0;
+            let mut fragments = 0;
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep_until(deadline) => panic!("shared recording completion deadline"),
+                    _ = tokio::time::sleep_until(finish_at), if !finishing => { finishing = true; clip.finish(); },
+                    message = clip.messages.recv() => match message {
+                        Some(Message::Init(fragment)) => bytes += fragment.data.len(),
+                        Some(Message::Media(fragment)) => { bytes += fragment.data.len(); fragments += 1; },
+                        Some(Message::End) => break,
+                        None => panic!("shared recording failed before finite completion"),
+                    },
+                }
+            }
+            clip.stop().await;
+            drop(clip);
+            recorder.stop().await;
+            assert!(fragments >= 2);
+            (bytes, fragments)
+        }))
+    } else {
+        None
+    };
     let result = tokio::time::timeout(Duration::from_secs(seconds + 25), async {
         let started = std::time::Instant::now();
         let mut v = Context::new(&[7; 16], &[7; 14], ProtectionProfile::Aes128CmHmacSha1_80, None, None).unwrap();
@@ -218,6 +279,13 @@ async fn real_production_audio_and_video_share_source() {
             assert!(!manager.inner.lock().await.audio_proxies.get(&id).unwrap().transport.is_closed(), "audio producer failed: {}", metrics.render(false));
         }
         assert_eq!(source.snapshot().open_attempts, 1);
+        if let Some(task) = recording_task {
+            let (bytes, fragments) = task.await.unwrap();
+            // Recording disable has joined its owners; both live transports remain valid.
+            assert!(!manager.inner.lock().await.audio_proxies.get(&id).unwrap().transport.is_closed());
+            assert!(!manager.inner.lock().await.video_proxies.get(&id).unwrap().transport.is_closed());
+            eprintln!("Shared recording: {bytes} fMP4 bytes/{fragments} fragments, finite completion and recording stop with both live owners current");
+        }
         let bye = [0x81, 203, 0, 1, 0, 0, 0, 99];
         audio.send_to(&a.encrypt_rtcp(&bye).unwrap(), feedback_address).await.unwrap();
         let task = manager.inner.lock().await.audio_proxies.get_mut(&id).unwrap().task.take().unwrap();

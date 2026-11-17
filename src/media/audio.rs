@@ -37,6 +37,8 @@ const FIFO_SAMPLES: i32 = 32768;
 const CONVERT_SAMPLES: i32 = 16384;
 const MAX_PACKET_BYTES: usize = 8192;
 const RESERVATION: usize = 2 * 1024 * 1024;
+/// Logical AAC job reservation: 1024 bounded 8-KiB outputs plus codec/metadata headroom.
+pub const AAC_RESERVATION_BYTES: usize = 12 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Config {
@@ -91,6 +93,98 @@ impl Pool {
         self.capacity - self.bytes.available_permits()
     }
 }
+/// Continuous recovered AAC for recording. This shares the decode/resample core,
+/// not Opus wire semantics. It opens no reader and cannot claim a finite tail.
+pub struct AacTranscoder {
+    inner: Transcoder,
+    parameters: Arc<crate::ingest::CodecParameters>,
+}
+pub struct AacPacket {
+    packet: OpusPacket,
+    parameters: Arc<crate::ingest::CodecParameters>,
+}
+impl AacTranscoder {
+    pub fn new(
+        first: &Delivery,
+        rate: u32,
+        bitrate: u32,
+        clock: PresentationClock,
+        pool: &Pool,
+        cancellation: Cancellation,
+    ) -> Result<Self, Error> {
+        let config = Config {
+            rate,
+            bitrate,
+            ..Default::default()
+        };
+        let inner = Transcoder::new_timed(
+            first,
+            config,
+            ClockPolicy::Presentation,
+            Some(clock),
+            pool,
+            cancellation,
+            true,
+        )?;
+        let parameters = Arc::new(
+            unsafe { crate::ingest::CodecParameters::from_encoder(inner.encoder.0) }
+                .ok_or(Error::Allocation)?,
+        );
+        Ok(Self { inner, parameters })
+    }
+    pub fn push(&mut self, delivery: &Delivery) -> Result<Vec<AacPacket>, Error> {
+        Ok(self
+            .inner
+            .push(delivery)?
+            .into_iter()
+            .map(|packet| AacPacket {
+                packet,
+                parameters: self.parameters.clone(),
+            })
+            .collect())
+    }
+    pub fn stats(&self) -> Stats {
+        self.inner.stats()
+    }
+    pub fn recovery_status(&self) -> Option<RecoveryStatus> {
+        self.inner.recovery_status()
+    }
+}
+impl AacPacket {
+    pub fn data(&self) -> Result<&[u8], Error> {
+        self.packet.data()
+    }
+    pub fn parameters(&self) -> &Arc<crate::ingest::CodecParameters> {
+        &self.parameters
+    }
+    /// Signed common presentation coordinate at the AAC output sample rate.
+    pub fn position(&self) -> Result<(i64, i64, u32), Error> {
+        self.packet.check()?;
+        let clock = self
+            .packet
+            .job
+            .clock
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let rate = self.packet.job.config.rate;
+        let origin = (i128::from(clock.presentation_origin.ok_or(Error::Clock)?)
+            * i128::from(rate))
+        .div_euclid(48000);
+        let packet = unsafe { &*self.packet.raw };
+        if packet.pts == av::AV_NOPTS_VALUE || packet.duration != 1024 {
+            return Err(Error::Incomplete);
+        }
+        let pts = i64::try_from(origin + i128::from(packet.pts)).map_err(|_| Error::Clock)?;
+        Ok((pts, packet.duration, rate))
+    }
+    pub(crate) fn as_ptr(&self) -> *const av::AVPacket {
+        self.packet.raw
+    }
+    pub(crate) fn guard(&self) -> &DeliveryGuard {
+        &self.packet.job.source
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClockMismatch {
     /// Decoder-input sample units. Presentation mode uses a private ordinal;
@@ -134,6 +228,7 @@ struct Job {
     header: Vec<u8>,
     config: Config,
     initial_padding: i32,
+    output_residence: Duration,
     outputs: Arc<Semaphore>,
     _permits: Vec<OwnedSemaphorePermit>,
 }
@@ -300,7 +395,7 @@ impl Drop for OpusPacket {
 impl OpusPacket {
     fn check(&self) -> Result<(), Error> {
         self.job.check()?;
-        if self.born.elapsed() >= Duration::from_secs(2) {
+        if self.born.elapsed() >= self.job.output_residence {
             return Err(Error::Deadline);
         }
         Ok(())
@@ -652,7 +747,7 @@ impl Transcoder {
         pool: &Pool,
         cancellation: Cancellation,
     ) -> Result<Self, Error> {
-        Self::new_timed(first, config, policy, None, pool, cancellation)
+        Self::new_timed(first, config, policy, None, pool, cancellation, false)
     }
     pub fn new_presented(
         first: &Delivery,
@@ -668,6 +763,7 @@ impl Transcoder {
             Some(clock),
             pool,
             cancellation,
+            false,
         )
     }
     fn new_timed(
@@ -677,8 +773,17 @@ impl Transcoder {
         presentation: Option<PresentationClock>,
         pool: &Pool,
         cancellation: Cancellation,
+        aac: bool,
     ) -> Result<Self, Error> {
-        if !config.valid()
+        let valid = if aac {
+            matches!(config.rate, 32000 | 48000)
+                && config.channels == 1
+                && (16000..=192000).contains(&config.bitrate)
+                && policy == ClockPolicy::Presentation
+        } else {
+            config.valid()
+        };
+        if !valid
             || !policy.valid()
             || (policy == ClockPolicy::Presentation) != presentation.is_some()
         {
@@ -691,7 +796,11 @@ impl Transcoder {
                 .map_err(|_| Error::Limit)?,
             pool.bytes
                 .clone()
-                .try_acquire_many_owned(RESERVATION as u32)
+                .try_acquire_many_owned(if aac {
+                    AAC_RESERVATION_BYTES as u32
+                } else {
+                    RESERVATION as u32
+                })
                 .map_err(|_| Error::Limit)?,
         ];
         if (first.timing()? == crate::source::Timing::Presentation) != presentation.is_some() {
@@ -720,7 +829,13 @@ impl Transcoder {
         }
         let input_layout = Layout::copy(&parameters.ch_layout)?;
         let decoder_codec = unsafe { av::avcodec_find_decoder(av::AVCodecID::AV_CODEC_ID_AAC) };
-        let encoder_codec = unsafe { av::avcodec_find_encoder_by_name(c"libopus".as_ptr()) };
+        let encoder_codec = unsafe {
+            av::avcodec_find_encoder_by_name(if aac {
+                c"aac".as_ptr()
+            } else {
+                c"libopus".as_ptr()
+            })
+        };
         if decoder_codec.is_null() || encoder_codec.is_null() {
             return Err(Error::Configuration);
         }
@@ -753,7 +868,15 @@ impl Transcoder {
         )?;
         unsafe {
             (*encoder.0).sample_rate = config.rate as i32;
-            (*encoder.0).sample_fmt = av::AVSampleFormat::AV_SAMPLE_FMT_S16;
+            if aac {
+                (*encoder.0).profile = av::AV_PROFILE_AAC_LOW;
+                (*encoder.0).flags |= av::AV_CODEC_FLAG_GLOBAL_HEADER as i32;
+            }
+            (*encoder.0).sample_fmt = if aac {
+                av::AVSampleFormat::AV_SAMPLE_FMT_FLTP
+            } else {
+                av::AVSampleFormat::AV_SAMPLE_FMT_S16
+            };
             (*encoder.0).time_base = av::AVRational {
                 num: 1,
                 den: config.rate as i32,
@@ -763,25 +886,32 @@ impl Transcoder {
             av::av_channel_layout_default(&mut (*encoder.0).ch_layout, config.channels as i32);
         }
         let mut options = Dictionary(ptr::null_mut());
-        native(
-            unsafe {
-                av::av_dict_set(&mut options.0, c"application".as_ptr(), c"voip".as_ptr(), 0)
-            },
-            "Opus application",
-        )?;
-        options.number(c"frame_duration", config.frame_ms as i64)?;
-        options.number(c"vbr", i64::from(config.vbr))?;
-        options.number(c"fec", i64::from(config.fec))?;
-        options.number(c"packet_loss", config.expected_loss_percent as i64)?;
+        if !aac {
+            native(
+                unsafe {
+                    av::av_dict_set(&mut options.0, c"application".as_ptr(), c"voip".as_ptr(), 0)
+                },
+                "Opus application",
+            )?;
+            options.number(c"frame_duration", config.frame_ms as i64)?;
+            options.number(c"vbr", i64::from(config.vbr))?;
+            options.number(c"fec", i64::from(config.fec))?;
+            options.number(c"packet_loss", config.expected_loss_percent as i64)?;
+        }
         native(
             unsafe { av::avcodec_open2(encoder.0, encoder_codec, &mut options.0) },
-            "open Opus encoder",
+            "open audio encoder",
         )?;
         if !options.0.is_null() {
             return Err(Error::Configuration);
         }
         let enc = unsafe { &*encoder.0 };
-        if enc.frame_size != (config.rate * config.frame_ms as u32 / 1000) as i32
+        if enc.frame_size
+            != if aac {
+                1024
+            } else {
+                (config.rate * config.frame_ms as u32 / 1000) as i32
+            }
             || enc.extradata.is_null()
             || enc.extradata_size <= 0
             || enc.extradata_size > 4096
@@ -811,16 +941,13 @@ impl Transcoder {
             header,
             config,
             initial_padding: enc.initial_padding,
-            outputs: Arc::new(Semaphore::new(64)),
+            output_residence: Duration::from_secs(if aac { 16 } else { 2 }),
+            outputs: Arc::new(Semaphore::new(if aac { 1024 } else { 64 })),
             _permits: permits,
         });
         job.check()?;
         let fifo = unsafe {
-            av::av_audio_fifo_alloc(
-                av::AVSampleFormat::AV_SAMPLE_FMT_S16,
-                config.channels as i32,
-                FIFO_SAMPLES,
-            )
+            av::av_audio_fifo_alloc(enc.sample_fmt, config.channels as i32, FIFO_SAMPLES)
         };
         if fifo.is_null() {
             return Err(Error::Allocation);
@@ -1063,7 +1190,7 @@ impl Transcoder {
                         av::swr_alloc_set_opts2(
                             &mut self.resampler,
                             &(*self.encoder.0).ch_layout,
-                            av::AVSampleFormat::AV_SAMPLE_FMT_S16,
+                            (*self.encoder.0).sample_fmt,
                             self.job.config.rate as i32,
                             &f.ch_layout,
                             av::AVSampleFormat::AV_SAMPLE_FMT_FLTP,
@@ -1085,8 +1212,8 @@ impl Transcoder {
                 if delayed < 0 {
                     return Err(Error::Clock);
                 }
-                let projected = (self.stats.resampled_samples as i128 + delayed as i128)
-                    * (48000 / rate) as i128;
+                let projected = (self.stats.resampled_samples as i128 + delayed as i128) * 48000
+                    / i128::from(rate);
                 let delta = recovery.step(arrived, projected, rate)?;
                 native(
                     unsafe { av::swr_set_compensation(self.resampler, delta, rate as i32) },
@@ -1100,7 +1227,7 @@ impl Transcoder {
     fn audio_frame(&self, samples: i32) -> Result<Frame, Error> {
         let frame = Frame::new()?;
         unsafe {
-            (*frame.0).format = av::AVSampleFormat::AV_SAMPLE_FMT_S16 as i32;
+            (*frame.0).format = (*self.encoder.0).sample_fmt as i32;
             (*frame.0).sample_rate = self.job.config.rate as i32;
             (*frame.0).nb_samples = samples;
             native(
@@ -1164,8 +1291,8 @@ impl Transcoder {
             if read != count {
                 return Err(Error::Incomplete);
             }
-            // Deliberately private codec sample ordinal. Never a source PTS or an
-            // policy. Presentation explicitly installs bounded compensation below.
+            // Private encoder sample ordinal, never a rewritten source PTS.
+            // Presentation compensation has already been applied by the resampler.
             unsafe {
                 (*frame.0).pts = self.next_encoder_sample;
             }
@@ -1175,7 +1302,7 @@ impl Transcoder {
                 .ok_or(Error::Limit)?;
             native(
                 unsafe { av::avcodec_send_frame(self.encoder.0, frame.0) },
-                "send Opus frame",
+                "send audio frame",
             )?;
             self.receive(output, false)?;
         }
@@ -1198,7 +1325,7 @@ impl Transcoder {
                     Ok(())
                 };
             }
-            native(code, "receive Opus packet")?;
+            native(code, "receive audio packet")?;
             let p = unsafe { &*packet.0 };
             if p.size <= 0
                 || p.size as usize > MAX_PACKET_BYTES
@@ -1272,7 +1399,7 @@ impl Transcoder {
         self.encode_ready(&mut output, true)?;
         native(
             unsafe { av::avcodec_send_frame(self.encoder.0, ptr::null()) },
-            "flush Opus",
+            "flush audio encoder",
         )?;
         self.receive(&mut output, true)?;
         {

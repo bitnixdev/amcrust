@@ -129,8 +129,8 @@ struct ApplySettingsArgs {
     #[arg(long, default_value = "48000")]
     audio_sample_rate_hz: u32,
 
-    /// Duration of the real-camera H.264/AAC packet-copy probe.
-    #[arg(long, default_value = "5")]
+    /// Duration of the shared-source recording probe (1..90 seconds).
+    #[arg(long, default_value = "5", value_parser = clap::value_parser!(u16).range(1..=90))]
     probe_seconds: u16,
 }
 
@@ -260,14 +260,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // HomeKit Secure Video state, recorder, and data stream server.
     let motion_active = Arc::new(AtomicBool::new(false));
-    let hsv_state = HsvState::load(
-        args.name.clone(),
-        &format!("{}/{}", args.data_dir, args.name),
-        camera.clone(),
-        motion_active.clone(),
-        metrics.clone(),
-        capabilities.clone(),
-    );
     let mut source_registry = amcrust::source::Registry::new(amcrust::source::Limits {
         timing: amcrust::source::Timing::Presentation,
         ..Default::default()
@@ -279,6 +271,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         amcrust::ingest::CameraUrl::new(camera.rtsp_url(0))?,
     )?;
+    let hsv_state = HsvState::load(
+        args.name.clone(),
+        &format!("{}/{}", args.data_dir, args.name),
+        camera.clone(),
+        motion_active.clone(),
+        metrics.clone(),
+        capabilities.clone(),
+        main_source.clone(),
+    );
     let mut video_sources = Vec::new();
     if let Some(profile) = live_720_profile {
         video_sources.push(VideoSource {
@@ -371,7 +372,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Restore the persisted encoder settings before resuming the recording
     // pipeline, then restore snapshot and motion profiles exactly once. This
-    // keeps ffmpeg from attaching to stale camera settings.
+    // keeps shared acquisition from attaching to stale camera settings.
     hsv_state.resume_recorder().await;
 
     // Snapshots for the Home app tiles, served from a background-refreshed
@@ -570,11 +571,25 @@ async fn run_apply_settings(
         camera.ensure_smart_motion().await,
         &mut failures,
     );
+    let mut recording_registry = amcrust::source::Registry::new(amcrust::source::Limits {
+        timing: amcrust::source::Timing::Presentation,
+        ..Default::default()
+    })?;
+    let recording_source = recording_registry.register(
+        amcrust::source::SourceKey {
+            camera: 1,
+            encoder: amcrust::source::Encoder::Main,
+        },
+        amcrust::ingest::CameraUrl::new(camera.rtsp_url(0))?,
+    )?;
     report_apply_result(
-        "real-camera H.264/AAC packet-copy recording probe",
+        "real-camera shared-source H.264/recovered-AAC recording probe",
         probe_recording_pipeline(
+            recording_source,
             &RecorderConfig {
-                rtsp_url: camera.rtsp_url(0),
+                width: command.recording_width,
+                height: command.recording_height,
+                audio_bitrate: 64000,
                 audio: true,
                 fps: command.recording_fps,
                 audio_sample_rate_hz: command.audio_sample_rate_hz,
@@ -587,6 +602,7 @@ async fn run_apply_settings(
         &mut failures,
     );
 
+    recording_registry.shutdown().await?;
     if failures.is_empty() {
         println!("PASS: every supported camera setting was applied and read back successfully");
         Ok(())

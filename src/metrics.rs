@@ -547,6 +547,16 @@ mod tests {
     #[tokio::test]
     async fn health_and_metrics_routes_return_scrapeable_responses() {
         let metrics = Metrics::new();
+        let mut registry = amcrust::source::Registry::new(Default::default()).unwrap();
+        let source = registry
+            .register(
+                amcrust::source::SourceKey {
+                    camera: 1,
+                    encoder: amcrust::source::Encoder::Main,
+                },
+                amcrust::ingest::CameraUrl::new("rtsp://127.0.0.1:9/main".into()).unwrap(),
+            )
+            .unwrap();
         let hsv = HsvState::load(
             "test-camera".into(),
             "/path/that/does/not/exist",
@@ -558,6 +568,7 @@ mod tests {
                 main_bitrate_range: Some((3, 8192)),
                 ..Default::default()
             },
+            source,
         );
         let state = HttpState { metrics, hsv };
 
@@ -584,5 +595,6 @@ mod tests {
         );
         let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
         assert!(String::from_utf8_lossy(&body).contains("amcrust_uptime_seconds"));
+        registry.shutdown().await.unwrap();
     }
 }

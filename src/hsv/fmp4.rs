@@ -1,164 +1,119 @@
-//! Fragmented-MP4 recording pipeline: a persistent ffmpeg process stream-copies
-//! the camera's RTSP feed into fMP4 (init segment + keyframe-aligned
-//! fragments), which we parse into segments and keep in a rolling prebuffer.
-
+//! Shared-source recording history and clip-local Rust fMP4 jobs. No child,
+//! alternate reader, or persistent mux whose init belongs to another clip.
+#[cfg(test)]
+#[path = "recording_camera_tests.rs"]
+mod camera_tests;
+#[cfg(test)]
+#[path = "fmp4_tests.rs"]
+mod tests;
 use super::lease::Lease;
-use log::{debug, error, warn};
-use std::collections::VecDeque;
-use std::process::Stdio;
-use std::sync::Arc;
-use tokio::io::AsyncReadExt;
-use tokio::process::Command;
+use crate::metrics::{ErrorSubsystem, Metrics};
+use amcrust::{
+    ingest::Cancellation,
+    media::{
+        audio, fmp4,
+        recording::{self, Frame, Processor},
+    },
+    source::{Source, SubscriptionLimits, Tracks},
+};
+use std::{collections::VecDeque, sync::Arc, time::Duration};
+use tokio::sync::{Mutex, broadcast, mpsc, watch};
 
 const MAX_BOX: usize = 16 * 1024 * 1024;
 const MAX_INIT: usize = 1024 * 1024;
-const MAX_FRAGMENT: usize = 16 * 1024 * 1024;
-const MAX_PREBUFFER: usize = 32 * 1024 * 1024;
-use tokio::sync::{Mutex, broadcast};
-use tokio::time::Instant;
-
-use crate::metrics::{ErrorSubsystem, Metrics};
+const MAX_HISTORY: usize = 12 * 1024 * 1024;
+const HISTORY_NS: i128 = 12_000_000_000;
 
 #[derive(Clone, Debug)]
 pub struct Fragment {
     pub data: Arc<Vec<u8>>,
-    pub at: Instant,
     pub lease: Lease,
 }
-
-#[derive(Default)]
-struct RecorderState {
-    init_segment: Option<Fragment>,
-    prebuffer: VecDeque<Fragment>,
-    owner: Option<tokio::task::JoinHandle<()>>,
-    lease: Option<Lease>,
-    generation: u64,
-    config: Option<RecorderConfig>,
+pub enum Message {
+    Init(Fragment),
+    Media(Fragment),
+    End,
 }
-
-/// Encoder settings for the recording pipeline (already applied to the camera;
-/// ffmpeg only stream-copies).
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecorderConfig {
-    pub rtsp_url: String,
-    pub audio: bool,
+    pub width: u16,
+    pub height: u16,
     pub fps: u8,
+    pub audio: bool,
     pub audio_sample_rate_hz: u32,
+    pub audio_bitrate: u32,
     pub fragment_ms: u32,
     pub prebuffer_ms: u32,
 }
-
-fn video_timestamp_bitstream_filter(fps: u8) -> String {
-    // Build a monotonic decode clock from packet order. Preserve a valid
-    // PTS-DTS composition offset so B-frames still display in presentation
-    // order. `setts` edits encoded-packet metadata without transcoding.
-    let fps = fps.max(1);
-    format!(
-        "setts=pts=N/({fps}*TB)+if(eq(PTS\\,NOPTS)\\,0\\,if(eq(DTS\\,NOPTS)\\,0\\,PTS-DTS)):dts=N/({fps}*TB):duration=1/({fps}*TB)"
-    )
+struct Entry {
+    frame: Arc<Frame>,
+    bytes: usize,
+    end: i128,
 }
-
-fn audio_timestamp_bitstream_filter(sample_rate_hz: u32) -> String {
-    // AAC-LC packets contain 1024 samples, so packet order supplies an exact
-    // monotonic clock even when camera timestamps are absent or duplicated.
-    let sample_rate_hz = sample_rate_hz.max(1);
-    format!("setts=ts=N*1024/({sample_rate_hz}*TB):duration=1024/({sample_rate_hz}*TB)")
+#[derive(Default)]
+struct RecorderState {
+    frames: VecDeque<Entry>,
+    bytes: usize,
+    latest: i128,
+    live: Option<broadcast::Sender<Arc<Frame>>>,
+    epoch: Option<Lease>,
+    owner: Option<Arc<ProducerOwner>>,
+    stop: Option<Lease>,
+    config: Option<RecorderConfig>,
+    clips: Vec<Arc<ClipOwner>>,
 }
-
-fn recording_ffmpeg_command(config: &RecorderConfig) -> Command {
-    let mut cmd = Command::new("ffmpeg");
-    cmd.arg("-hide_banner")
-        .args(["-loglevel", "warning"])
-        .args(["-fflags", "+genpts"])
-        .args(["-rtsp_transport", "tcp"])
-        .args(["-i", &config.rtsp_url])
-        // Keep the MP4 track layout deterministic even if a camera lists
-        // audio first in its RTSP session description.
-        .args(["-map", "0:v:0"]);
-    if config.audio {
-        cmd.args(["-map", "0:a:0?"])
-            .args(["-c:v", "copy"])
-            .args(["-c:a", "copy"])
-            .args([
-                "-bsf:a",
-                &audio_timestamp_bitstream_filter(config.audio_sample_rate_hz),
-            ]);
-    } else {
-        cmd.arg("-an").args(["-c:v", "copy"]);
-    }
-    cmd.args(["-bsf:v", &video_timestamp_bitstream_filter(config.fps)])
-        .args(["-f", "mp4"])
-        .args(["-movflags", "frag_keyframe+empty_moov+default_base_moof"])
-        .args(["-avoid_negative_ts", "make_zero"]);
-    cmd
-}
-
-/// Exercises the exact production packet-copy recorder against a bounded
-/// amount of real camera media without retaining the resulting fMP4.
-pub async fn probe_recording_pipeline(
-    config: &RecorderConfig,
-    seconds: u16,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if !(1..=300).contains(&seconds) {
-        return Err("recording probe duration must be 1..300 seconds".into());
-    }
-    let mut cmd = recording_ffmpeg_command(config);
-    let mut child = cmd
-        .args(["-t", &seconds.to_string()])
-        .arg("pipe:1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()?;
-    let mut stderr = child.stderr.take().expect("piped stderr");
-    let diagnostics = tokio::spawn(async move {
-        let mut buffer = [0; 1024];
-        let mut suffix = Vec::new();
-        let mut bad_clock = false;
-        loop {
-            let n = stderr.read(&mut buffer).await?;
-            if n == 0 {
-                break;
-            }
-            suffix.extend_from_slice(&buffer[..n]);
-            for needle in [
-                b"Timestamps are unset".as_slice(),
-                b"Non-monotonic DTS".as_slice(),
-            ] {
-                bad_clock |= suffix.windows(needle.len()).any(|window| window == needle);
-            }
-            if suffix.len() > 32 {
-                suffix.drain(..suffix.len() - 32);
-            }
+impl RecorderState {
+    fn clear(&mut self) {
+        if let Some(epoch) = self.epoch.take() {
+            epoch.revoke();
         }
-        Ok::<_, std::io::Error>(bad_clock)
-    });
-    let status = tokio::time::timeout(
-        std::time::Duration::from_secs(u64::from(seconds) + 15),
-        child.wait(),
-    )
-    .await;
-    if status.is_err() {
-        let _ = child.kill().await;
-        let _ = child.wait().await;
+        self.frames.clear();
+        self.bytes = 0;
+        self.latest = 0;
+        self.live = None;
     }
-    let bad_clock = diagnostics.await??;
-    let status = status.map_err(|_| "recording probe deadline")??;
-    if !status.success() {
-        return Err(format!("recording packet-copy probe failed ({status})").into());
+    fn publish(&mut self, frame: Arc<Frame>) -> Result<(), String> {
+        let bytes = frame.bytes().map_err(|e| e.to_string())?;
+        let end = frame.end_ns().map_err(|e| e.to_string())?;
+        self.latest = self.latest.max(end);
+        while self
+            .frames
+            .front()
+            .is_some_and(|entry| entry.end < self.latest - HISTORY_NS)
+        {
+            self.bytes -= self.frames.pop_front().unwrap().bytes;
+        }
+        if self.bytes + bytes > MAX_HISTORY || self.frames.len() >= 1536 {
+            return Err("recording history budget".into());
+        }
+        self.bytes += bytes;
+        self.frames.push_back(Entry {
+            frame: frame.clone(),
+            bytes,
+            end,
+        });
+        // Snapshot and this publication share the state lock: no replay/live overlap.
+        if let Some(live) = &self.live {
+            let _ = live.send(frame);
+        }
+        Ok(())
     }
-    if bad_clock {
-        return Err("recording packet-copy probe reported invalid clocks".into());
-    }
-    Ok(())
 }
-
+struct ProducerOwner(Mutex<Option<tokio::task::JoinHandle<()>>>);
+impl ProducerOwner {
+    async fn join(&self) {
+        let mut owner = self.0.lock().await;
+        if let Some(task) = owner.as_mut() {
+            let _ = task.await;
+        }
+        owner.take();
+    }
+}
 #[derive(Default)]
 struct Lifetime(std::sync::Mutex<Option<Lease>>);
 impl Drop for Lifetime {
     fn drop(&mut self) {
-        if let Some(lease) = self.0.get_mut().unwrap().take() {
+        if let Some(lease) = self.0.get_mut().unwrap_or_else(|p| p.into_inner()).take() {
             lease.revoke();
         }
     }
@@ -168,327 +123,635 @@ pub struct Recorder {
     lifetime: Arc<Lifetime>,
     state: Arc<Mutex<RecorderState>>,
     operation: Arc<Mutex<()>>,
-    live_tx: broadcast::Sender<Fragment>,
+    source: Source,
+    audio_pool: audio::Pool,
+    mux_pool: fmp4::Pool,
     metrics: Arc<Metrics>,
 }
-
 impl Recorder {
-    pub fn new(metrics: Arc<Metrics>) -> Self {
-        let (live_tx, _) = broadcast::channel(4);
+    pub fn new(source: Source, metrics: Arc<Metrics>) -> Self {
         Self {
             lifetime: Arc::new(Lifetime::default()),
             state: Arc::new(Mutex::new(RecorderState::default())),
             operation: Arc::new(Mutex::new(())),
-            live_tx,
+            source,
+            audio_pool: audio::Pool::new(1, audio::AAC_RESERVATION_BYTES)
+                .expect("fixed recording audio pool"),
+            mux_pool: fmp4::Pool::new(1, 140 * 1024 * 1024).expect("fixed recording mux pool"),
             metrics,
         }
     }
-
-    /// Serialized replacement: retire all escaped output before joining the old owner.
     pub async fn start(&self, config: RecorderConfig) {
         let _operation = self.operation.lock().await;
         {
             let state = self.state.lock().await;
-            if state.lease.as_ref().is_some_and(Lease::current)
+            if state.stop.as_ref().is_some_and(Lease::current)
                 && state.config.as_ref() == Some(&config)
             {
                 return;
             }
         }
         self.stop_inner().await;
-        let mut cmd = recording_ffmpeg_command(&config);
-        cmd.arg("pipe:1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = match cmd.spawn() {
-            Ok(child) => child,
-            Err(error) => {
-                self.metrics.error(ErrorSubsystem::Recording);
-                error!("failed to start recorder: {error}");
-                return;
-            }
-        };
-        let stdout = child.stdout.take().expect("piped stdout");
-        let mut stderr = child.stderr.take().expect("piped stderr");
-        let lease = Lease::new();
-        let mut state = self.state.lock().await;
-        state.config = Some(config.clone());
-        state.generation += 1;
-        let generation = state.generation;
-        state.lease = Some(lease.clone());
-        *self.lifetime.0.lock().unwrap() = Some(lease.clone());
-        let parser_state = self.state.clone();
-        let live = self.live_tx.clone();
+        if config.prebuffer_ms > 4000
+            || config.fragment_ms == 0
+            || config.fragment_ms > 4000
+            || !(1..=60).contains(&config.fps)
+            || config.width == 0
+            || config.height == 0
+            || (config.audio
+                && (!matches!(config.audio_sample_rate_hz, 32000 | 48000)
+                    || !(16000..=192000).contains(&config.audio_bitrate)))
+        {
+            self.metrics.error(ErrorSubsystem::Recording);
+            return;
+        }
+        let stop = Lease::new();
+        *self.lifetime.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(stop.clone());
+        let state = self.state.clone();
+        let source = self.source.clone();
+        let pool = self.audio_pool.clone();
         let metrics = self.metrics.clone();
-        state.owner = Some(tokio::spawn(async move {
-            let diagnostics = tokio::spawn(async move {
-                let mut bytes = [0; 1024];
-                while matches!(stderr.read(&mut bytes).await, Ok(n) if n != 0) {}
-            });
-            let result = tokio::select! {
-                biased;
-                _ = lease.retired() => Ok(()),
-                result = Self::parse_stream(parser_state, live, metrics.clone(), stdout, generation, config.prebuffer_ms, &lease) => result,
-            };
-            if result.is_err() && lease.current() {
+        let owner_stop = stop.clone();
+        let owner_config = config.clone();
+        let mut installed = self.state.lock().await;
+        let owner = tokio::spawn(async move {
+            let mut retry = 1;
+            while owner_stop.current() {
+                let epoch = Lease::child(owner_stop.clone());
+                {
+                    let mut state = state.lock().await;
+                    state.clear();
+                    state.epoch = Some(epoch.clone());
+                    state.live = Some(broadcast::channel(128).0);
+                }
+                let runtime = tokio::runtime::Handle::current();
+                let worker_state = state.clone();
+                let worker_source = source.clone();
+                let worker_pool = pool.clone();
+                let worker_config = owner_config.clone();
+                let worker_epoch = epoch.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    runtime.block_on(produce(
+                        worker_source,
+                        worker_state,
+                        worker_config,
+                        worker_pool,
+                        worker_epoch,
+                    ))
+                })
+                .await;
+                epoch.revoke();
+                state.lock().await.clear();
+                if !owner_stop.current() {
+                    break;
+                }
                 metrics.error(ErrorSubsystem::Recording);
-                warn!("recording producer ended before stop");
+                log::warn!("shared recording epoch ended: {:?}", result);
+                tokio::select! { _ = owner_stop.retired() => break, _ = tokio::time::sleep(Duration::from_secs(retry)) => {} }
+                retry = (retry * 2).min(30);
             }
-            lease.revoke();
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            let _ = diagnostics.await;
-        }));
+        });
+        installed.config = Some(config);
+        installed.stop = Some(stop);
+        installed.owner = Some(Arc::new(ProducerOwner(Mutex::new(Some(owner)))));
     }
     pub async fn stop(&self) {
         let _operation = self.operation.lock().await;
         self.stop_inner().await;
     }
     async fn stop_inner(&self) {
-        if let Some(lease) = self.lifetime.0.lock().unwrap().take() {
-            lease.revoke();
-        }
-        let owner = {
+        let (owner, clips) = {
             let mut state = self.state.lock().await;
-            if let Some(lease) = state.lease.take() {
-                lease.revoke();
+            if let Some(stop) = state.stop.take() {
+                stop.revoke();
             }
-            state.generation += 1;
+            state.clear();
             state.config = None;
-            state.init_segment = None;
-            state.prebuffer.clear();
-            state.owner.take()
+            (state.owner.clone(), state.clips.clone())
         };
         if let Some(owner) = owner {
-            let _ = owner.await;
+            owner.join().await;
         }
+        for clip in clips {
+            clip.stop().await;
+        }
+        {
+            let mut state = self.state.lock().await;
+            state.owner = None;
+            state.clips.clear();
+        }
+        self.lifetime
+            .0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
     }
     pub async fn is_running(&self) -> bool {
         self.state
             .lock()
             .await
-            .lease
+            .stop
             .as_ref()
             .is_some_and(Lease::current)
     }
-
-    /// Returns the init segment and current prebuffer contents, plus a live
-    /// subscription for fragments produced from now on.
-    pub async fn snapshot_and_subscribe(
-        &self,
-    ) -> (
-        Option<Fragment>,
-        Vec<Fragment>,
-        broadcast::Receiver<Fragment>,
-    ) {
-        let state = self.state.lock().await;
-        (
-            state.init_segment.clone(),
-            state.prebuffer.iter().cloned().collect(),
-            self.live_tx.subscribe(),
-        )
-    }
-
-    /// Reads MP4 boxes from ffmpeg stdout, splitting into the init segment
-    /// (everything before the first `moof`) and `moof`+`mdat` fragments.
-    async fn parse_stream(
-        shared_state: Arc<Mutex<RecorderState>>,
-        live_tx: broadcast::Sender<Fragment>,
-        metrics: Arc<Metrics>,
-        mut stdout: tokio::process::ChildStdout,
-        generation: u64,
-        prebuffer_ms: u32,
-        lease: &Lease,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut init: Vec<u8> = Vec::new();
-        let mut init_done = false;
-        let mut fragment: Vec<u8> = Vec::new();
-
-        loop {
-            let mut header = [0u8; 8];
-            stdout.read_exact(&mut header).await?;
-            let mut size = u32::from_be_bytes(header[..4].try_into().unwrap()) as u64;
-            let box_type = [header[4], header[5], header[6], header[7]];
-
-            let mut box_bytes: Vec<u8> = header.to_vec();
-            if size == 1 {
-                let mut large = [0u8; 8];
-                stdout.read_exact(&mut large).await?;
-                box_bytes.extend_from_slice(&large);
-                size = u64::from_be_bytes(large);
-            } else if size == 0 {
-                return Err("box with size 0".into());
+    pub async fn open(&self) -> Result<Clip, String> {
+        let _operation = self.operation.lock().await;
+        let old = {
+            let state = self.state.lock().await;
+            if state.clips.iter().any(|clip| {
+                !clip.finished.load(std::sync::atomic::Ordering::Acquire)
+                    || Arc::strong_count(clip) > 1
+            }) {
+                return Err("recording clip busy".into());
             }
-            if size < box_bytes.len() as u64 {
-                return Err(format!("invalid box size {size}").into());
-            }
-
-            if size > MAX_BOX as u64 {
-                return Err("recording box budget exceeded".into());
-            }
-            let body_len = (size as usize) - box_bytes.len();
-            let mut body = vec![0u8; body_len];
-            stdout.read_exact(&mut body).await?;
-            box_bytes.extend_from_slice(&body);
-
-            match &box_type {
-                b"moof" => {
-                    if init.is_empty() || !fragment.is_empty() {
-                        return Err("invalid recording fragment order".into());
-                    }
-                    init_done = true;
-                    fragment = box_bytes;
-                }
-                b"mdat" if init_done => {
-                    if fragment.is_empty() {
-                        return Err("recording mdat without moof".into());
-                    }
-                    if fragment.len() + box_bytes.len() > MAX_FRAGMENT {
-                        return Err("recording fragment budget exceeded".into());
-                    }
-                    fragment.extend_from_slice(&box_bytes);
-                    let complete = Fragment {
-                        data: Arc::new(std::mem::take(&mut fragment)),
-                        at: Instant::now(),
-                        lease: lease.clone(),
-                    };
-
-                    let mut state = shared_state.lock().await;
-                    if state.generation != generation {
-                        return Ok(()); // superseded by a restart
-                    }
-                    if state.init_segment.is_none() {
-                        state.init_segment = Some(Fragment {
-                            data: Arc::new(init.clone()),
-                            at: Instant::now(),
-                            lease: lease.clone(),
-                        });
-                        debug!("recorder: init segment ready ({} bytes)", init.len());
-                    }
-                    // Keep enough fragments to cover the prebuffer window.
-                    state.prebuffer.push_back(complete.clone());
-                    let cutoff = tokio::time::Duration::from_millis(prebuffer_ms as u64 + 1000);
-                    while let Some(front) = state.prebuffer.front() {
-                        if front.at.elapsed() > cutoff
-                            || state.prebuffer.len() > 8
-                            || state.prebuffer.iter().map(|f| f.data.len()).sum::<usize>()
-                                > MAX_PREBUFFER
-                        {
-                            state.prebuffer.pop_front();
-                        } else {
-                            break;
-                        }
-                    }
-                    // Publication and snapshot+subscribe share this lock: no duplicate
-                    // boundary fragment or lost historical/live transition.
-                    metrics.recording_fragment(complete.data.len());
-                    let _ = live_tx.send(complete);
-                    drop(state);
-                }
-                _ if !init_done => {
-                    if init.len() + box_bytes.len() > MAX_INIT {
-                        return Err("recording initialization budget exceeded".into());
-                    }
-                    init.extend_from_slice(&box_bytes);
-                }
-                other => {
-                    warn!(
-                        "recorder: unexpected box {:?} mid-stream",
-                        String::from_utf8_lossy(other)
-                    );
-                }
+            state.clips.clone()
+        };
+        for clip in old {
+            clip.stop().await;
+        }
+        self.state.lock().await.clips.clear();
+        if self.mux_pool.reserved_bytes() != 0 {
+            return Err("recording output still charged".into());
+        }
+        let mut state = self.state.lock().await;
+        let config = state.config.as_ref().ok_or("recording disabled")?;
+        let epoch = state
+            .epoch
+            .as_ref()
+            .filter(|epoch| epoch.current())
+            .ok_or("recording unavailable")?
+            .clone();
+        let latest_frame = state
+            .frames
+            .iter()
+            .rev()
+            .find(|entry| matches!(&*entry.frame, Frame::Video { .. }))
+            .ok_or("recording warming up")?;
+        if let Frame::Video { delivery, .. } = &*latest_frame.frame {
+            if delivery
+                .packet()
+                .map_err(|e| format!("{e:?}"))?
+                .received_at()
+                .elapsed()
+                > Duration::from_secs(1)
+            {
+                return Err("recording history is stale".into());
             }
         }
+        let latest_video = state
+            .frames
+            .iter()
+            .rev()
+            .find(|entry| matches!(&*entry.frame, Frame::Video { .. }))
+            .ok_or("recording warming up")?
+            .end;
+        let target = latest_video - i128::from(config.prebuffer_ms) * 1_000_000;
+        let first = state
+            .frames
+            .iter()
+            .rev()
+            .find(|entry| {
+                entry.frame.is_idr() && entry.frame.start_ns().is_ok_and(|pts| pts <= target)
+            })
+            .ok_or("no covering IDR history")?
+            .frame
+            .clone();
+        let start = first.start_ns().map_err(|e| e.to_string())?;
+        let audio_start = if config.audio {
+            let before = start - 2048 * 1_000_000_000 / i128::from(config.audio_sample_rate_hz);
+            Some(
+                state
+                    .frames
+                    .iter()
+                    .rev()
+                    .find(|entry| {
+                        matches!(&*entry.frame, Frame::Audio(_))
+                            && entry.frame.start_ns().is_ok_and(|pts| pts <= before)
+                    })
+                    .ok_or("no covering AAC preroll")?
+                    .frame
+                    .start_ns()
+                    .map_err(|e| e.to_string())?,
+            )
+        } else {
+            None
+        };
+        let frames: Vec<_> = state
+            .frames
+            .iter()
+            .filter(|entry| {
+                entry.frame.start_ns().is_ok_and(|pts| match &*entry.frame {
+                    Frame::Video { .. } => pts >= start,
+                    Frame::Audio(_) => audio_start.is_some_and(|begin| pts >= begin),
+                })
+            })
+            .map(|entry| entry.frame.clone())
+            .collect();
+        let live = state
+            .live
+            .as_ref()
+            .ok_or("recording unavailable")?
+            .subscribe();
+        let lease = Lease::child(epoch);
+        let (tx, rx) = mpsc::channel(2);
+        let (finish, finishing) = watch::channel(false);
+        let worker_lease = lease.clone();
+        let pool = self.mux_pool.clone();
+        let metrics = self.metrics.clone();
+        let runtime = tokio::runtime::Handle::current();
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let completed = finished.clone();
+        let owner = tokio::task::spawn_blocking(move || {
+            struct Finished {
+                done: Arc<std::sync::atomic::AtomicBool>,
+                lease: Lease,
+                completed: bool,
+            }
+            impl Drop for Finished {
+                fn drop(&mut self) {
+                    if !self.completed {
+                        self.lease.revoke();
+                    }
+                    self.done.store(true, std::sync::atomic::Ordering::Release);
+                }
+            }
+            let mut completed = Finished {
+                done: completed,
+                lease: worker_lease.clone(),
+                completed: false,
+            };
+            let result = runtime.block_on(render(
+                frames,
+                live,
+                first,
+                pool,
+                worker_lease.clone(),
+                finishing,
+                tx,
+                metrics,
+            ));
+            completed.completed = result.is_ok();
+            result
+        });
+        let owner = Arc::new(ClipOwner {
+            lease: lease.clone(),
+            task: Mutex::new(Some(owner)),
+            finished,
+        });
+        state.clips.push(owner.clone());
+        Ok(Clip {
+            messages: rx,
+            finish,
+            lease,
+            owner,
+        })
+    }
+}
+async fn produce(
+    source: Source,
+    state: Arc<Mutex<RecorderState>>,
+    config: RecorderConfig,
+    pool: audio::Pool,
+    epoch: Lease,
+) -> Result<(), String> {
+    let mut subscription = source
+        .subscribe(
+            if config.audio {
+                Tracks::AudioVideo
+            } else {
+                Tracks::Video
+            },
+            SubscriptionLimits {
+                packets: 1024,
+                bytes: MAX_HISTORY,
+                residence: Duration::from_secs(20),
+                media_span: Duration::from_secs(20),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    let mut processor = None;
+    let cancellation = Cancellation::default();
+    let mut startup = None;
+    let mut last_video = None;
+    let mut last_audio = None;
+    let mut video_ready = false;
+    let result = async {
+        loop {
+            let delivery = tokio::select! { biased; _ = epoch.retired() => return Ok(()), result = tokio::time::timeout(Duration::from_secs(20), subscription.recv()) => result.map_err(|_| "recording source deadline")?.map_err(|e| format!("{e:?}"))? };
+            let packet = delivery.packet().map_err(|e| format!("{e:?}"))?;
+            let at = packet.received_at();
+            if at.elapsed() > Duration::from_secs(1) { return Err("recording input is stale".into()); }
+            match delivery.configuration().map_err(|e| format!("{e:?}"))?[packet.stream_index()].codec {
+                amcrust::ingest::Codec::H264 => last_video = Some(at),
+                amcrust::ingest::Codec::Aac => last_audio = Some(at),
+            }
+            if processor.is_none() {
+                startup = Some(tokio::time::Instant::now());
+                processor = Some(Processor::new(&delivery, recording::Config { width: config.width, height: config.height, fps: config.fps, audio_rate: config.audio.then_some(config.audio_sample_rate_hz), audio_bitrate: config.audio_bitrate }, pool.clone(), cancellation.clone()).map_err(|e| e.to_string())?);
+            }
+            let processor = processor.as_mut().unwrap();
+            let frames = processor.push(delivery).map_err(|e| format!("{e}; {:?}", processor.status()))?;
+            let mut state = state.lock().await;
+            if !epoch.current() { return Ok(()); }
+            for frame in frames { video_ready |= frame.is_idr(); state.publish(frame)?; }
+            if video_ready && last_video.is_some_and(|at| at.elapsed() > Duration::from_secs(1)) { return Err("recording video gap".into()); }
+            if config.audio && (last_audio.is_some_and(|at| at.elapsed() > Duration::from_secs(1)) || (last_audio.is_none() && startup.unwrap().elapsed() > Duration::from_secs(3))) { return Err("recording audio gap".into()); }
+            if !video_ready && startup.unwrap().elapsed() > Duration::from_secs(15) { return Err("recording video admission deadline".into()); }
+        }
+    }.await;
+    epoch.revoke();
+    cancellation.cancel();
+    result
+}
+
+struct ClipOwner {
+    lease: Lease,
+    task: Mutex<Option<tokio::task::JoinHandle<Result<(), String>>>>,
+    finished: Arc<std::sync::atomic::AtomicBool>,
+}
+impl ClipOwner {
+    async fn stop(&self) {
+        self.lease.revoke();
+        let mut task = self.task.lock().await;
+        if let Some(owner) = task.as_mut() {
+            let _ = owner.await;
+        }
+        task.take();
+    }
+}
+pub struct Clip {
+    pub messages: mpsc::Receiver<Message>,
+    pub lease: Lease,
+    finish: watch::Sender<bool>,
+    owner: Arc<ClipOwner>,
+}
+impl Clip {
+    pub fn finish(&self) {
+        self.finish.send_replace(true);
+    }
+    pub async fn stop(&mut self) {
+        self.lease.revoke();
+        self.messages.close();
+        self.owner.stop().await;
+        while self.messages.try_recv().is_ok() {}
+    }
+}
+impl Drop for Clip {
+    fn drop(&mut self) {
+        self.lease.revoke();
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn stop_joins_stalled_native_reader_and_revokes_escaped_epoch() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let recorder = Recorder::new(Metrics::new());
-        recorder
-            .start(RecorderConfig {
-                rtsp_url: format!("rtsp://{}/stalled", listener.local_addr().unwrap()),
-                audio: true,
-                fps: 15,
-                audio_sample_rate_hz: 48000,
-                fragment_ms: 4000,
-                prebuffer_ms: 4000,
+struct Boxes {
+    pending: Vec<u8>,
+    init: Vec<u8>,
+    fragment: Vec<u8>,
+    initialized: bool,
+}
+impl Boxes {
+    fn new() -> Self {
+        Self {
+            pending: Vec::new(),
+            init: Vec::new(),
+            fragment: Vec::new(),
+            initialized: false,
+        }
+    }
+    fn feed(&mut self, bytes: &[u8], lease: &Lease) -> Result<Vec<Message>, String> {
+        if self.pending.len() + bytes.len() > MAX_BOX * 2 {
+            return Err("MP4 parser budget".into());
+        }
+        self.pending.extend_from_slice(bytes);
+        let mut offset = 0;
+        let mut messages = Vec::new();
+        while self.pending.len() - offset >= 8 {
+            let data = &self.pending[offset..];
+            let mut size = u64::from(u32::from_be_bytes(data[..4].try_into().unwrap()));
+            let header = if size == 1 {
+                if data.len() < 16 {
+                    break;
+                }
+                size = u64::from_be_bytes(data[8..16].try_into().unwrap());
+                16
+            } else {
+                8
+            };
+            if size < header || size > MAX_BOX as u64 {
+                return Err("invalid MP4 box size".into());
+            }
+            let size = size as usize;
+            if data.len() < size {
+                break;
+            }
+            let kind = &data[4..8];
+            if kind == b"moof" {
+                if !self.fragment.is_empty() {
+                    return Err("unpaired MP4 moof".into());
+                }
+                if !self.initialized {
+                    if self.init.is_empty() {
+                        return Err("missing MP4 init".into());
+                    }
+                    self.initialized = true;
+                    messages.push(Message::Init(Fragment {
+                        data: Arc::new(std::mem::take(&mut self.init)),
+                        lease: lease.clone(),
+                    }));
+                }
+                self.fragment.extend_from_slice(&data[..size]);
+            } else if kind == b"mdat" {
+                if self.fragment.is_empty() || self.fragment.len() + size > MAX_BOX {
+                    return Err("invalid MP4 media pair".into());
+                }
+                self.fragment.extend_from_slice(&data[..size]);
+                messages.push(Message::Media(Fragment {
+                    data: Arc::new(std::mem::take(&mut self.fragment)),
+                    lease: lease.clone(),
+                }));
+            } else if !self.initialized {
+                if self.init.len() + size > MAX_INIT {
+                    return Err("MP4 init budget".into());
+                }
+                self.init.extend_from_slice(&data[..size]);
+            } else if kind != b"mfra" {
+                return Err("unexpected MP4 box after init".into());
+            }
+            offset += size;
+        }
+        self.pending.drain(..offset);
+        Ok(messages)
+    }
+    fn complete(&self) -> bool {
+        self.initialized && self.pending.is_empty() && self.fragment.is_empty()
+    }
+}
+async fn emitted(
+    mux: &mut fmp4::Muxer,
+    boxes: &mut Boxes,
+    lease: &Lease,
+    tx: &mpsc::Sender<Message>,
+    metrics: &Metrics,
+    finish: bool,
+) -> Result<(), String> {
+    let chunk = if finish { mux.finish() } else { mux.drain() }.map_err(|e| e.to_string())?;
+    for message in boxes.feed(chunk.bytes().map_err(|e| e.to_string())?, lease)? {
+        if let Message::Media(fragment) = &message {
+            metrics.recording_fragment(fragment.data.len());
+        }
+        tokio::select! { biased; _ = lease.retired() => return Err("recording retired".into()), result = tokio::time::timeout(Duration::from_secs(2), tx.send(message)) => result.map_err(|_| "recording output pressure")?.map_err(|_| "recording receiver closed")? }
+    }
+    Ok(())
+}
+async fn render(
+    frames: Vec<Arc<Frame>>,
+    mut live: broadcast::Receiver<Arc<Frame>>,
+    first: Arc<Frame>,
+    pool: fmp4::Pool,
+    lease: Lease,
+    mut finishing: watch::Receiver<bool>,
+    tx: mpsc::Sender<Message>,
+    metrics: Arc<Metrics>,
+) -> Result<(), String> {
+    let Frame::Video { delivery, pts, .. } = &*first else {
+        return Err("clip does not start at video".into());
+    };
+    let audio = frames.iter().find_map(|frame| {
+        if let Frame::Audio(packet) = &**frame {
+            Some(packet)
+        } else {
+            None
+        }
+    });
+    let has_audio = audio.is_some();
+    let audio_unit_ns = audio
+        .map(|packet| {
+            packet.position().map(|(_, _, rate)| {
+                (1024i128 * 1_000_000_000 + i128::from(rate) - 1) / i128::from(rate)
             })
-            .await;
-        let lease = recorder.state.lock().await.lease.clone().unwrap();
-        let (mut peer, _) =
-            tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
-                .await
-                .unwrap()
-                .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(2), recorder.stop())
-            .await
-            .unwrap();
-        recorder.stop().await;
-        assert!(!lease.current());
-        assert!(!recorder.is_running().await);
-        assert!(recorder.state.lock().await.owner.is_none());
-        let mut buffer = [0; 1024];
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            while peer.read(&mut buffer).await.unwrap() != 0 {}
         })
-        .await
-        .unwrap();
+        .transpose()
+        .map_err(|e| e.to_string())?
+        .unwrap_or(0);
+    let cancellation = Cancellation::default();
+    let mut mux = fmp4::Muxer::new_presented(
+        delivery,
+        *pts,
+        audio,
+        &pool,
+        fmp4::Limits {
+            input_bytes: 64 * 1024 * 1024,
+            output_bytes: 64 * 1024 * 1024,
+            packets: 16384,
+            chunks: 16384,
+            lifetime: Duration::from_secs(120),
+        },
+        cancellation.clone(),
+    )
+    .map_err(|e| e.to_string())?;
+    drop(first);
+    lease.bind(mux.guard())?;
+    let mut boxes = Boxes::new();
+    let mut snapshot = frames.into_iter();
+    let mut video_end = 0;
+    let mut audio_end = 0;
+    let mut cut = None;
+    let mut input_bytes = 0usize;
+    loop {
+        if (*finishing.borrow() || input_bytes >= 48 * 1024 * 1024) && cut.is_none() {
+            // Whole-AU tail: never finish an undercovered video selection. If AAC
+            // is already too far ahead, refuse rather than invent a video hold.
+            if has_audio && audio_end > video_end + audio_unit_ns {
+                return Err("recording tail is not covered".into());
+            }
+            cut = Some((video_end, tokio::time::Instant::now()));
+        }
+        if let Some((end, at)) = cut {
+            if !has_audio || audio_end >= end {
+                break;
+            }
+            if at.elapsed() > Duration::from_secs(2) {
+                return Err("covering AAC tail deadline".into());
+            }
+        }
+        let frame = if let Some(frame) = snapshot.next() {
+            frame
+        } else {
+            tokio::select! { biased;
+                _ = lease.retired() => return Err("clip retired".into()),
+                _ = finishing.changed(), if cut.is_none() => continue,
+                result = tokio::time::timeout(Duration::from_secs(2), live.recv()) => result.map_err(|_| "clip input deadline")?.map_err(|_| "clip input lost")?,
+            }
+        };
+        input_bytes = input_bytes
+            .checked_add(frame.bytes().map_err(|e| e.to_string())?)
+            .ok_or("clip byte counter overflow")?;
+        match &*frame {
+            Frame::Video {
+                delivery,
+                pts,
+                duration,
+                ..
+            } => {
+                if cut.is_some() {
+                    continue;
+                }
+                mux.push_presented_video(delivery, *pts, *duration)
+                    .map_err(|e| e.to_string())?;
+                video_end = frame.end_ns().map_err(|e| e.to_string())?;
+            }
+            Frame::Audio(packet) => {
+                mux.push_aac(packet).map_err(|e| e.to_string())?;
+                audio_end = frame.end_ns().map_err(|e| e.to_string())?;
+            }
+        }
+        emitted(&mut mux, &mut boxes, &lease, &tx, &metrics, false).await?;
     }
+    emitted(&mut mux, &mut boxes, &lease, &tx, &metrics, true).await?;
+    if !boxes.complete() {
+        return Err("incomplete MP4 finalization".into());
+    }
+    tokio::select! { _ = lease.retired() => Err("clip retired".into()), result = tx.send(Message::End) => result.map_err(|_| "clip receiver closed".into()) }
+}
 
-    #[tokio::test]
-    async fn last_recorder_handle_drop_signals_native_owner() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let recorder = Recorder::new(Metrics::new());
-        recorder
-            .start(RecorderConfig {
-                rtsp_url: format!("rtsp://{}/stalled", listener.local_addr().unwrap()),
-                audio: false,
-                fps: 15,
-                audio_sample_rate_hz: 48000,
-                fragment_ms: 4000,
-                prebuffer_ms: 4000,
-            })
-            .await;
-        let lease = recorder.state.lock().await.lease.clone().unwrap();
-        let state = recorder.state.clone();
-        let (mut peer, _) =
-            tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
-                .await
-                .unwrap()
-                .unwrap();
-        drop(recorder);
-        assert!(!lease.current());
-        let mut buffer = [0; 1024];
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while peer.read(&mut buffer).await.unwrap() != 0 {}
-        })
-        .await
-        .unwrap();
-        let owner = state.lock().await.owner.take().unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(1), owner)
-            .await
-            .unwrap()
-            .unwrap();
+/// Read-only exercise of the production source/history/mux path. No capture is retained.
+pub async fn probe_recording_pipeline(
+    source: Source,
+    config: &RecorderConfig,
+    seconds: u16,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if !(1..=90).contains(&seconds) {
+        return Err("recording probe duration must be 1..90 seconds".into());
     }
-
-    #[test]
-    fn timestamp_filters_build_monotonic_native_packet_clocks() {
-        assert_eq!(
-            video_timestamp_bitstream_filter(15),
-            "setts=pts=N/(15*TB)+if(eq(PTS\\,NOPTS)\\,0\\,if(eq(DTS\\,NOPTS)\\,0\\,PTS-DTS)):dts=N/(15*TB):duration=1/(15*TB)"
-        );
-        assert!(video_timestamp_bitstream_filter(0).contains("N/(1*TB)"));
-        assert_eq!(
-            audio_timestamp_bitstream_filter(48_000),
-            "setts=ts=N*1024/(48000*TB):duration=1024/(48000*TB)"
-        );
-    }
+    let recorder = Recorder::new(source, Metrics::new());
+    recorder.start(config.clone()).await;
+    let startup_deadline = tokio::time::Instant::now() + Duration::from_secs(25);
+    let mut clip = loop {
+        match recorder.open().await {
+            Ok(clip) => break clip,
+            Err(_) if tokio::time::Instant::now() < startup_deadline => {
+                tokio::time::sleep(Duration::from_millis(50)).await
+            }
+            Err(error) => {
+                recorder.stop().await;
+                return Err(error.into());
+            }
+        }
+    };
+    let finish_at = tokio::time::Instant::now() + Duration::from_secs(u64::from(seconds));
+    let deadline = finish_at + Duration::from_secs(5);
+    let mut finishing = false;
+    let result = loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => break Err("recording probe deadline"),
+            _ = tokio::time::sleep_until(finish_at), if !finishing => { finishing = true; clip.finish(); },
+            message = clip.messages.recv() => match message {
+                Some(Message::End) => break Ok(()), Some(_) => {}, None => break Err("recording probe incomplete"),
+            },
+        }
+    };
+    clip.stop().await;
+    recorder.stop().await;
+    result.map_err(Into::into)
 }

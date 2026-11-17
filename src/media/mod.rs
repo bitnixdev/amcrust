@@ -1,10 +1,11 @@
 //! Rust media building blocks and the shared production SRTP/SRTCP boundary.
-//! Shared-source media producers are not yet connected to HomeKit.
+//! Application producers retain these grants through their HomeKit transports.
 pub mod audio;
 mod audio_clock;
 mod audio_recovery;
 pub mod fmp4;
 pub mod presentation;
+pub mod recording;
 pub mod rtcp;
 pub mod rtp;
 pub mod transport;

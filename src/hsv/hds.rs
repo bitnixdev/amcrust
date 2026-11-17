@@ -3,7 +3,7 @@
 
 use log::{debug, error, info, warn};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
@@ -525,11 +525,7 @@ impl Connection {
         let task = tokio::spawn(async move {
             let _busy = busy;
             let output = writer.clone();
-            let result = tokio::select! {
-                biased;
-                _ = task_cancel.retired() => Ok(RecordingDeliveryOutcome::Cancelled),
-                result = pump_recording(writer, state, stream_id, task_cancel.clone()) => result,
-            };
+            let result = pump_recording(writer, state, stream_id, task_cancel.clone()).await;
             task_cancel.revoke();
             if !matches!(result, Ok(RecordingDeliveryOutcome::EndSent)) {
                 let mut output = output.lock().await;
@@ -574,109 +570,109 @@ async fn pump_recording(
     stream_id: i64,
     cancel: Lease,
 ) -> Result<RecordingDeliveryOutcome, String> {
-    let (init, prebuffer, mut live) = state.recorder.snapshot_and_subscribe().await;
-    let Some(init) = init else {
-        send_close(&writer, stream_id, 6).await?; // TIMEOUT: nothing buffered yet
-        return Ok(RecordingDeliveryOutcome::SourceUnavailable);
+    use super::fmp4::Message;
+    let mut clip = match state.recorder.open().await {
+        Ok(clip) => clip,
+        Err(error) => {
+            debug!("recording stream {stream_id} unavailable: {error}");
+            send_close(&writer, stream_id, 6).await?;
+            return Ok(RecordingDeliveryOutcome::SourceUnavailable);
+        }
     };
+    let lease = clip.lease.clone();
     let pump = async {
-        let prebuffer_fragments = prebuffer.len();
-        let prebuffer_bytes: usize = prebuffer.iter().map(|fragment| fragment.data.len()).sum();
-        debug!(
-            "recording stream {stream_id}: sending {}-byte init and {prebuffer_fragments} prebuffer fragments ({prebuffer_bytes} bytes)",
-            init.data.len()
-        );
-
-        let sequence = AtomicU64::new(1);
-        let mut fragment_count = 0usize;
-        let mut media_bytes = 0usize;
-
-        // Sequence 1: media initialization.
-        send_data(
-            &writer,
-            stream_id,
-            &init.data,
-            "mediaInitialization",
-            sequence.fetch_add(1, Ordering::SeqCst),
-            false,
-            (&init.lease, &cancel),
-        )
-        .await?;
-
-        for fragment in prebuffer {
-            if !cancel.current() {
-                debug!("recording stream {stream_id}: cancelled during prebuffer");
-                return Ok(RecordingDeliveryOutcome::Cancelled);
-            }
-            let seq = sequence.fetch_add(1, Ordering::SeqCst);
-            send_data(
-                &writer,
-                stream_id,
-                &fragment.data,
-                "mediaFragment",
-                seq,
-                false,
-                (&init.lease, &cancel),
-            )
-            .await?;
-            fragment_count += 1;
-            media_bytes += fragment.data.len();
-        }
-
+        let mut sequence = 1;
+        let mut initialized = false;
+        let mut pending: Option<super::fmp4::Fragment> = None;
         let mut inactive_since: Option<Instant> = None;
+        let mut finishing = false;
+        let started = Instant::now();
+        let mut tick = tokio::time::interval(Duration::from_millis(100));
+        let mut deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            if !cancel.current() {
-                debug!(
-                    "recording stream {stream_id}: controller closed after {fragment_count} fragments ({media_bytes} bytes)"
-                );
-                return Ok(RecordingDeliveryOutcome::Cancelled);
-            }
-            let fragment = match timeout(Duration::from_secs(30), live.recv()).await {
-                Ok(Ok(fragment)) => fragment,
-                Ok(Err(_)) => {
-                    send_close(&writer, stream_id, 5).await?;
-                    return Ok(RecordingDeliveryOutcome::SourceUnavailable);
-                }
-                Err(_) => {
-                    send_close(&writer, stream_id, 6).await?;
-                    return Ok(RecordingDeliveryOutcome::SourceUnavailable);
-                }
+            let message = tokio::select! {
+                _ = tick.tick() => {
+                    if !finishing && started.elapsed() >= Duration::from_secs(60) {
+                        finishing = true;
+                        clip.finish();
+                    }
+                    if !finishing {
+                        if state.motion_active.load(Ordering::SeqCst) { inactive_since = None; }
+                        else if inactive_since.get_or_insert_with(Instant::now).elapsed() >= RECORDING_TAIL {
+                            finishing = true;
+                            clip.finish();
+                        }
+                    }
+                    continue;
+                },
+                _ = tokio::time::sleep_until(deadline) => return Err("recording mux deadline".into()),
+                result = clip.messages.recv() => result.ok_or("recording mux ended without completion")?,
             };
-            let motion_still_active = state.motion_active.load(Ordering::SeqCst);
-            let end_of_stream = if motion_still_active {
-                inactive_since = None;
-                false
-            } else {
-                let stopped_at = inactive_since.get_or_insert_with(Instant::now);
-                stopped_at.elapsed() >= RECORDING_TAIL
-            };
-            let seq = sequence.fetch_add(1, Ordering::SeqCst);
-            send_data(
-                &writer,
-                stream_id,
-                &fragment.data,
-                "mediaFragment",
-                seq,
-                end_of_stream,
-                (&init.lease, &cancel),
-            )
-            .await?;
-            fragment_count += 1;
-            media_bytes += fragment.data.len();
-            if end_of_stream {
-                debug!(
-                    "recording stream {stream_id}: end of stream sent after {fragment_count} fragments ({media_bytes} bytes, {}s post-motion tail)",
-                    RECORDING_TAIL.as_secs()
-                );
-                return Ok(RecordingDeliveryOutcome::EndSent);
+            deadline = Instant::now() + Duration::from_secs(30);
+            match message {
+                Message::Init(fragment) => {
+                    if initialized {
+                        return Err("repeated recording init".into());
+                    }
+                    initialized = true;
+                    send_data(
+                        &writer,
+                        stream_id,
+                        &fragment.data,
+                        "mediaInitialization",
+                        sequence,
+                        false,
+                        (&fragment.lease, &cancel),
+                    )
+                    .await?;
+                    sequence += 1;
+                }
+                Message::Media(fragment) => {
+                    if !initialized {
+                        return Err("recording media before init".into());
+                    }
+                    // Retain one complete fragment so only a successful finite
+                    // mux completion can mark the final HDS packet.
+                    if let Some(previous) = pending.replace(fragment) {
+                        send_data(
+                            &writer,
+                            stream_id,
+                            &previous.data,
+                            "mediaFragment",
+                            sequence,
+                            false,
+                            (&previous.lease, &cancel),
+                        )
+                        .await?;
+                        sequence += 1;
+                    }
+                }
+                Message::End => {
+                    let final_fragment = pending.take().ok_or("empty completed recording")?;
+                    send_data(
+                        &writer,
+                        stream_id,
+                        &final_fragment.data,
+                        "mediaFragment",
+                        sequence,
+                        true,
+                        (&final_fragment.lease, &cancel),
+                    )
+                    .await?;
+                    return Ok(RecordingDeliveryOutcome::EndSent);
+                }
             }
         }
     };
-    tokio::select! {
+    let result = tokio::select! {
         biased;
-        _ = init.lease.retired() => Ok(RecordingDeliveryOutcome::SourceUnavailable),
+        _ = cancel.retired() => Ok(RecordingDeliveryOutcome::Cancelled),
+        _ = lease.retired() => Ok(RecordingDeliveryOutcome::SourceUnavailable),
         result = pump => result,
-    }
+    };
+    // Do not cancel this owner from an outer select: stop always joins its mux.
+    clip.stop().await;
+    result
 }
 
 async fn send_close(

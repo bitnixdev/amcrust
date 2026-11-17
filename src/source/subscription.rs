@@ -109,7 +109,8 @@ struct Budget {
 /// A non-cloneable delivery keeps all byte/count charges until dropped, even
 /// after source retirement or removal from the queue. Access checks are cooperative:
 /// already borrowed/copied bytes cannot be retracted and transport owners must
-/// fence writes too. This is not yet the recording copied-output privacy boundary.
+/// fence writes too. Recording's copied-output guard is a separate authority;
+/// merely retaining this delivery never authorizes an HDS write.
 pub struct Delivery {
     packet: Arc<Packet>,
     generation: Arc<Generation>,
@@ -164,6 +165,16 @@ impl DeliveryGuard {
             return Err(reason);
         }
         self.generation.check()
+    }
+    pub(crate) fn accepts_guard(&self, other: &Self) -> Result<(), Terminal> {
+        self.check()?;
+        other.check()?;
+        if !Arc::ptr_eq(&self.generation, &other.generation)
+            || !Arc::ptr_eq(&self.validity, &other.validity)
+        {
+            return Err(Terminal::Reconfigured);
+        }
+        Ok(())
     }
     pub(crate) fn accepts(&self, delivery: &Delivery) -> Result<(), Terminal> {
         self.check()?;
