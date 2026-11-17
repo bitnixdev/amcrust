@@ -310,7 +310,9 @@ recording acceptance remain open.
 `media::transport::Transport` is now the **only production live SRTP/SRTCP socket-write
 path**, used by the Rust video/audio owners in `src/stream.rs`. It owns the UDP socket, fixed peer, outgoing SSRC and cryptographic state.
 It does not acquire media, pace packets, rescale timestamps or invent sender reports.
-The legacy timestamp adapter is removed; Rust audio RTP always uses 48-kHz timing.
+The legacy timestamp adapter is removed. Rust audio processing uses 48-kHz presentation
+units; the HomeKit producer converts signed, unwrapped offsets and sender reports into
+the negotiated HAP audio rate before adding its independent RTP origin.
 
 Outgoing protected datagrams must fit the configured wire limit (maximum 2048 bytes), including
 10 bytes for SRTP or 14 for SRTCP. Production reserves SRTP overhead before packetization,
@@ -428,8 +430,16 @@ Larger, negative >100-ms, or persistent excursions fail the processor. Phase/pea
 late-observation counters remain visible. This is a new arrival-jitter policy, not a
 change to the historical source-clock candidate's limits.
 
-RTP sends complete Opus packets, including initial codec preroll, on a fixed 48-kHz
-clock for all negotiated encoder rates. No container skip metadata is presumed to
+RTP sends complete Opus packets, including initial codec preroll. Internal presentation
+and decoder units remain 48 kHz, but HomeKit wire timestamps and SR pairs use the
+negotiated audio rate. This HAP boundary exception is distinct from RFC 7587's generic
+48-kHz Opus RTP clock (see [go2rtc's HAP implementation](https://github.com/AlexxIT/go2rtc/blob/master/pkg/opus/homekit.go)).
+For 16-kHz/20-ms audio, each packet decodes to 960 samples at 48 kHz but advances the
+HomeKit RTP timestamp by 320 ticks. Convert signed offsets before wrapping; do not
+divide a wrapped RTP field, zero tracks independently, change PCM, or rescale twice.
+The earlier production path incorrectly sent the canonical 48-kHz clock directly;
+user-reported correct pitch with long periodic silence exposed the compatibility issue.
+Post-fix listening confirmation on the user's Apple client is still required. No container skip metadata is presumed to
 travel over RTP; timestamping includes native codec lookahead. Live stop does not flush
 or claim a finite tail. Presentation-mode finite finish/coverage APIs are refused.
 Eight jobs/16 MiB of logical reservations bound application audio processing; matching
@@ -471,7 +481,8 @@ ordinary constructor remains strict. The candidate requires **48-kHz AAC input**
 supports **8/16/24/48-kHz Opus encoder input with 20/40/60-ms frames**. This includes
 HomeKit's negotiated rates and packet times handled by the existing live path.
 Other configurations are refused, not rounded. Encoder-private positions and padding
-are converted exactly into the Opus decoder/RTP clock's fixed 48-kHz domain.
+are converted exactly into the canonical Opus decoder/RFC 7587 clock's 48-kHz domain.
+This library contract does not choose the HomeKit-specific wire clock described above.
 
 1. Wait on the existing audio subscription for an AAC packet carrying public SR and
    RTCP-derived PRFT metadata. Constructor refusal is `Incomplete` until then. Start

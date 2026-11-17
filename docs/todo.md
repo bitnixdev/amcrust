@@ -264,7 +264,8 @@ the production integration below. Removing probes is not the acquisition cutover
   - [ ] Share processing only for matching source generation and negotiated settings;
     the current audio pool bounds jobs, but does not yet deduplicate encoders.
     Audio RTP/RTCP/SRTP and joined production lifecycle are connected. The removed
-    legacy rescaler is not applied: all Opus RTP timing uses 48-kHz units.
+    legacy rescaler is not restored. Internal timing stays in 48-kHz units; the
+    HomeKit boundary now maps RTP and RTCP together to the negotiated rate.
 - [ ] `src/hsv/recording.rs` / `src/hsv/fmp4.rs`: remove the recording camera reader;
   consume generation-bound shared packets, mux through FFmpeg bindings and preserve
   correct initialization, prebuffer, actual-IDR start, historical/live order and cuts.
@@ -313,6 +314,12 @@ not the physical camera: coordinate any existing instance controlling that encod
   connection count on the real camera/socket path—not merely process count.
 - [ ] Ask the user to pair/open `amcrust-test`: verify first decoded picture, sustained
   live video, audio and lip sync, simultaneous viewers and the second live resolution.
+  - [x] Record user observation: Home playback works, pitch sounds right and burned-in
+    seconds advance approximately correctly, but audio is silent roughly 3/5 of the time.
+  - [x] Correct HomeKit audio RTP/RTCP clock units without changing canonical PCM timing;
+    test all negotiated-rate/packet-time combinations, offsets, wrap and sender reports.
+  - [ ] Have the user listen again after deploying the clock correction. Do not mark
+    intermittent audio resolved from raw decode/count tests alone.
 - [ ] Ask the user to trigger/evaluate HSV: pre-event content, clip beginning/end,
   audio, playback/seek, successive events and an actual recording appearing in Home.
 - [ ] Settle start/end presentation with those devices. Characterize the remaining

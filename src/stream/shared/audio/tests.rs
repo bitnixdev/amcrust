@@ -6,6 +6,56 @@ use amcrust::{
 use ffmpeg_sys_next as av;
 use webrtc_srtp::{context::Context, protection_profile::ProtectionProfile};
 
+#[derive(Default)]
+struct ReportClock {
+    previous: Option<(u64, u32)>,
+    count: usize,
+}
+impl ReportClock {
+    fn observe(&mut self, packet: &[u8], rate: u32) {
+        assert!(packet.len() >= 28);
+        assert_eq!(packet[1], 200);
+        let ntp = u64::from_be_bytes(packet[8..16].try_into().unwrap());
+        let rtp = u32::from_be_bytes(packet[16..20].try_into().unwrap());
+        if let Some((old_ntp, old_rtp)) = self.previous {
+            let wall = i128::from(ntp - old_ntp) * i128::from(rate);
+            let ticks = i128::from(rtp.wrapping_sub(old_rtp)) * (1i128 << 32);
+            // Only host UTC/monotonic sampling jitter, not a media phase waiver.
+            assert!(
+                (ticks - wall).abs() <= i128::from(rate) * (1i128 << 32) / 100,
+                "RTP and RTCP wire rates disagree"
+            );
+        }
+        self.previous = Some((ntp, rtp));
+        self.count += 1;
+    }
+}
+
+#[test]
+fn hap_clock_preserves_offsets_durations_and_wrap_without_reanchoring() {
+    for rate in [8000, 16000, 24000, 48000] {
+        let clock = HapClock::new(PresentationClock::new(), u32::MAX - 40, rate).unwrap();
+        assert_eq!(clock.timestamp(24000).wrapping_sub(clock.origin), rate / 2);
+        for ms in [20, 40, 60] {
+            for start in [-100000i64, -313, -1, 0, 1, 1i64 << 32, 180 * 86400 * 48000] {
+                assert_eq!(
+                    clock
+                        .timestamp(start + ms * 48)
+                        .wrapping_sub(clock.timestamp(start)),
+                    rate * ms as u32 / 1000
+                );
+            }
+        }
+        let before = std::time::Instant::now();
+        let report = clock.report().unwrap();
+        let after = std::time::Instant::now();
+        let delta = report.rtp.wrapping_sub(clock.origin) as i128;
+        assert!(delta >= clock.presentation.ticks(before, rate));
+        assert!(delta <= clock.presentation.ticks(after, rate));
+    }
+    assert!(HapClock::new(PresentationClock::new(), 0, 44100).is_err());
+}
+
 struct Decoder(*mut av::AVCodecContext);
 impl Drop for Decoder {
     fn drop(&mut self) {
@@ -142,8 +192,9 @@ async fn real_production_audio_and_video_share_source() {
         let mut vb = [0; 2048]; let mut ab = [0; 2048];
         let (mut videos, mut audios, mut samples) = (0usize, 0usize, 0usize);
         let (mut vr, mut ar) = (false, false);
+        let mut reports = ReportClock::default();
         let mut previous: Option<u32> = None;
-        while audios < 100 || videos < 100 || !vr || !ar || started.elapsed().as_secs() < seconds {
+        while audios < 100 || videos < 100 || !vr || !ar || reports.count < 2 || started.elapsed().as_secs() < seconds {
             tokio::select! {
                 n = video.recv(&mut vb) => {
                     let n = n.unwrap();
@@ -152,11 +203,11 @@ async fn real_production_audio_and_video_share_source() {
                 },
                 n = audio.recv(&mut ab) => {
                     let n = n.unwrap();
-                    if (192..=223).contains(&ab[1]) { a.decrypt_rtcp(&ab[..n]).unwrap(); ar = true; }
+                    if (192..=223).contains(&ab[1]) { let report = a.decrypt_rtcp(&ab[..n]).unwrap(); reports.observe(&report, 16000); ar = true; }
                     else {
                         let packet = a.decrypt_rtp(&ab[..n]).unwrap();
                         let timestamp = u32::from_be_bytes(packet[4..8].try_into().unwrap());
-                        if let Some(previous) = previous { assert_eq!(timestamp.wrapping_sub(previous), 960); }
+                        if let Some(previous) = previous { assert_eq!(timestamp.wrapping_sub(previous), 320); }
                         previous = Some(timestamp);
                         assert_eq!(decoder.decode(&packet[12..]), 960);
                         samples += 960; audios += 1;
@@ -174,7 +225,7 @@ async fn real_production_audio_and_video_share_source() {
         assert_eq!(manager.audio_pool.reserved_bytes(), 0);
         assert!(!manager.inner.lock().await.video_proxies.get(&id).unwrap().transport.is_closed());
         assert!(source.snapshot().active);
-        eprintln!("Production shared A/V: RTP video={videos} audio={audios}, decoded untrimmed RTP Opus={samples} samples at 48k; encoder=16k/20ms; one acquisition; audio BYE joined worker/released pool while video stayed active");
+        eprintln!("Production shared A/V: RTP video={videos} audio={audios}, decoded untrimmed RTP Opus={samples} samples at 48k; encoder/RTP=16k/20ms; one acquisition; audio BYE joined worker/released pool while video stayed active");
     }).await;
     manager.stop_stream().await;
     registry.shutdown().await.unwrap();
@@ -248,18 +299,19 @@ async fn real_presented_audio_matrix() {
                 let mut previous: Option<u32> = None;
                 let mut buffer = [0; 2048];
                 let mut count = 0;
-                while count < 25 {
+                let mut reports = ReportClock::default();
+                while count < 25 || reports.count < 2 {
                     let n = receiver.recv(&mut buffer).await.unwrap();
-                    if (192..=223).contains(&buffer[1]) { crypto.decrypt_rtcp(&buffer[..n]).unwrap(); continue; }
+                    if (192..=223).contains(&buffer[1]) { let report = crypto.decrypt_rtcp(&buffer[..n]).unwrap(); reports.observe(&report, rate); continue; }
                     let packet = crypto.decrypt_rtp(&buffer[..n]).unwrap();
                     let timestamp = u32::from_be_bytes(packet[4..8].try_into().unwrap());
                     let samples = u32::from(frame_ms) * 48;
-                    if let Some(previous) = previous { assert_eq!(timestamp.wrapping_sub(previous), samples); }
+                    if let Some(previous) = previous { assert_eq!(timestamp.wrapping_sub(previous), rate * u32::from(frame_ms) / 1000); }
                     previous = Some(timestamp);
                     assert_eq!(decoder.decode(&packet[12..]), samples as usize);
                     count += 1;
                 }
-                eprintln!("Presented live audio: {rate} Hz/{frame_ms} ms, 25 authenticated/decoded packets, fixed 48-kHz RTP clock");
+                eprintln!("Presented live audio: {rate} Hz/{frame_ms} ms, {count} authenticated/decoded packets, negotiated-rate HomeKit RTP/RTCP, 48-kHz decoded samples");
             }).await;
             proxy.stop().await;
             assert_eq!(pool.reserved_bytes(), 0);

@@ -110,7 +110,8 @@ as diagnostics rather than trusting them for playback. This is not capture-time 
 or Apple A/V acceptance. Source-bound SRTP/SRTCP writes fence generation and
 subscription retirement. Both tracks share a session monotonic domain and host-UTC
 reports. Rust audio uses bounded continuous resampling, explicit startup history,
-and complete Opus RTP packets on a 48-kHz clock; the old audio subprocess, relay and
+and complete Opus packets. Internal timing stays at 48 kHz; the HomeKit boundary
+maps RTP and sender reports to the negotiated audio rate. The old audio subprocess, relay and
 timestamp rescaler are removed. Recording still uses its own FFmpeg reader.
 A separate historical live-audio candidate anchors sample progression to AAC source timing
 and supports 8/16/24/48-kHz Opus output with 20/40/60-ms frames. It refuses excessive

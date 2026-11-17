@@ -368,8 +368,10 @@ impl OpusPacket {
         let p = unsafe { &*self.raw };
         Ok((p.pts, p.duration))
     }
-    /// Live RTP contract: send the complete Opus packet, including its initial
-    /// codec preroll, at this 48-kHz timestamp. RTP carries no OpusHead/trim command;
+    /// Canonical live Opus/RFC 7587 coordinate: the complete packet, including
+    /// initial codec preroll, at this 48-kHz timestamp. HomeKit's negotiated-rate
+    /// wire-clock conversion belongs at the application boundary, not here.
+    /// RTP carries no OpusHead/trim command;
     /// receivers decode the preroll rather than silently discarding a first packet.
     /// This API never grants finite tail padding or HSV completion.
     pub fn live_timestamp_48k(&self) -> Result<i64, Error> {

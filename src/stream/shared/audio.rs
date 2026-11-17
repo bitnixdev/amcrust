@@ -7,6 +7,35 @@ use amcrust::{
     media::audio::{Config, Pool, Transcoder},
 };
 
+/// HomeKit's negotiated-rate wire clock is distinct from Opus's canonical
+/// 48-kHz sample/presentation domain. Convert signed, unwrapped presentation
+/// offsets before adding the independent RTP origin; never divide wrapped RTP.
+/// See go2rtc/pkg/opus/homekit.go for the HAP RFC 3550 timestamp exception.
+struct HapClock {
+    presentation: PresentationClock,
+    origin: u32,
+    rate: u32,
+}
+impl HapClock {
+    fn new(presentation: PresentationClock, origin: u32, rate: u32) -> Result<Self, Failure> {
+        if !matches!(rate, 8000 | 16000 | 24000 | 48000) {
+            return Err("unsupported HomeKit audio clock".into());
+        }
+        Ok(Self {
+            presentation,
+            origin,
+            rate,
+        })
+    }
+    fn timestamp(&self, presentation_48k: i64) -> u32 {
+        let ticks = (i128::from(presentation_48k) * i128::from(self.rate)).div_euclid(48000);
+        self.origin.wrapping_add(ticks as u32)
+    }
+    fn report(&self) -> Result<rtcp::ClockPair, amcrust::media::Error> {
+        self.presentation.report(self.origin, self.rate)
+    }
+}
+
 pub(crate) struct Audio {
     pub clock: PresentationClock,
     pub source: Source,
@@ -82,7 +111,11 @@ async fn run(audio: Audio, control: &Control, metrics: &Metrics) -> Result<(), F
     let mut receiver = rtcp::Receiver::new(audio.ssrc);
     let mut interval = tokio::time::interval(audio.interval);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let origin: u32 = rand::random();
+    let wire_clock = HapClock::new(clock, rand::random(), audio.config.rate)?;
+    debug!(
+        "HomeKit Opus: encoder={} Hz, RTP/RTCP={} Hz, packet={} ms; internal presentation=48000 Hz",
+        audio.config.rate, audio.config.rate, audio.config.frame_ms
+    );
     let mut sequence: u16 = rand::random();
     let mut bytes = vec![0; transport.rtp_capacity()];
     let mut sent = false;
@@ -99,7 +132,7 @@ async fn run(audio: Audio, control: &Control, metrics: &Metrics) -> Result<(), F
             error
         })?;
         for packet in output {
-            let timestamp = origin.wrapping_add(packet.live_timestamp_48k()? as u32);
+            let timestamp = wire_clock.timestamp(packet.live_timestamp_48k()?);
             let payload = packet.data()?;
             if payload.len() + 12 > bytes.len() {
                 return Err(TransportError::TooLarge.into());
@@ -122,7 +155,7 @@ async fn run(audio: Audio, control: &Control, metrics: &Metrics) -> Result<(), F
                 next = subscription.recv() => { delivery = next?; break; },
                 _ = tokio::time::sleep_until(startup_deadline), if !sent => return Err("audio startup deadline".into()),
                 _ = interval.tick(), if sent => {
-                    transport.send_rtcp(&reports.report(clock.report(origin, 48000)?, transport.rtp_counts()), || true).await?;
+                    transport.send_rtcp(&reports.report(wire_clock.report()?, transport.rtp_counts()), || true).await?;
                 },
                 feedback = transport.feedback() => {
                     let packet = match feedback {

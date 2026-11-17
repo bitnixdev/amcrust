@@ -26,6 +26,44 @@ as application library code and is wired into `src/main.rs` for live video/audio
 MediaMTX was investigated but not added or launched. Recording integration and
 Apple acceptance remain separate requirements.
 
+### Home playback report and HomeKit audio wire-clock correction
+
+The user reports Home app playback works, pitch sounds correct and burned-in seconds
+advance approximately correctly, but audio is silent roughly **3/5 of the time**.
+This establishes some real client playback, not acceptable audio continuity, measured
+lip sync, a sustained soak, or an identified Apple OS/client/build combination.
+
+The Rust cutover had incorrectly treated its internal 48-kHz Opus clock as the HomeKit
+wire clock at every negotiated rate. For a 16-kHz request, **960 wire ticks mean 60 ms**
+while a 20-ms packet contains **960 decoded samples at 48 kHz**. Correct-pitch playback
+with roughly two-thirds gaps is consistent with that mismatch. Existing
+[go2rtc HAP code](https://github.com/AlexxIT/go2rtc/blob/master/pkg/opus/homekit.go)
+explicitly uses the requested rate for its HomeKit timestamp exception. This is strong
+diagnostic support, not a post-fix observation from the user's device.
+
+The application boundary now converts signed, unwrapped canonical offsets to the
+negotiated rate before adding/wrapping the session RTP origin, and creates RTCP clock
+pairs at that same rate. At 16-kHz/20-ms this is **320 RTP ticks**, with unchanged
+960-sample decoded packets. No encoder/resampler changes, silence insertion, dropped
+AUs, reanchoring, widened recovery budgets, or legacy reader fallback are introduced.
+
+The user confirmed the camera was idle before serial, read-only checks:
+- **13.05 s:** all twelve 8/16/24/48-kHz × 20/40/60-ms producer configurations decoded
+  25 authenticated packets each. Tests now check negotiated-rate RTP spacing and at
+  least two authenticated SRs against their NTP interval, not just decodability.
+- **60.04 s:** one acquisition, **9,311 video /2,984 audio RTP**, **2,864,640** decoded
+  48-kHz samples, 16-kHz RTP/SR timing, audio BYE/joined cleanup with video still active.
+- Local clock checks cover signed preroll, preserved common-domain offsets, all packet
+  durations, RTP wrap, 180-day arithmetic, invalid rates and the SR mapping.
+
+Earlier fixed-48-kHz matrix runs remain valid codec/transport observations, but their
+wire-clock assertion was wrong for this HAP boundary and did not prove Home playback.
+Validation passed: **47 library +53 application tests**, focused recovery/phase-trend
+checks, all-target compilation, strict library Clippy, formatting, two sampler tests
+and the pinned Nix package. Bounded self-review returned no findings.
+The correction is not deployed by these checks; the user must confirm audio continuity
+in Home after rebuilding/restarting. HSV still uses its legacy recording reader.
+
 ### Recording ownership before the reader replacement
 
 The recording reader/mux is **still the legacy FFmpeg process**. Its detached parser
