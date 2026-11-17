@@ -229,7 +229,22 @@ mod tests {
         assert!(weak.upgrade().is_some());
         control.revoke();
         assert!(weak.upgrade().is_none());
-        let _released = tokio::net::UdpSocket::bind(address).await.unwrap();
+        // Concurrent native-child startup can briefly inherit a CLOEXEC descriptor
+        // between fork/spawn and exec. Ownership is gone above; allow bounded OS
+        // descriptor-close scheduling rather than assuming immediate port reuse.
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                match tokio::net::UdpSocket::bind(address).await {
+                    Ok(socket) => break socket,
+                    Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                    Err(error) => panic!("released transport socket: {error}"),
+                }
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

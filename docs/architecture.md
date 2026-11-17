@@ -276,6 +276,35 @@ before access. Abandonment is not finish; explicit finish is only local mux comp
 These checks cannot retract already borrowed/copied bytes and do not yet fence HDS
 writes. Reservations are logical ownership bounds, not FFmpeg allocator/RSS measurements.
 
+## Recording delivery ownership during cutover
+
+The remaining native recorder has a serialized, joined owner rather than detached parser
+and stderr tasks. Replacing/stopping it revokes its output epoch before awaiting native
+termination/reaping and the fixed-buffer diagnostic drain. Final recorder-handle drop
+signals cancellation; it does not pretend to acknowledge an asynchronous join. Probe
+diagnostics are bounded and do not return credential-bearing native stderr.
+
+Init segments and fragments carry that epoch through snapshot/broadcast delivery. HDS
+writes hold both recording and stream gates only across nonblocking TCP writes; encryption,
+copies, readiness waits and producer work run outside them. Revoke wakes pending writes.
+Every frame has a five-second write deadline; an interrupted frame poisons its connection
+to prevent appending another frame to a partial ciphertext. Already accepted kernel bytes
+cannot be revoked. Control frames are separately scoped, not media permission.
+
+The recorder bounds boxes/fragments at 16 MiB, initialization at 1 MiB, and retained
+prebuffer at 32 MiB/eight fragments. The live broadcast retains four fragments; this is
+not a complete source/history/mux reservation ledger. Snapshot plus subscription and
+fragment publication are serialized to avoid a duplicated historical/live boundary.
+HDS bounds prepared sessions at sixteen and connections at eight, joins active delivery
+on close/error, and joins connection tasks on server shutdown. The recording busy slot
+belongs to the delivery owner, never an unjoined predecessor's close callback.
+
+Configuration/flag reconciliation reads desired state after obtaining ownership; a stale
+callback cannot restart recording after a disable acknowledgement. Recording camera-active
+writes now await reconciliation. These gates still represent a legacy recorder epoch:
+Rust shared-source/mux binding, history/cut policy, whole-camera live privacy and Apple
+recording acceptance remain open.
+
 ## Implemented secure transport boundary
 
 `media::transport::Transport` is now the **only production live SRTP/SRTCP socket-write

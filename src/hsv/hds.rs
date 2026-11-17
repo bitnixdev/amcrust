@@ -11,8 +11,13 @@ use tokio::time::{Duration, Instant, timeout};
 
 use crate::hsv::codec::{self, Value};
 use crate::hsv::frame::{self, SessionKeys};
+use crate::hsv::lease::Lease;
 use crate::hsv::recording::HsvState;
 use crate::metrics::{ErrorSubsystem, Metrics, RecordingDeliveryOutcome};
+
+#[cfg(test)]
+#[path = "hds_tests.rs"]
+mod tests;
 
 const PREPARED_SESSION_TTL: Duration = Duration::from_secs(10);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -26,11 +31,14 @@ struct PreparedSession {
 
 struct Listener {
     port: u16,
+    stop: Lease,
+    task: tokio::task::JoinHandle<()>,
 }
 
 struct Inner {
     listener: Option<Listener>,
     prepared: Vec<PreparedSession>,
+    stopped: bool,
 }
 
 /// One HDS server per accessory. The TCP listener is bound lazily on the first
@@ -40,6 +48,7 @@ pub struct HdsServer {
     camera_name: Arc<str>,
     port: u16,
     inner: Arc<Mutex<Inner>>,
+    shutdown_lock: Arc<Mutex<()>>,
     state: Arc<HsvState>,
     /// True while a dataSend recording stream is running (one at a time).
     recording_busy: Arc<AtomicBool>,
@@ -59,7 +68,9 @@ impl HdsServer {
             inner: Arc::new(Mutex::new(Inner {
                 listener: None,
                 prepared: Vec::new(),
+                stopped: false,
             })),
+            shutdown_lock: Arc::new(Mutex::new(())),
             state,
             recording_busy: Arc::new(AtomicBool::new(false)),
             metrics,
@@ -80,6 +91,9 @@ impl HdsServer {
         inner
             .prepared
             .retain(|p| p.created.elapsed() < PREPARED_SESSION_TTL);
+        if inner.stopped || inner.prepared.len() >= 16 {
+            return Err("HDS admission closed".into());
+        }
         inner.prepared.push(PreparedSession {
             keys,
             created: Instant::now(),
@@ -93,32 +107,38 @@ impl HdsServer {
                     .map_err(|e| e.to_string())?;
                 let port = listener.local_addr().map_err(|e| e.to_string())?.port();
                 info!("HDS listener bound on port {port}");
-                inner.listener = Some(Listener { port });
-
+                let stop = Lease::new();
+                let owner_stop = stop.clone();
                 let server = self.clone();
-                tokio::spawn(async move {
+                let task = tokio::spawn(async move {
+                    let mut connections = tokio::task::JoinSet::new();
                     loop {
-                        match listener.accept().await {
-                            Ok((stream, addr)) => {
-                                debug!("HDS connection from {addr}");
-                                let server = server.clone();
-                                server.metrics.data_stream_opened();
-                                tokio::spawn(async move {
-                                    if let Err(e) = server.handle_connection(stream).await {
-                                        server.metrics.error(ErrorSubsystem::DataStream);
-                                        debug!("HDS connection ended: {e}");
-                                    }
-                                    server.metrics.data_stream_closed();
-                                });
-                            }
-                            Err(e) => {
-                                server.metrics.error(ErrorSubsystem::DataStream);
-                                error!("HDS accept error: {e}");
-                                break;
+                        tokio::select! {
+                            biased;
+                            _ = owner_stop.retired() => break,
+                            _ = connections.join_next(), if !connections.is_empty() => (),
+                            accepted = listener.accept() => match accepted {
+                                Ok((stream, _)) if connections.len() < 8 => {
+                                    let server = server.clone();
+                                    let stop = owner_stop.clone();
+                                    server.metrics.data_stream_opened();
+                                    connections.spawn(async move {
+                                        if let Err(error) = server.handle_connection(stream, &stop).await {
+                                            server.metrics.error(ErrorSubsystem::DataStream);
+                                            debug!("HDS connection ended: {error}");
+                                        }
+                                        server.metrics.data_stream_closed();
+                                    });
+                                },
+                                Ok(_) => (),
+                                Err(error) => { server.metrics.error(ErrorSubsystem::DataStream); error!("HDS accept error: {error}"); break; }
                             }
                         }
                     }
+                    owner_stop.revoke();
+                    while connections.join_next().await.is_some() {}
                 });
+                inner.listener = Some(Listener { port, stop, task });
                 port
             }
         };
@@ -126,7 +146,23 @@ impl HdsServer {
         Ok((port, accessory_salt))
     }
 
-    async fn handle_connection(&self, mut stream: TcpStream) -> Result<(), String> {
+    pub async fn shutdown(&self) {
+        let _shutdown = self.shutdown_lock.lock().await;
+        let listener = {
+            let mut inner = self.inner.lock().await;
+            inner.stopped = true;
+            inner.prepared.clear();
+            if let Some(listener) = &inner.listener {
+                listener.stop.revoke();
+            }
+            inner.listener.take()
+        };
+        if let Some(listener) = listener {
+            let _ = listener.task.await;
+        }
+    }
+
+    async fn handle_connection(&self, mut stream: TcpStream, stop: &Lease) -> Result<(), String> {
         stream.set_nodelay(true).ok();
 
         let mut buf: Vec<u8> = Vec::new();
@@ -165,11 +201,11 @@ impl HdsServer {
                 }
             }
 
-            let n = timeout(
+            let read = timeout(
                 deadline.saturating_duration_since(Instant::now()),
                 stream.read(&mut read_buf),
-            )
-            .await
+            );
+            let n = tokio::select! { biased; _ = stop.retired() => return Ok(()), result = read => result }
             .map_err(|_| "timed out waiting for first frame".to_string())
             .and_then(|r| r.map_err(|e| e.to_string()))?;
             if n == 0 {
@@ -183,6 +219,7 @@ impl HdsServer {
             write_half,
             key: keys.accessory_to_controller,
             counter: 0,
+            poisoned: false,
         }));
 
         let mut conn = Connection {
@@ -194,29 +231,33 @@ impl HdsServer {
             active_stream: None,
         };
 
-        conn.handle_payload(first_payload).await?;
-
-        let mut read_half = read_half;
-        loop {
-            while let Some(frame_len) = frame::complete_frame_len(&buf)? {
-                let payload = frame::decrypt_frame(
-                    &conn.read_key,
-                    &mut conn.read_counter,
-                    &buf[..frame_len],
-                )?;
-                buf.drain(..frame_len);
-                conn.handle_payload(payload).await?;
+        let run = async {
+            conn.handle_payload(first_payload).await?;
+            let mut read_half = read_half;
+            loop {
+                while let Some(frame_len) = frame::complete_frame_len(&buf)? {
+                    let payload = frame::decrypt_frame(
+                        &conn.read_key,
+                        &mut conn.read_counter,
+                        &buf[..frame_len],
+                    )?;
+                    buf.drain(..frame_len);
+                    conn.handle_payload(payload).await?;
+                }
+                let n = read_half
+                    .read(&mut read_buf)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if n == 0 {
+                    return Ok(());
+                }
+                buf.extend_from_slice(&read_buf[..n]);
             }
-            let n = read_half
-                .read(&mut read_buf)
-                .await
-                .map_err(|e| e.to_string())?;
-            if n == 0 {
-                conn.stop_active_stream();
-                return Ok(());
-            }
-            buf.extend_from_slice(&read_buf[..n]);
-        }
+        };
+        let result =
+            tokio::select! { biased; _ = stop.retired() => Ok(()), result = run => result };
+        conn.stop_active_stream().await;
+        result
     }
 }
 
@@ -224,10 +265,24 @@ struct FrameWriter {
     write_half: tokio::net::tcp::OwnedWriteHalf,
     key: [u8; 32],
     counter: u64,
+    // Set before awaiting a frame write; cancellation leaves this sticky so no
+    // later frame can be appended after a truncated encrypted frame.
+    poisoned: bool,
 }
 
 impl FrameWriter {
     async fn send(&mut self, header: &Value, message: &Value) -> Result<(), String> {
+        self.send_fenced(header, message, None).await
+    }
+    async fn send_fenced(
+        &mut self,
+        header: &Value,
+        message: &Value,
+        leases: Option<(&Lease, &Lease)>,
+    ) -> Result<(), String> {
+        if self.poisoned {
+            return Err("HDS writer closed after incomplete frame".into());
+        }
         let header_bytes = codec::encode_to_vec(header);
         let message_bytes = codec::encode_to_vec(message);
         if header_bytes.len() > 255 {
@@ -239,10 +294,35 @@ impl FrameWriter {
         payload.extend_from_slice(&message_bytes);
 
         let frame = frame::encrypt_frame(&self.key, &mut self.counter, &payload)?;
-        self.write_half
-            .write_all(&frame)
-            .await
-            .map_err(|e| e.to_string())
+        self.poisoned = true;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut offset = 0;
+        while offset < frame.len() {
+            tokio::select! {
+                biased;
+                _ = async { match leases {
+                    Some((epoch, stream)) => { tokio::select! { _ = epoch.retired() => (), _ = stream.retired() => () } },
+                    None => std::future::pending::<()>().await,
+                }} => return Err("recording output retired".into()),
+                _ = tokio::time::sleep_until(deadline) => return Err("HDS write deadline".into()),
+                ready = self.write_half.writable() => {
+                    ready.map_err(|e| e.to_string())?;
+                    let write = || self.write_half.try_write(&frame[offset..]);
+                    let result = match leases {
+                        Some((epoch, stream)) => epoch.write(|| stream.write(write))??,
+                        None => write(),
+                    };
+                    match result {
+                        Ok(0) => return Err("HDS write closed".into()),
+                        Ok(n) => offset += n,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => (),
+                        Err(error) => return Err(error.to_string()),
+                    }
+                }
+            }
+        }
+        self.poisoned = false;
+        Ok(())
     }
 }
 
@@ -253,15 +333,29 @@ struct Connection {
     read_counter: u64,
     hello_done: bool,
     /// (streamId, cancel flag) of the running dataSend stream on this connection.
-    active_stream: Option<(i64, Arc<AtomicBool>)>,
+    active_stream: Option<ActiveStream>,
 }
 
+struct ActiveStream {
+    id: i64,
+    cancel: Lease,
+    task: tokio::task::JoinHandle<()>,
+}
+struct Busy {
+    flag: Arc<AtomicBool>,
+    metrics: Arc<Metrics>,
+}
+impl Drop for Busy {
+    fn drop(&mut self) {
+        self.metrics.recording_stream_active(false);
+        self.flag.store(false, Ordering::SeqCst);
+    }
+}
 impl Connection {
-    fn stop_active_stream(&mut self) {
-        if let Some((_, cancel)) = self.active_stream.take() {
-            cancel.store(true, Ordering::SeqCst);
-            self.server.recording_busy.store(false, Ordering::SeqCst);
-            self.server.metrics.recording_stream_active(false);
+    async fn stop_active_stream(&mut self) {
+        if let Some(active) = self.active_stream.take() {
+            active.cancel.revoke();
+            let _ = active.task.await;
         }
     }
 
@@ -336,16 +430,20 @@ impl Connection {
                 "close" => {
                     let stream_id = message.get("streamId").and_then(|v| v.as_i64());
                     debug!("dataSend close for stream {stream_id:?}");
-                    if let Some((active_id, _)) = &self.active_stream {
-                        if stream_id == Some(*active_id) || stream_id.is_none() {
-                            self.stop_active_stream();
+                    if let Some(active) = &self.active_stream {
+                        if stream_id == Some(active.id) {
+                            self.stop_active_stream().await;
                         }
                     }
                     Ok(())
                 }
                 "ack" => {
                     debug!("dataSend ack: {message:?}");
-                    self.stop_active_stream();
+                    if self.active_stream.as_ref().is_some_and(|active| {
+                        message.get("streamId").and_then(|v| v.as_i64()) == Some(active.id)
+                    }) {
+                        self.stop_active_stream().await;
+                    }
                     Ok(())
                 }
                 other => {
@@ -391,12 +489,23 @@ impl Connection {
                 )
                 .await;
         }
-        if self.server.recording_busy.swap(true, Ordering::SeqCst) {
+        if self
+            .active_stream
+            .as_ref()
+            .is_some_and(|active| !active.cancel.current() || active.task.is_finished())
+        {
+            self.stop_active_stream().await;
+        }
+        if self.active_stream.is_some() || self.server.recording_busy.swap(true, Ordering::SeqCst) {
             warn!("dataSend open rejected: stream already running");
             return self
                 .respond(id, 6, Value::dict(vec![("status", Value::Int64(2))]))
                 .await;
         }
+        let busy = Busy {
+            flag: self.server.recording_busy.clone(),
+            metrics: self.server.metrics.clone(),
+        };
         self.server.metrics.recording_stream_active(true);
 
         self.respond(id, 0, Value::dict(vec![("status", Value::Int64(0))]))
@@ -406,16 +515,28 @@ impl Connection {
             self.server.camera_name
         );
 
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.active_stream = Some((stream_id, cancel.clone()));
+        let cancel = Lease::new();
+        let task_cancel = cancel.clone();
 
         let writer = self.writer.clone();
         let state = self.server.state.clone();
-        let busy = self.server.recording_busy.clone();
         let metrics = self.server.metrics.clone();
         let camera_name = self.server.camera_name.clone();
-        tokio::spawn(async move {
-            let outcome = match pump_recording(writer, state, stream_id, cancel).await {
+        let task = tokio::spawn(async move {
+            let _busy = busy;
+            let output = writer.clone();
+            let result = tokio::select! {
+                biased;
+                _ = task_cancel.retired() => Ok(RecordingDeliveryOutcome::Cancelled),
+                result = pump_recording(writer, state, stream_id, task_cancel.clone()) => result,
+            };
+            task_cancel.revoke();
+            if !matches!(result, Ok(RecordingDeliveryOutcome::EndSent)) {
+                let mut output = output.lock().await;
+                output.poisoned = true;
+                let _ = output.write_half.shutdown().await;
+            }
+            let outcome = match result {
                 Ok(outcome) => outcome,
                 Err(e) => {
                     metrics.error(ErrorSubsystem::DataStream);
@@ -424,9 +545,12 @@ impl Connection {
                 }
             };
             metrics.recording_delivery_finished(outcome);
-            busy.store(false, Ordering::SeqCst);
-            metrics.recording_stream_active(false);
             info!("[{camera_name}] HomeKit recording stopped (stream {stream_id})");
+        });
+        self.active_stream = Some(ActiveStream {
+            id: stream_id,
+            cancel,
+            task,
         });
 
         Ok(())
@@ -435,7 +559,9 @@ impl Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        self.stop_active_stream();
+        if let Some(active) = &self.active_stream {
+            active.cancel.revoke();
+        }
     }
 }
 
@@ -446,100 +572,110 @@ async fn pump_recording(
     writer: Arc<Mutex<FrameWriter>>,
     state: Arc<HsvState>,
     stream_id: i64,
-    cancel: Arc<AtomicBool>,
+    cancel: Lease,
 ) -> Result<RecordingDeliveryOutcome, String> {
     let (init, prebuffer, mut live) = state.recorder.snapshot_and_subscribe().await;
     let Some(init) = init else {
         send_close(&writer, stream_id, 6).await?; // TIMEOUT: nothing buffered yet
         return Ok(RecordingDeliveryOutcome::SourceUnavailable);
     };
-    let prebuffer_fragments = prebuffer.len();
-    let prebuffer_bytes: usize = prebuffer.iter().map(|fragment| fragment.data.len()).sum();
-    debug!(
-        "recording stream {stream_id}: sending {}-byte init and {prebuffer_fragments} prebuffer fragments ({prebuffer_bytes} bytes)",
-        init.len()
-    );
+    let pump = async {
+        let prebuffer_fragments = prebuffer.len();
+        let prebuffer_bytes: usize = prebuffer.iter().map(|fragment| fragment.data.len()).sum();
+        debug!(
+            "recording stream {stream_id}: sending {}-byte init and {prebuffer_fragments} prebuffer fragments ({prebuffer_bytes} bytes)",
+            init.data.len()
+        );
 
-    let sequence = AtomicU64::new(1);
-    let mut fragment_count = 0usize;
-    let mut media_bytes = 0usize;
+        let sequence = AtomicU64::new(1);
+        let mut fragment_count = 0usize;
+        let mut media_bytes = 0usize;
 
-    // Sequence 1: media initialization.
-    send_data(
-        &writer,
-        stream_id,
-        &init,
-        "mediaInitialization",
-        sequence.fetch_add(1, Ordering::SeqCst),
-        false,
-    )
-    .await?;
-
-    for fragment in prebuffer {
-        if cancel.load(Ordering::SeqCst) {
-            debug!("recording stream {stream_id}: cancelled during prebuffer");
-            return Ok(RecordingDeliveryOutcome::Cancelled);
-        }
-        let seq = sequence.fetch_add(1, Ordering::SeqCst);
+        // Sequence 1: media initialization.
         send_data(
             &writer,
             stream_id,
-            &fragment.data,
-            "mediaFragment",
-            seq,
+            &init.data,
+            "mediaInitialization",
+            sequence.fetch_add(1, Ordering::SeqCst),
             false,
+            (&init.lease, &cancel),
         )
         .await?;
-        fragment_count += 1;
-        media_bytes += fragment.data.len();
-    }
 
-    let mut inactive_since: Option<Instant> = None;
-    loop {
-        if cancel.load(Ordering::SeqCst) {
-            debug!(
-                "recording stream {stream_id}: controller closed after {fragment_count} fragments ({media_bytes} bytes)"
-            );
-            return Ok(RecordingDeliveryOutcome::Cancelled);
-        }
-        let fragment = match timeout(Duration::from_secs(30), live.recv()).await {
-            Ok(Ok(fragment)) => fragment,
-            Ok(Err(_)) => {
-                send_close(&writer, stream_id, 5).await?;
-                return Ok(RecordingDeliveryOutcome::SourceUnavailable);
+        for fragment in prebuffer {
+            if !cancel.current() {
+                debug!("recording stream {stream_id}: cancelled during prebuffer");
+                return Ok(RecordingDeliveryOutcome::Cancelled);
             }
-            Err(_) => {
-                send_close(&writer, stream_id, 6).await?;
-                return Ok(RecordingDeliveryOutcome::SourceUnavailable);
-            }
-        };
-        let motion_still_active = state.motion_active.load(Ordering::SeqCst);
-        let end_of_stream = if motion_still_active {
-            inactive_since = None;
-            false
-        } else {
-            let stopped_at = inactive_since.get_or_insert_with(Instant::now);
-            stopped_at.elapsed() >= RECORDING_TAIL
-        };
-        let seq = sequence.fetch_add(1, Ordering::SeqCst);
-        send_data(
-            &writer,
-            stream_id,
-            &fragment.data,
-            "mediaFragment",
-            seq,
-            end_of_stream,
-        )
-        .await?;
-        fragment_count += 1;
-        media_bytes += fragment.data.len();
-        if end_of_stream {
-            debug!(
-                "recording stream {stream_id}: end of stream sent after {fragment_count} fragments ({media_bytes} bytes, {}s post-motion tail)",
-                RECORDING_TAIL.as_secs()
-            );
-            return Ok(RecordingDeliveryOutcome::EndSent);
+            let seq = sequence.fetch_add(1, Ordering::SeqCst);
+            send_data(
+                &writer,
+                stream_id,
+                &fragment.data,
+                "mediaFragment",
+                seq,
+                false,
+                (&init.lease, &cancel),
+            )
+            .await?;
+            fragment_count += 1;
+            media_bytes += fragment.data.len();
         }
+
+        let mut inactive_since: Option<Instant> = None;
+        loop {
+            if !cancel.current() {
+                debug!(
+                    "recording stream {stream_id}: controller closed after {fragment_count} fragments ({media_bytes} bytes)"
+                );
+                return Ok(RecordingDeliveryOutcome::Cancelled);
+            }
+            let fragment = match timeout(Duration::from_secs(30), live.recv()).await {
+                Ok(Ok(fragment)) => fragment,
+                Ok(Err(_)) => {
+                    send_close(&writer, stream_id, 5).await?;
+                    return Ok(RecordingDeliveryOutcome::SourceUnavailable);
+                }
+                Err(_) => {
+                    send_close(&writer, stream_id, 6).await?;
+                    return Ok(RecordingDeliveryOutcome::SourceUnavailable);
+                }
+            };
+            let motion_still_active = state.motion_active.load(Ordering::SeqCst);
+            let end_of_stream = if motion_still_active {
+                inactive_since = None;
+                false
+            } else {
+                let stopped_at = inactive_since.get_or_insert_with(Instant::now);
+                stopped_at.elapsed() >= RECORDING_TAIL
+            };
+            let seq = sequence.fetch_add(1, Ordering::SeqCst);
+            send_data(
+                &writer,
+                stream_id,
+                &fragment.data,
+                "mediaFragment",
+                seq,
+                end_of_stream,
+                (&init.lease, &cancel),
+            )
+            .await?;
+            fragment_count += 1;
+            media_bytes += fragment.data.len();
+            if end_of_stream {
+                debug!(
+                    "recording stream {stream_id}: end of stream sent after {fragment_count} fragments ({media_bytes} bytes, {}s post-motion tail)",
+                    RECORDING_TAIL.as_secs()
+                );
+                return Ok(RecordingDeliveryOutcome::EndSent);
+            }
+        }
+    };
+    tokio::select! {
+        biased;
+        _ = init.lease.retired() => Ok(RecordingDeliveryOutcome::SourceUnavailable),
+        result = pump => result,
     }
 }
 
@@ -566,6 +702,7 @@ async fn send_data(
     data_type: &str,
     sequence: u64,
     end_of_stream: bool,
+    leases: (&Lease, &Lease),
 ) -> Result<(), String> {
     let total = data.len();
     let chunks: Vec<&[u8]> = if data.is_empty() {
@@ -614,7 +751,7 @@ async fn send_data(
         writer
             .lock()
             .await
-            .send(&header, &Value::Dict(message))
+            .send_fenced(&header, &Value::Dict(message), Some(leases))
             .await?;
     }
     Ok(())

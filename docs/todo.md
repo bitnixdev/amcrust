@@ -278,8 +278,14 @@ the production integration below. Removing probes is not the acquisition cutover
   - [x] Bound finite mux input/output bytes, packets, chunks, lifetime and aggregate
     job reservations; keep reservations and revocable grants with copied output chunks.
     Real-source checks exercised cancellation, source revocation and local limits.
-  - [ ] Carry ownership through actual asynchronous HDS writes/completion and recording
-    history. Local mux finish and accepted AVIO bytes do not acknowledge a recording.
+  - [x] Fence actual HDS writes with recording/stream retirement, including copied and
+    encrypted bytes. Wake blocked writes; poison truncated-frame connections. Join
+    recording producers, diagnostic drains, delivery tasks and HDS server shutdown;
+    serialize reconciliation and await recording disable before acknowledging it.
+    Real fMP4 bytes exercised HDS authentication and retained-fragment refusal.
+  - [ ] Bind that boundary to Rust source/mux/history grants and complete recording
+    history/cuts. The current recorder epoch still owns a legacy reader, not a Rust
+    source subscription. Accepted TCP/AVIO bytes do not acknowledge a recording.
 - [ ] `src/accessory.rs`: connect HomeKit privacy/configuration transitions to source,
   session and output ownership; ensure disabling recording alone does not break live view.
 - [ ] `apply-settings --write`: exercise the replacement production recording path,

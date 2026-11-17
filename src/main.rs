@@ -471,6 +471,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Err(e) = result {
                 log::error!("server error: {e:?}");
                 streams.stop_stream().await;
+                hsv_state.shutdown().await;
+                hds.shutdown().await;
                 let _ = source_registry.shutdown().await;
                 std::process::exit(1);
             }
@@ -478,12 +480,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ = tokio::signal::ctrl_c() => {
             info!("shutting down...");
             streams.stop_stream().await;
+            hsv_state.shutdown().await;
+            hds.shutdown().await;
             let _ = source_registry.shutdown().await;
             std::process::exit(0);
         }
     }
 
     streams.stop_stream().await;
+    hsv_state.shutdown().await;
+    hds.shutdown().await;
     source_registry.shutdown().await?;
     Ok(())
 }

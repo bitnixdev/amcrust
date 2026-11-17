@@ -299,14 +299,15 @@ async fn build_operating_mode(id: u64, hsv: &Arc<HsvState>) -> Result<CameraOper
         .await?;
     let hsv_ = hsv.clone();
     svc.homekit_camera_active
-        .on_update(Some(move |_: &bool, new: &bool| {
-            hsv_.homekit_active.store(*new, Ordering::SeqCst);
+        .on_update_async(Some(move |_: bool, new: bool| {
             let hsv = hsv_.clone();
-            tokio::spawn(async move {
-                hsv.persist().await;
+            async move {
+                hsv.homekit_active.store(new, Ordering::SeqCst);
                 hsv.sync_recorder().await;
-            });
-            Ok(())
+                hsv.persist().await;
+                Ok(())
+            }
+            .boxed()
         }));
 
     if let Some(periodic) = svc.periodic_snapshots_active.as_mut() {

@@ -256,7 +256,7 @@ impl<'a> Decoder<'a> {
                 Value::String(String::from_utf8_lossy(bytes).to_string())
             }
             0x61..=0x64 => {
-                let len = self.read_length(tag - 0x61 + 1)?;
+                let len = self.read_length(1 << (tag - 0x61))?;
                 let bytes = self.take(len)?;
                 Value::String(String::from_utf8_lossy(bytes).to_string())
             }
@@ -270,7 +270,7 @@ impl<'a> Decoder<'a> {
                 Value::Data(self.take(len)?.to_vec())
             }
             0x91..=0x94 => {
-                let len = self.read_length(tag - 0x91 + 1)?;
+                let len = self.read_length(1 << (tag - 0x91))?;
                 Value::Data(self.take(len)?.to_vec())
             }
             0x9F => {
@@ -353,11 +353,10 @@ impl<'a> Decoder<'a> {
 
     fn read_length(&mut self, width: u8) -> DecodeResult<usize> {
         let bytes = self.take(width as usize)?;
-        let mut len = 0usize;
-        for (i, b) in bytes.iter().enumerate() {
-            len |= (*b as usize) << (8 * i);
-        }
-        Ok(len)
+        let mut length = [0; 8];
+        length[..bytes.len()].copy_from_slice(bytes);
+        usize::try_from(u64::from_le_bytes(length))
+            .map_err(|_| DecodeError("length exceeds address space".into()))
     }
 }
 
@@ -414,6 +413,9 @@ mod tests {
         roundtrip(Value::String("x".repeat(100)));
         roundtrip(Value::Data(vec![1, 2, 3]));
         roundtrip(Value::Data(vec![0xAB; 300]));
+        roundtrip(Value::Data(vec![0xAB; 0x40000]));
+        roundtrip(Value::String("x".repeat(65536)));
+        assert!(decode_one(&[0x94, 255, 255, 255, 255, 255, 255, 255, 255]).is_err());
     }
 
     #[test]

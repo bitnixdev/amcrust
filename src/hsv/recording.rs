@@ -55,6 +55,8 @@ pub struct HsvState {
     camera: AmcrestClient,
     path: PathBuf,
     configuration_lock: Mutex<()>,
+    recorder_lock: Mutex<()>,
+    stopped: AtomicBool,
     capabilities: EncoderCapabilities,
 }
 
@@ -111,6 +113,8 @@ impl HsvState {
             camera,
             path,
             configuration_lock: Mutex::new(()),
+            recorder_lock: Mutex::new(()),
+            stopped: AtomicBool::new(false),
             capabilities,
         })
     }
@@ -200,6 +204,7 @@ impl HsvState {
             config.audio_sample_rate,
         );
 
+        let recorder_guard = self.recorder_lock.lock().await;
         // The camera may reset its RTSP encoder when these settings change.
         // Stop ffmpeg first, then restart it against the configured stream.
         self.recorder.stop().await;
@@ -213,12 +218,14 @@ impl HsvState {
         }
         *self.selected.lock().await = Some(config);
         self.persist().await;
+        drop(recorder_guard);
         self.sync_recorder().await;
     }
 
     /// Restores persisted camera encoder settings before resuming recording.
     pub async fn resume_recorder(self: &Arc<Self>) {
         let _configuration_guard = self.configuration_lock.lock().await;
+        let recorder_guard = self.recorder_lock.lock().await;
         let selected = self.selected.lock().await.clone();
         if let Some(config) = &selected {
             self.apply_camera_settings(config).await;
@@ -229,6 +236,7 @@ impl HsvState {
                 .map(|config| (config.width, config.height)),
         )
         .await;
+        drop(recorder_guard);
         self.sync_recorder().await;
     }
 
@@ -303,10 +311,20 @@ impl HsvState {
     }
 
     /// Starts or stops the recording pipeline according to the current state.
+    pub async fn shutdown(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        let _guard = self.recorder_lock.lock().await;
+        self.recorder.stop().await;
+    }
+
     pub async fn sync_recorder(self: &Arc<Self>) {
-        let active = self.recording_active.load(Ordering::SeqCst)
-            && self.homekit_active.load(Ordering::SeqCst);
+        // Read desired state AFTER acquiring reconciliation ownership. An older
+        // callback must never restart recording after a disable acknowledgement.
+        let _guard = self.recorder_lock.lock().await;
         let selected = self.selected.lock().await.clone();
+        let active = !self.stopped.load(Ordering::SeqCst)
+            && self.recording_active.load(Ordering::SeqCst)
+            && self.homekit_active.load(Ordering::SeqCst);
         match (active, selected) {
             (true, Some(config)) => {
                 let audio_sample_rate_hz = match config.audio_sample_rate {
@@ -337,7 +355,8 @@ impl HsvState {
         if self.selected.lock().await.is_none() {
             return Err(9); // INVALID_CONFIGURATION
         }
-        if !self.recording_active.load(Ordering::SeqCst)
+        if self.stopped.load(Ordering::SeqCst)
+            || !self.recording_active.load(Ordering::SeqCst)
             || !self.homekit_active.load(Ordering::SeqCst)
         {
             return Err(1); // NOT_ALLOWED

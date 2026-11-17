@@ -26,6 +26,43 @@ as application library code and is wired into `src/main.rs` for live video/audio
 MediaMTX was investigated but not added or launched. Recording integration and
 Apple acceptance remain separate requirements.
 
+### Recording ownership before the reader replacement
+
+The recording reader/mux is **still the legacy FFmpeg process**. Its detached parser
+and stderr tasks, signal-only stop, and unfenced HDS writes have been replaced with
+joined ownership and recording-epoch/stream retirement gates. Revoke serializes with
+the final nonblocking TCP syscall, after encryption/copying; bytes already accepted
+by the kernel cannot be retracted. Pending writes wake on revoke and have a five-second
+deadline. Cancellation/error leaves the writer poisoned so a new encrypted frame cannot
+follow a truncated one. Snapshot/publication share one lock to avoid duplicate boundary
+fragments. HDS admission bounds prepared sessions/connections; native parsing bounds box,
+init, fragment and prebuffer bytes. These are not complete aggregate Rust history budgets.
+
+Recording reconciliation reads current desired state under its own lock. The camera-active
+callback now awaits recording reconciliation rather than acknowledging a detached task.
+Application shutdown retires recording and joins HDS connections. Old stream acknowledgments
+with a different stream ID cannot terminate the current owner or release its busy slot.
+This does **not** establish complete camera-wide live privacy or Rust-source recording binding.
+
+Local checks cover entered-write retirement ordering, copied-byte refusal, an unread TCP
+peer, truncated-frame poisoning, stalled native reader stop/drop, and shutdown of an
+unidentified HDS connection. Initial parallel/local and Nix runs hit an existing
+immediate UDP rebind assertion's `AddrInUse`. Its weak-owner release assertion remains
+immediate; port reuse now allows one second for descriptor-close scheduling during
+concurrent native child startup. Nix also lacked the FFmpeg executable for the new
+native-lifetime checks; it is now an explicit pinned `nativeCheckInputs` dependency.
+Final parallel and serial suites passed: **47 library +52 application tests**, plus
+focused recovery/phase-trend checks, all-target compilation, strict library Clippy,
+formatting, two sampler tests and the pinned Nix package. Bounded review found no issues.
+
+Read-only north-driveway check: the first **4.59-s** attempt authenticated recording bytes
+but exposed the decoder's incorrect 32-bit OPACK length width (`unknown tag 0xf1`);
+it is not a pass. Corrected 32-/64-bit string/data lengths and added large-value/truncated
+length tests. The repeat **4.58 s** transferred **402,994 actual fMP4 bytes in three
+authenticated HDS frames**, joined recorder stop, and refused retained old-fragment output.
+No retained captures, encoder writes, Apple playback, iCloud storage or Rust recording
+cutover are claimed by this check.
+
 ### Production live audio cutover
 
 Shared main-encoder AAC now feeds joined, thread-bound Rust decode/resample/Opus workers.

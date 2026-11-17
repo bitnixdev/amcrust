@@ -5,4 +5,5 @@ pub mod codec;
 pub mod fmp4;
 pub mod frame;
 pub mod hds;
+mod lease;
 pub mod recording;
