@@ -329,6 +329,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         metrics.clone(),
         hsv_state.clone(),
         streams.clone(),
+        source_registry.budget_observer(),
     )?;
     let _stats_reporter = metrics::start_hourly_stderr_reporter(metrics.clone());
     info!("health and metrics HTTP server on {metrics_addr}");

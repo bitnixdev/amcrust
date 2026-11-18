@@ -426,6 +426,7 @@ struct HttpState {
     metrics: Arc<Metrics>,
     hsv: Arc<HsvState>,
     streams: StreamManager,
+    source_budget: amcrust::source::RegistryBudgetObserver,
 }
 
 pub fn start_server(
@@ -433,6 +434,7 @@ pub fn start_server(
     metrics: Arc<Metrics>,
     hsv: Arc<HsvState>,
     streams: StreamManager,
+    source_budget: amcrust::source::RegistryBudgetObserver,
 ) -> Result<(tokio::task::JoinHandle<()>, SocketAddr), Box<dyn std::error::Error>> {
     let listener = std::net::TcpListener::bind(addr)?;
     let bound_addr = listener.local_addr()?;
@@ -441,6 +443,7 @@ pub fn start_server(
         metrics,
         hsv,
         streams,
+        source_budget,
     };
     let service = make_service_fn(move |_| {
         let state = state.clone();
@@ -464,7 +467,7 @@ async fn handle(request: Request<Body>, state: HttpState) -> Result<Response<Bod
                 "status": "ok",
                 "health_scope": "process_liveness",
                 "media_backend": "rust_shared_ffmpeg",
-                "media": { "streams": state.streams.resources(), "recording": recording },
+                "media": { "streams": state.streams.resources(), "recording": recording, "source_budget": state.source_budget.snapshot() },
                 "uptime_seconds": state.metrics.started.elapsed().as_secs_f64(),
                 "event_stream_connected": state.metrics.event_stream_connected.load(Ordering::Relaxed),
                 "live_connections": state.metrics.live_connections.load(Ordering::Relaxed),
@@ -483,9 +486,10 @@ async fn handle(request: Request<Body>, state: HttpState) -> Result<Response<Bod
                 StatusCode::OK,
                 "text/plain; version=0.0.4; charset=utf-8",
                 format!(
-                    "{}{}",
+                    "{}{}{}",
                     state.metrics.render(recording_pipeline_running),
-                    media::render(&state.streams.resources(), &recording)
+                    media::render(&state.streams.resources(), &recording),
+                    media::render_registry(&state.source_budget.snapshot())
                 ),
             )
         }
@@ -606,6 +610,7 @@ mod tests {
             metrics,
             hsv,
             streams,
+            source_budget: registry.budget_observer(),
         };
 
         let health = handle(
@@ -630,6 +635,8 @@ mod tests {
         );
         assert!(health["media"]["streams"]["main"]["recovery"]["last_fault"].is_null());
         assert_eq!(health["media"]["recording"]["mux"]["job_limit"], 1);
+        assert_eq!(health["media"]["source_budget"]["reserved_subscribers"], 0);
+        assert_eq!(health["media"]["source_budget"]["subscriber_limit"], 64);
         assert!(health["media"]["streams"]["sub_stream2"].is_null());
 
         let response = handle(Request::get("/metrics").body(Body::empty()).unwrap(), state)
@@ -645,6 +652,8 @@ mod tests {
         let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert!(body.contains("amcrust_uptime_seconds"));
+        assert!(body.contains("amcrust_registry_subscriber_limit 64"));
+        assert!(body.contains("amcrust_registry_charged_bytes 0"));
         assert!(body.contains("amcrust_source_registered{encoder=\"main\"} 1"));
         assert!(body.contains("amcrust_source_registered{encoder=\"sub_stream2\"} 0"));
         assert!(body.contains("amcrust_media_job_limit{pool=\"live_opus\"} 8"));

@@ -7,6 +7,8 @@
 //! cannot synchronously join async cleanup; no task is aborted during native I/O.
 mod admission;
 mod audio_timing;
+mod budget;
+pub use budget::{RegistryBudgetObserver, RegistryBudgetSnapshot};
 pub mod clock;
 mod recovery;
 mod subscription;
@@ -150,6 +152,7 @@ struct Metrics {
     opens: AtomicU64,
     faults: AtomicU64,
     subscribers: AtomicUsize,
+    subscription_budget_refusals: AtomicU64,
     missing_clocks: AtomicU64,
     oldest_ms: AtomicU64,
     clock: Mutex<Option<clock::Observations>>,
@@ -162,6 +165,9 @@ pub struct Snapshot {
     pub open_attempts: u64,
     pub faults: u64,
     pub subscribers: usize,
+    pub reserved_subscribers: usize,
+    pub subscriber_limit: usize,
+    pub subscription_budget_refusals: u64,
     pub skipped_initial_clocks: u64,
     pub charged_bytes: usize,
     pub byte_limit: usize,
@@ -178,6 +184,8 @@ pub struct Source {
     metrics: Arc<Metrics>,
     bytes: Arc<Semaphore>,
     byte_limit: usize,
+    slots: Arc<Semaphore>,
+    subscriber_limit: usize,
 }
 impl Source {
     /// Whether two handles refer to the same registry-owned acquisition supervisor.
@@ -244,6 +252,12 @@ impl Source {
             open_attempts: self.metrics.opens.load(Ordering::Relaxed),
             faults: self.metrics.faults.load(Ordering::Relaxed),
             subscribers: self.metrics.subscribers.load(Ordering::Relaxed),
+            reserved_subscribers: self.subscriber_limit - self.slots.available_permits(),
+            subscriber_limit: self.subscriber_limit,
+            subscription_budget_refusals: self
+                .metrics
+                .subscription_budget_refusals
+                .load(Ordering::Relaxed),
             skipped_initial_clocks: self.metrics.missing_clocks.load(Ordering::Relaxed),
             charged_bytes: self.byte_limit - self.bytes.available_permits(),
             byte_limit: self.byte_limit,
@@ -262,6 +276,7 @@ struct Owner {
     task: Option<JoinHandle<()>>,
 }
 pub struct Registry {
+    subscription_budget_refusals: Arc<AtomicU64>,
     owners: HashMap<SourceKey, Owner>,
     bytes: Arc<Semaphore>,
     slots: Arc<Semaphore>,
@@ -276,6 +291,7 @@ impl Registry {
         }
         Ok(Self {
             owners: HashMap::new(),
+            subscription_budget_refusals: Arc::new(AtomicU64::new(0)),
             bytes: Arc::new(Semaphore::new(limits.bytes)),
             slots: Arc::new(Semaphore::new(limits.subscribers)),
             limits,
@@ -306,6 +322,8 @@ impl Registry {
             metrics: Arc::new(Metrics::default()),
             bytes: Arc::new(Semaphore::new(self.limits.bytes_per_source)),
             byte_limit: self.limits.bytes_per_source,
+            slots: Arc::new(Semaphore::new(self.limits.subscribers_per_source)),
+            subscriber_limit: self.limits.subscribers_per_source,
         };
         let supervisor = Supervisor {
             url,
@@ -314,7 +332,8 @@ impl Registry {
             metrics: source.metrics.clone(),
             source_bytes: source.bytes.clone(),
             aggregate_bytes: self.bytes.clone(),
-            source_slots: Arc::new(Semaphore::new(self.limits.subscribers_per_source)),
+            source_slots: source.slots.clone(),
+            subscription_budget_refusals: self.subscription_budget_refusals.clone(),
             aggregate_slots: self.slots.clone(),
             limits: self.limits,
             clients: Vec::new(),
@@ -339,6 +358,15 @@ impl Registry {
     }
     pub fn source(&self, key: SourceKey) -> Option<Source> {
         self.owners.get(&key).map(|o| o.source.clone())
+    }
+    pub fn budget_observer(&self) -> RegistryBudgetObserver {
+        RegistryBudgetObserver::new(
+            self.bytes.clone(),
+            self.slots.clone(),
+            self.limits.bytes,
+            self.limits.subscribers,
+            self.subscription_budget_refusals.clone(),
+        )
     }
     pub fn charged_bytes(&self) -> usize {
         self.limits.bytes - self.bytes.available_permits()
@@ -490,6 +518,7 @@ struct Supervisor {
     aggregate_bytes: Arc<Semaphore>,
     source_slots: Arc<Semaphore>,
     aggregate_slots: Arc<Semaphore>,
+    subscription_budget_refusals: Arc<AtomicU64>,
     limits: Limits,
     clients: Vec<Client>,
     running: Option<Running>,
@@ -699,15 +728,23 @@ impl Supervisor {
         {
             return Err(Terminal::Clock);
         }
+        let refused = |_| {
+            self.metrics
+                .subscription_budget_refusals
+                .fetch_add(1, Ordering::Relaxed);
+            self.subscription_budget_refusals
+                .fetch_add(1, Ordering::Relaxed);
+            Terminal::Budget
+        };
         let slots = vec![
             self.source_slots
                 .clone()
                 .try_acquire_owned()
-                .map_err(|_| Terminal::Budget)?,
+                .map_err(refused)?,
             self.aggregate_slots
                 .clone()
                 .try_acquire_owned()
-                .map_err(|_| Terminal::Budget)?,
+                .map_err(refused)?,
         ];
         let queue = Queue::new(tracks, limits, slots);
         self.clients.push(Client {

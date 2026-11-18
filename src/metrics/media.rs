@@ -2,6 +2,45 @@
 use crate::{hsv::fmp4::RecordingResources, stream::StreamResources};
 use std::fmt::Write;
 
+pub(super) fn render_registry(budget: &amcrust::source::RegistryBudgetSnapshot) -> String {
+    let mut out = String::new();
+    for (name, value, kind, help) in [
+        (
+            "charged_bytes",
+            budget.charged_bytes as u64,
+            "gauge",
+            "Logical aggregate acquisition charges; overlaps per-source charges, not RSS.",
+        ),
+        (
+            "byte_limit",
+            budget.byte_limit as u64,
+            "gauge",
+            "Configured aggregate acquisition byte limit.",
+        ),
+        (
+            "reserved_subscribers",
+            budget.reserved_subscribers as u64,
+            "gauge",
+            "Aggregate subscription slots including retained retired subscriptions.",
+        ),
+        (
+            "subscriber_limit",
+            budget.subscriber_limit as u64,
+            "gauge",
+            "Configured aggregate subscription-slot limit.",
+        ),
+        (
+            "subscription_budget_refusals_total",
+            budget.subscription_budget_refusals,
+            "counter",
+            "Subscription refusals at per-source or aggregate slot limits.",
+        ),
+    ] {
+        writeln!(out, "# HELP amcrust_registry_{name} {help}\n# TYPE amcrust_registry_{name} {kind}\namcrust_registry_{name} {value}").unwrap();
+    }
+    out
+}
+
 pub(super) fn render(streams: &StreamResources, recording: &RecordingResources) -> String {
     let mut out = String::new();
     for (name, help, kind) in [
@@ -119,6 +158,21 @@ pub(super) fn render(streams: &StreamResources, recording: &RecordingResources) 
     }
     for (name, kind, help) in [
         (
+            "reserved_subscribers",
+            "gauge",
+            "Subscription slots including retained retired subscriptions.",
+        ),
+        (
+            "subscriber_limit",
+            "gauge",
+            "Configured per-source subscription-slot limit.",
+        ),
+        (
+            "subscription_budget_refusals_total",
+            "counter",
+            "Subscription refusals at local or aggregate slot limits.",
+        ),
+        (
             "recovery_phase",
             "gauge",
             "Observed supervisor phase; acquiring is not playback readiness.",
@@ -204,6 +258,12 @@ pub(super) fn render(streams: &StreamResources, recording: &RecordingResources) 
             ("open_attempts_total", s.open_attempts),
             ("faults_total", s.faults),
             ("subscribers", s.subscribers as u64),
+            ("reserved_subscribers", s.reserved_subscribers as u64),
+            ("subscriber_limit", s.subscriber_limit as u64),
+            (
+                "subscription_budget_refusals_total",
+                s.subscription_budget_refusals,
+            ),
             ("charged_bytes", s.charged_bytes as u64),
             ("byte_limit", s.byte_limit as u64),
             ("skipped_initial_clocks_total", s.skipped_initial_clocks),
@@ -301,6 +361,9 @@ mod tests {
             open_attempts: 5,
             faults: 2,
             subscribers: 4,
+            reserved_subscribers: 5,
+            subscriber_limit: 8,
+            subscription_budget_refusals: 2,
             skipped_initial_clocks: 1,
             charged_bytes: 1234,
             byte_limit: 8192,
@@ -342,6 +405,25 @@ mod tests {
         let output = render(&streams, &recording);
         assert!(output.contains("# TYPE amcrust_source_open_attempts_total counter"));
         assert!(output.contains("amcrust_source_faults_total{encoder=\"main\"} 2"));
+        assert!(output.contains("amcrust_source_reserved_subscribers{encoder=\"main\"} 5"));
+        assert!(
+            output
+                .contains("amcrust_source_subscription_budget_refusals_total{encoder=\"main\"} 2")
+        );
+        let aggregate = render_registry(&amcrust::source::RegistryBudgetSnapshot {
+            charged_bytes: 512,
+            byte_limit: 1024,
+            reserved_subscribers: 2,
+            subscriber_limit: 4,
+            subscription_budget_refusals: 3,
+        });
+        assert!(aggregate.contains("amcrust_registry_charged_bytes 512"));
+        assert!(aggregate.contains("amcrust_registry_reserved_subscribers 2"));
+        assert!(
+            aggregate
+                .contains("# TYPE amcrust_registry_subscription_budget_refusals_total counter")
+        );
+        assert!(aggregate.contains("amcrust_registry_subscription_budget_refusals_total 3"));
         assert!(
             output
                 .contains("amcrust_source_oldest_delivery_seconds{encoder=\"sub_stream2\"} 1.250")

@@ -28,6 +28,38 @@ as application library code and is wired into `src/main.rs` for live video/audio
 MediaMTX was investigated but not added or launched. Apple HSV acceptance, full live
 privacy transitions and unattended recovery remain separate requirements.
 
+### Aggregate acquisition budgets and retained slots
+
+Production health/Prometheus now read the registry's existing aggregate byte/slot
+semaphores through an observation-only handle. Source snapshots expose retained slot
+counts/limits separately from active subscribers, plus mirrored source/registry
+slot-budget refusal counters. Existing admission limits and policy are unchanged.
+
+Local checks establish:
+- With two aggregate slots and one slot per source, local saturation refuses another
+  subscription while permitting an independent source. Retiring a held subscription
+  leaves its slot reserved even though the source's active subscriber count is zero.
+- A third source is refused at aggregate capacity. Its partially acquired local slot
+  is returned, no acquisition is opened for it, and the second source's stalled native
+  owner remains active and unretired.
+- Dropping the retired subscription restores admission. Shutdown retires all remaining
+  owners but their retained subscriptions stay charged until released; the observer
+  remains usable after registry/source destruction without retaining workers.
+- Direct charged-permit checks exercise both local and aggregate byte exhaustion,
+  rollback of a partial charge, and a charge retained across registry drop. This tests
+  logical ownership, not native packet allocation or measured memory.
+- HTTP schema and fixed-label exposition include aggregate budgets and refusal counters.
+
+No camera access, deployment, Apple acceptance, native RSS measurement or workload
+savings claim is made. These acquisition-budget views overlap per-source/history/pool
+accounting and must not be summed as physical memory.
+
+Validation: 52 library +76 application +16 HAP tests, workspace integration tests
+(including local budget pressure), three HAP doctests, all-target compilation, strict
+library Clippy, formatting and two sampler tests passed. The bounded review returned
+no findings and the pinned Nix package build passed. The existing metrics fetch_update
+warning is unchanged.
+
 ### Source recovery-state telemetry
 
 Health and Prometheus now expose bounded supervisor phases, consecutive failures,

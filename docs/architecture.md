@@ -400,6 +400,27 @@ await; the wider source/pool snapshot remains independently sampled.
 This instrumentation does not alter backoff, burst thresholds or cooldown policy, revive
 old subscriptions, restart failed supervisors, or qualify unattended/controller recovery.
 
+## Aggregate acquisition budget observations
+
+The metrics server holds a read-only registry budget observer containing only semaphore
+and counter references, not supervisors or admission authority. It reads aggregate
+charged bytes/byte limit and reserved subscription slots/slot limit directly from the
+existing registry budgets. It can report outstanding ownership after registry shutdown
+or drop without keeping acquisition alive.
+
+Per-source observations now distinguish active subscriber counts from reserved slots.
+Retired subscriptions retained by callers still hold slots; revocation is not release.
+Slot-budget refusals increment source and registry counters whether the local or aggregate
+slot limit refused admission. Invalid requests, unsupported tracks and mode/circuit
+refusals are not counted as slot exhaustion. Partial local reservations are dropped if
+the aggregate reservation fails.
+
+These are the existing acquisition limits, not new admission policy or a whole-process
+memory cap. Registry byte charges overlap per-source charges and must not be added to
+them. Codec/mux reservations and history remain separate overlapping logical views.
+Snapshots are independently sampled; native/allocator RSS and cross-pipeline peak memory
+still require workload qualification.
+
 ## Production resource telemetry
 
 The metrics server samples the actual StreamManager and Recorder, not diagnostic-only

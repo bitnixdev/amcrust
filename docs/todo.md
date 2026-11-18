@@ -171,7 +171,11 @@ upstream FFmpeg libraries are not legacy acquisition fallbacks.
     consecutive failures, monotonic remaining delay, bounded last-fault categories and
     circuit entry/reset counters. Validate local native reset/stall, privacy/reset,
     sticky old subscriptions and fresh-demand semantics without changing retry policy.
-  - [ ] Complete aggregate accounting/admission and consumer-recovery observability;
+  - [x] Expose the registry's actual aggregate acquisition byte/slot budgets, retained
+    per-source slots and slot-refusal counters through health/Prometheus. Validate
+    cross-source pressure, partial-reservation rollback and retained ownership across
+    retirement/shutdown. These reuse the existing limits; they are not allocator/RSS caps.
+  - [ ] Complete cross-pipeline accounting/admission and consumer-recovery observability;
     evaluate pressure, actual native RSS and matched real production workloads.
     Per-source charges, history payloads and full-job reservations overlap and must
     not be summed as allocator memory.
