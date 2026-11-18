@@ -13,14 +13,10 @@ Supported/tested cameras: Amcrest `IP8M-2696E-AI` and `IP8M-2796E-AI`.
 There is one libavformat reader per active encoder, with independent HomeKit transports.
 The old media FFmpeg subprocesses, RTP relays and timestamp filters are removed; there
 is no project C worker, MediaMTX dependency or selectable legacy-reader fallback.
-This completes the production media-path cutover, not deployment or HSV Apple-client
-acceptance. Snapshot JPEG scaling still uses the FFmpeg executable.
+JPEG previews are resized in-process with the Rust `image` crate.
 
-- [Architecture](docs/architecture.md): current versus intended data flow and decisions.
-- [TODO](docs/todo.md): the single ordered backlog, including every C replacement/removal
-  and the authorized real-device testing workflow.
-- [Evidence](docs/evidence.md): consolidated completed findings and unresolved limits;
-  historical experiment success is not production or Apple-client acceptance.
+- [Architecture](docs/architecture.md): shared acquisition, presentation and output ownership.
+- [Evidence](docs/evidence.md): historical measurements and engineering decisions.
 - [HDS wire reference](docs/hds-wire-format.md): transport/protocol reference, not a roadmap.
 
 ## What the current application does
@@ -57,18 +53,18 @@ acceptance. Snapshot JPEG scaling still uses the FFmpeg executable.
   a size-driven cut. Continued download requires another controller stream request.
   Amcrust configures the main video encoder and keeps acquisition AAC at 48 kHz;
   recording output-rate changes do not reconfigure that source. Requires a home hub
-  and iCloud+; actual Home playback, seek and event continuation still need acceptance.
+  and iCloud+.
   See the [HDS wire reference](docs/hds-wire-format.md).
 - **Independent live control**: RTP Stream Management Active now stops all live sessions
   served by that service without disabling HSV recording or snapshots. It is persisted,
   restored before startup exposure, and cannot override camera-off or shutdown. Re-enable
-  requires fresh setup; actual Home mode/automation acceptance remains pending.
+  requires fresh setup.
 - **Camera-off ownership**: HomeKit Camera Active closes live admission, retires shared
   RTSP sources and joins live/recording workers before acknowledgment. Re-enable needs
   fresh live setup; shutdown cannot reopen admission. Snapshot epochs extend through
   cache publication and encrypted HTTP writes, including queued copies and off/on overlap.
   Revoking a partially delivered image closes that connection rather than appending to
-  truncated ciphertext. Other Home modes and actual Apple behavior remain unqualified.
+  truncated ciphertext.
 - **Optional audio** (`--audio`): the camera's main-stream 48 kHz AAC audio is
   transcoded to the Opus format negotiated by HomeKit. Live audio carries RTP
   and RTCP in both directions through an SRTP/SRTCP proxy, including sender
@@ -78,8 +74,7 @@ acceptance. Snapshot JPEG scaling still uses the FFmpeg executable.
   writes. Failure leaves main acquisition and recording blocked until a successful retry;
   unrelated substream video stays owned independently. Live formats refresh after success,
   and unsupported dimensions/frame rates are refused rather than substituted. Recording-only
-  AAC output changes do not reconfigure the camera. Firmware/Apple transition acceptance
-  remains pending.
+  AAC output changes do not reconfigure the camera.
 - **Consistent camera profile**: on every connection, amcrust checks and, when
   necessary, normalizes the live substream, microphone/main audio track, image
   profiles, enhancement/ROI/crop controls, exposure, day/night switching,
@@ -127,70 +122,13 @@ libraries and may report missing `pkg-config` or `libavutil`. Do not install a
 separate system FFmpeg to work around that. `.envrc` does not load camera credentials;
 the application continues to read them from `.env` or its existing environment.
 
-The shell/package supplies FFmpeg 9 libraries, pkg-config and libclang/bindgen;
-`ffmpeg-sys-next` is pinned in Cargo. The Rust media library includes an encoder
-registry, joined reader supervision, bounded packet subscriptions and source-clock
-diagnostics, per-viewer H.264 RTP packetization, finite fMP4 mux jobs and AAC-to-Opus
-processing. `src/main.rs` injects the same main source into live audio/video and HSV;
-`src/stream/shared.rs` owns packetization, report scheduling and joined cancellation.
-Video uses explicit host-monotonic read-time presentation, preserving camera timestamps
-as diagnostics rather than trusting them for playback. This is not capture-time accuracy
-or Apple A/V acceptance. Source-bound SRTP/SRTCP writes fence generation and
-subscription retirement. Both tracks share a session monotonic domain and host-UTC
-reports. Rust audio uses bounded continuous resampling, explicit startup history,
-and complete Opus packets. Internal timing stays at 48 kHz; the HomeKit boundary
-maps RTP and sender reports to the negotiated audio rate. The old audio subprocess, relay and
-timestamp rescaler are removed. Recording consumes the same acquisition through
-bounded history and joined clip-local Rust mux jobs; it no longer opens a separate reader.
-The user confirmed the negotiated-rate clock correction fixed Home live-audio gaps.
-A separate historical live-audio candidate anchors sample progression to AAC source timing
-and supports 8/16/24/48-kHz Opus output with 20/40/60-ms frames. It refuses excessive
-phase error, stale sender reports and uncovered finite endpoints; strict timing
-remains the default. Priming/tail contracts are explicit, not assumed to work over
-HomeKit RTP.
-See the [clock decision and alternatives](docs/architecture.md#production-timing-and-recovery-decision)
-for limits, acceptance work and symptoms that would require revisiting the choice.
-The first sustained clock attempt failed with a source-clock refusal; a later short
-success is not qualification. The existing camera check supports an explicit bounded
-window (requires coordinated camera access and the existing credentials):
-
-```sh
-AMCRUST_CLOCK_SECONDS=1800 direnv exec . cargo test --test camera_audio \
-  real_anchored_audio_clock -- --ignored --nocapture --test-threads=1
-```
-
-This stops on the first refusal and reports failure, without restarting acquisition
-or increasing timing budgets. Source snapshots retain the first offending timing
-metadata; no captured media is saved. See [Evidence](docs/evidence.md#sustained-clock-attempt-and-first-failure-provenance)
-for the failed attempt and separate diagnostic outcome.
-
-The retained strict diagnostic source mode offers audio-only `Tracks::AudioSampleClock` subscriptions
-for classified, bounded AAC sender-report remapping. Original timestamps stay intact;
-strict audio/recording subscriptions fail locally instead of stopping video for that
-case. The processor still enforces its original ±100-ms phase and 15-second freshness
-budgets. Real input has now exercised that isolation, but this is not production
-clock qualification: excess cumulative phase still stops unsupported audio. Oversized
-but explained AAC mapping changes now quarantine audio for the generation rather than
-stop healthy video; this new quarantine path still awaits a live oversized event.
-Video's own timing faults remain fatal. Production receiver feedback is now parsed in
-Rust instead of returned to FFmpeg, and live media owners join producer/transport
-teardown. These strict timing refusals no longer govern production video; its explicit
-presentation mode still enforces packet identity, codec/parameter validity, no B-frame
-reordering guesses and source retirement. Recording uses explicit recovered video
-cadence and AAC timing, preserving the same source evidence. Diagnostics separate reconstructed RTP duration debt,
-SR mapping changes and unexplained residuals rather than blaming all drift on SRs.
-
-All project-owned C workers and the obsolete Python/AMC2 fixture harness are removed;
-their findings and numeric records remain in [Evidence](docs/evidence.md). The read-only
-production workload sampler `scripts/ingest_baseline.py` is retained, along with its
-checks (`python3 -m unittest discover -s scripts -p 'test_*.py'`). The last recording
-FFmpeg reader/mux command and timestamp bitstream filters are now removed as well.
-No system-wide FFmpeg or compiler installation is needed with this workflow.
+The Nix shell and package supply the FFmpeg libraries, pkg-config and bindgen.
+Live and recording media use those libraries through `ffmpeg-sys-next`. Compatible
+live viewers share one AAC-to-Opus encoder; each has its own encrypted transport.
 
 ## Running
 
-Requires the pinned FFmpeg libraries. The `ffmpeg` executable remains on `PATH` for
-JPEG snapshot scaling, not live or recording camera acquisition.
+The service links the pinned FFmpeg libraries; no `ffmpeg` executable is required at runtime.
 
 ```sh
 AMCREST_USERNAME=admin AMCREST_PASSWORD=... \
@@ -247,9 +185,7 @@ A compact process summary is also written directly to stderr every hour,
 regardless of the configured log filter.
 
 For measurement boundaries and historical findings, see [Evidence](docs/evidence.md).
-The [TODO](docs/todo.md#4-run-and-evaluate-the-real-replacement-alongside-integration)
-contains the real-device cutover workflow. Startup metrics measure sent RTP/IDR,
-not controller decode latency; an end-of-stream write is not confirmed iCloud storage.
+Startup metrics measure sent RTP/IDR, not controller decode latency.
 
 On first startup, each camera gets its own random setup PIN, persisted with its
 pairing state. The log prints it as `1234-5678`; add the accessory in the Home

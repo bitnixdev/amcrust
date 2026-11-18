@@ -1,8 +1,8 @@
 # Established findings and current limits
 
 This is the consolidated record of work already done, **not a second backlog**.
-[Architecture](architecture.md) states the chosen design; [TODO](todo.md) is the only
-implementation sequence. Old per-milestone proof/research Markdown has been replaced
+[Architecture](architecture.md) describes the current implementation. References
+below to open checks or TODOs describe the state at measurement time, not release gates. Old per-milestone proof/research Markdown has been replaced
 by this summary. Numeric artifacts remain linked below; implementation details remain
 in the Rust code and version control, not in a second archive of planning documents.
 Former experimental implementation names below are provenance, not current entrypoints.

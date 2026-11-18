@@ -392,6 +392,9 @@ impl Drop for OpusPacket {
     }
 }
 impl OpusPacket {
+    pub(crate) fn source_guard(&self) -> DeliveryGuard {
+        self.job.source.clone()
+    }
     fn check(&self) -> Result<(), Error> {
         self.job.check()?;
         if self.born.elapsed() >= self.job.output_residence {

@@ -224,6 +224,7 @@ pub struct StreamManager {
     main_profile: Arc<std::sync::RwLock<Option<VideoProfile>>>,
     audio_source: amcrust::source::Source,
     audio_pool: amcrust::media::audio::Pool,
+    encoders: shared::Encoders,
     audio: bool,
     local_ip: IpAddr,
     metrics: Arc<Metrics>,
@@ -326,6 +327,7 @@ impl StreamManager {
             inner: Arc::new(Mutex::new(Inner::default())),
             video_sources,
             audio_source,
+            encoders: Default::default(),
             audio_pool: amcrust::media::audio::Pool::new_in(job_budget, 8, 16 * 1024 * 1024)
                 .expect("fixed audio budget"),
             audio,
@@ -580,7 +582,10 @@ impl StreamManager {
                 let source =
                     select_video_source(&sources, selected_width, selected_height, selected_fps)
                         .cloned()
-                        .ok_or("selected live format has no current packet-copy source")?;
+                        .ok_or_else(|| format!(
+                            "selected live format has no current packet-copy source: requested width={selected_width:?} height={selected_height:?} max_fps={selected_fps:?}; available (width,height,fps)={:?}",
+                            sources.iter().map(|s| (s.profile.width,s.profile.height,s.profile.fps)).collect::<Vec<_>>()
+                        ))?;
                 let rtp_params = tlv8::find(&video_params, VIDEO_RTP_PARAMS)
                     .map(|v| tlv8::parse(v))
                     .unwrap_or_default();
@@ -793,6 +798,7 @@ impl StreamManager {
                         ..Default::default()
                     },
                     pool: self.audio_pool.clone(),
+                    encoders: self.encoders.clone(),
                 },
                 self.metrics.clone(),
             );
@@ -1018,16 +1024,19 @@ fn select_video_source(
     height: Option<u16>,
     fps: Option<u8>,
 ) -> Option<&VideoSource> {
-    match (width, height) {
-        (None, None) => sources
-            .iter()
-            .find(|source| fps.is_none_or(|fps| source.profile.fps == fps)),
-        (Some(width), Some(height)) => sources.iter().find(|source| {
-            source.profile.width == width
-                && source.profile.height == height
-                && fps.is_none_or(|fps| source.profile.fps == fps)
-        }),
-        _ => None,
+    let mut matching = sources.iter().filter(|source| match (width, height) {
+        (None, None) => true,
+        (Some(w), Some(h)) => (source.profile.width, source.profile.height) == (w, h),
+        _ => false,
+    });
+    // HAP video attributes carry the maximum frame rate. Packet-copy can
+    // deliver a slower native encoder but cannot decimate a faster one.
+    match fps {
+        None => matching.next(),
+        Some(limit) => matching
+            .rev() // preserve source preference when native rates tie
+            .filter(|s| s.profile.fps <= limit)
+            .max_by_key(|s| s.profile.fps),
     }
 }
 
@@ -1312,7 +1321,14 @@ mod tests {
                 .fps,
             30
         );
-        assert!(select_video_source(&same_dimensions, Some(1920), Some(1080), Some(60)).is_none());
+        assert_eq!(
+            select_video_source(&sources, Some(1920), Some(1080), Some(30))
+                .unwrap()
+                .profile
+                .fps,
+            15
+        );
+        assert!(select_video_source(&same_dimensions, Some(1920), Some(1080), Some(10)).is_none());
         assert!(select_video_source(&sources, Some(640), Some(480), None).is_none());
         assert!(select_video_source(&sources, Some(1920), None, None).is_none());
         assert!(select_video_source(&[], None, None, None).is_none());

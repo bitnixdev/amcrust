@@ -8,7 +8,7 @@ use amcrust::{
     },
     source::{Source, SubscriptionLimits, Tracks},
 };
-pub(super) use audio::{Audio, spawn as spawn_audio};
+pub(super) use audio::{Audio, Encoders, spawn as spawn_audio};
 use std::sync::Mutex as SyncMutex;
 use std::time::Duration;
 
@@ -77,6 +77,7 @@ mod tests {
                 interval: Duration::from_secs(1),
                 config: Default::default(),
                 pool: audio_pool.clone(),
+                encoders: Default::default(),
             },
             metrics.clone(),
         );

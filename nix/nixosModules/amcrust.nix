@@ -139,7 +139,6 @@
         HAP_PIN = camera.pin;
       };
 
-    path = [pkgs.ffmpeg];
     script = ''
       export AMCREST_PASSWORD="$(<"$CREDENTIALS_DIRECTORY/password")"
       exec ${lib.getExe cfg.package} ${lib.escapeShellArgs camera.extraArgs}

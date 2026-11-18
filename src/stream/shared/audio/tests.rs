@@ -366,6 +366,7 @@ async fn real_presented_audio_matrix() {
                         ..Default::default()
                     },
                     pool: pool.clone(),
+                    encoders: Default::default(),
                 },
                 Metrics::new(),
             );

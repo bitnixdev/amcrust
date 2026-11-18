@@ -17,7 +17,6 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 const RPC_CONFIG_ATTEMPTS: u8 = 3;
 const RPC_CONFIG_RETRY_DELAY: Duration = Duration::from_millis(150);
 const CAMERA_SNAPSHOT_JPEG_QUALITY: &str = "1";
-const HOMEKIT_SNAPSHOT_JPEG_QSCALE: &str = "31";
 
 fn config_key_pointer(name: &str, key: &str) -> Option<String> {
     let path = key.strip_prefix(name)?;
@@ -1837,97 +1836,53 @@ impl SnapshotCache {
     }
 }
 
-/// Scales a JPEG to the given size with ffmpeg, preserving aspect ratio.
+/// Bound pixel work even when the caller times out during a blocking decode.
 async fn scale_jpeg(
     input: Vec<u8>,
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-    tokio::time::timeout(
-        SNAPSHOT_SCALE_TIMEOUT,
-        scale_jpeg_inner(input, width, height),
-    )
-    .await
-    .map_err(|_| {
-        format!(
-            "ffmpeg snapshot scaling timed out after {}s",
-            SNAPSHOT_SCALE_TIMEOUT.as_secs()
-        )
-    })?
+    static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    tokio::time::timeout(SNAPSHOT_SCALE_TIMEOUT, async {
+        let slot = SLOTS.acquire().await?;
+        tokio::task::spawn_blocking(move || {
+            let _slot = slot;
+            resize_snapshot(&input, width, height)
+        })
+        .await?
+    })
+    .await?
 }
 
-async fn scale_jpeg_inner(
-    input: Vec<u8>,
+fn resize_snapshot(
+    input: &[u8],
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-    use std::process::Stdio;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    // Fit within the requested box without distorting the aspect ratio.
-    let filter =
-        format!("scale='min({width},iw)':'min({height},ih)':force_original_aspect_ratio=decrease");
-
-    // Some Amcrest models occasionally return a valid, completely black JPEG
-    // while their snapshot encoder changes buffers. Have FFmpeg identify those
-    // frames so the cache can retain the last useful preview instead of making
-    // Home briefly replace the tile with black.
-    let filter = format!("{filter},blackframe=amount=99:threshold=24");
-
-    let mut child = tokio::process::Command::new("ffmpeg")
-        .args(["-hide_banner", "-loglevel", "info"])
-        .args(["-f", "image2pipe", "-i", "pipe:0"])
-        .args(["-frames:v", "1", "-vf", &filter])
-        // Preview reliability is more important than detail here. Produce the
-        // smallest practical baseline-compatible 4:2:0 JPEG for Home.
-        .args([
-            "-f",
-            "image2",
-            "-c:v",
-            "mjpeg",
-            "-pix_fmt",
-            "yuvj420p",
-            "-q:v",
-            HOMEKIT_SNAPSHOT_JPEG_QSCALE,
-            "pipe:1",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()?;
-
-    let mut stdin = child.stdin.take().ok_or("no stdin")?;
-    let mut stdout = child.stdout.take().ok_or("no stdout")?;
-    let mut stderr = child.stderr.take().ok_or("no stderr")?;
-
-    let writer = async move {
-        let _ = stdin.write_all(&input).await;
-        drop(stdin);
+    use image::{
+        ImageDecoder,
+        codecs::jpeg::{JpegDecoder, JpegEncoder},
     };
-    let mut output = Vec::new();
-    let reader = stdout.read_to_end(&mut output);
-    let mut diagnostics = Vec::new();
-    let diagnostics_reader = stderr.read_to_end(&mut diagnostics);
-
-    let (_, read_result, diagnostics_result) = tokio::join!(writer, reader, diagnostics_reader);
-    read_result?;
-    diagnostics_result?;
-    let status = child.wait().await?;
-    if !status.success() || output.is_empty() {
-        let diagnostics = String::from_utf8_lossy(&diagnostics);
-        return Err(format!(
-            "ffmpeg snapshot scaling failed (status {status}): {}",
-            diagnostics.trim()
-        )
-        .into());
+    validate_jpeg_envelope(input)?;
+    let decoder = JpegDecoder::new(std::io::Cursor::new(input))?;
+    let (w, h) = decoder.dimensions();
+    if width == 0 || height == 0 || u64::from(w) * u64::from(h) > 16_777_216 {
+        return Err("unsupported snapshot dimensions".into());
     }
-    if !output.starts_with(&[0xff, 0xd8]) || !output.ends_with(&[0xff, 0xd9]) {
-        return Err("ffmpeg snapshot scaling produced an invalid JPEG".into());
-    }
-    if ffmpeg_detected_black_frame(&diagnostics) {
+    let decoded = image::DynamicImage::from_decoder(decoder)?;
+    let scaled = decoded.thumbnail(width.min(w), height.min(h)).into_rgb8();
+    let black = scaled
+        .pixels()
+        .filter(|p| {
+            let [r, g, b] = p.0.map(u32::from);
+            299 * r + 587 * g + 114 * b < 24_000
+        })
+        .count();
+    if black * 100 >= scaled.len() / 3 * 99 {
         return Err("camera produced a nearly all-black snapshot".into());
     }
+    let mut output = Vec::new();
+    JpegEncoder::new_with_quality(&mut output, 65).encode_image(&scaled)?;
     Ok(output)
 }
 
@@ -1936,10 +1891,6 @@ fn validate_jpeg_envelope(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error 
         return Err("camera returned an invalid JPEG snapshot".into());
     }
     Ok(())
-}
-
-fn ffmpeg_detected_black_frame(diagnostics: &[u8]) -> bool {
-    String::from_utf8_lossy(diagnostics).contains(" pblack:")
 }
 
 fn fingerprint(bytes: &[u8]) -> u64 {
@@ -2487,13 +2438,23 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_ffmpeg_blackframe_diagnostic() {
-        assert!(ffmpeg_detected_black_frame(
-            b"[Parsed_blackframe_1] frame:0 pblack:100 pts:0"
-        ));
-        assert!(!ffmpeg_detected_black_frame(
-            b"Input #0, image2pipe, from 'pipe:0'"
-        ));
+    fn scales_snapshot_without_distortion_or_upscaling() {
+        for intensity in [0, 128] {
+            let src = image::RgbImage::from_pixel(80, 40, image::Rgb([intensity; 3]));
+            let mut jpeg = Vec::new();
+            image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+                .encode_image(&src)
+                .unwrap();
+            for (w, h, expected) in [(30, 30, (30, 15)), (120, 80, (80, 40))] {
+                let result = resize_snapshot(&jpeg, w, h);
+                if intensity == 0 {
+                    assert!(result.is_err());
+                } else {
+                    assert_eq!(jpeg_dimensions(&result.unwrap()), Some(expected));
+                }
+            }
+        }
+        assert!(resize_snapshot(b"not a jpeg", 30, 30).is_err());
     }
 
     #[test]

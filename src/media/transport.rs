@@ -105,6 +105,17 @@ impl Transport {
             first.guard().map_err(|_| Error::Revoked)?,
         )
     }
+    /// Fence viewer writes with the subscription that produced this Opus stream.
+    pub fn new_opus_bound(
+        socket: UdpSocket,
+        peer: SocketAddr,
+        key: &[u8],
+        ssrc: u32,
+        wire_mtu: usize,
+        packet: &super::audio::OpusPacket,
+    ) -> Result<Self, Error> {
+        Self::from_guard(socket, peer, key, ssrc, wire_mtu, packet.source_guard())
+    }
     pub(crate) fn from_guard(
         socket: UdpSocket,
         peer: SocketAddr,
