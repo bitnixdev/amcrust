@@ -28,6 +28,20 @@ as application library code and is wired into `src/main.rs` for live video/audio
 MediaMTX was investigated but not added or launched. Apple HSV acceptance, full live
 privacy transitions and unattended recovery remain separate requirements.
 
+### Serving-time shutdown and motion lifetime
+
+Isolated child test processes installed the production stop listeners, received real
+SIGTERM and SIGINT respectively, and observed the matching stop request. This exercises
+OS delivery, not systemd or a running paired accessory. In the local HDS loopback test,
+a stalled unidentified connection closed, admission stayed closed and two cancelled
+shutdown waits could not lose the pending listener join. A later shutdown completed
+only after the retained join was released. Motion deadline checks refreshed one
+sensor 999 times without accumulating timers or changing the other sensor's expiry.
+
+The service still uses explicit process exit after application cleanup for libmdns.
+Service-manager stop under real media load, interruption during startup, deployed
+restart and Apple client recovery have not been qualified.
+
 ### Shared live/recording job admission
 
 Live Opus, recording AAC and fMP4 mux constructors now reserve their full logical

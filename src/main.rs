@@ -3,6 +3,7 @@ mod amcrest;
 mod hsv;
 mod metrics;
 mod motion;
+mod service_stop;
 mod stream;
 mod tlv8;
 
@@ -325,14 +326,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let requested_metrics_addr = std::net::SocketAddr::from(([0, 0, 0, 0], args.metrics_port));
-    let (_metrics_server, metrics_addr) = metrics::start_server(
+    let (metrics_server, metrics_addr) = metrics::start_server(
         requested_metrics_addr,
         metrics.clone(),
         hsv_state.clone(),
         streams.clone(),
         source_registry.budget_observer(),
     )?;
-    let _stats_reporter = metrics::start_hourly_stderr_reporter(metrics.clone());
+    let stats_reporter = metrics::start_hourly_stderr_reporter(metrics.clone());
     info!("health and metrics HTTP server on {metrics_addr}");
 
     let camera_accessory_probe = CameraAccessory::new(
@@ -482,46 +483,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // AI detection events → motion sensors (and the recording trigger flag).
     let (tx, rx) = broadcast::channel::<CameraEvent>(64);
-    let event_camera = camera.clone();
-    let event_metrics = metrics.clone();
-    tokio::spawn(async move { event_camera.run_event_stream(tx, event_metrics).await });
-    let mapper = MotionMapper::new(args.name.clone(), accessory_ptr, motion_active, metrics);
-    tokio::spawn(async move { mapper.run(rx).await });
-
-    info!(
-        "HomeKit accessory '{}' on port {} — setup code: {}",
-        args.name, hap_port, setup_code
+    let mapper = MotionMapper::new(
+        args.name.clone(),
+        accessory_ptr,
+        motion_active,
+        metrics.clone(),
     );
 
-    let handle = server.run_handle();
-    tokio::select! {
-        result = handle => {
-            // Exit without unwinding either way: dropping the runtime
-            // mid-flight trips a panic in libmdns's task teardown.
-            if let Err(e) = result {
-                log::error!("server error: {e:?}");
-                streams.stop_stream().await;
-                hsv_state.shutdown().await;
-                hds.shutdown().await;
-                let _ = source_registry.shutdown().await;
-                std::process::exit(1);
+    // Keep event/motion futures in the serving scope. No reconnect loop or delayed
+    // sensor update should survive into media teardown.
+    let mut failed = match service_stop::StopSignals::install() {
+        Ok(mut signals) => {
+            info!(
+                "HomeKit accessory '{}' on port {} — setup code: {}",
+                args.name, hap_port, setup_code
+            );
+            tokio::select! {
+                biased;
+                signal = signals.wait() => match signal {
+                    Ok(name) => { info!("shutting down on {name}"); false }
+                    Err(error) => { log::error!("shutdown signal error: {error}"); true }
+                },
+                result = server.run_handle() => match result {
+                    Ok(()) => false,
+                    Err(error) => { log::error!("server error: {error:?}"); true }
+                },
+                _ = camera.run_event_stream(tx, metrics.clone()) => { log::error!("event stream worker stopped"); true },
+                _ = mapper.run(rx) => { log::error!("motion mapper stopped"); true },
             }
         }
-        _ = tokio::signal::ctrl_c() => {
-            info!("shutting down...");
-            streams.stop_stream().await;
-            hsv_state.shutdown().await;
-            hds.shutdown().await;
-            let _ = source_registry.shutdown().await;
-            std::process::exit(0);
+        Err(error) => {
+            log::error!("cannot install shutdown signals: {error}");
+            true
         }
-    }
-
+    };
+    metrics.event_stream_connected(false);
     streams.stop_stream().await;
     hsv_state.shutdown().await;
     hds.shutdown().await;
-    source_registry.shutdown().await?;
-    Ok(())
+    if let Err(error) = source_registry.shutdown().await {
+        log::error!("source registry shutdown failed: {error}");
+        failed = true;
+    }
+    for task in [metrics_server, stats_reporter] {
+        task.abort();
+        if let Err(error) = task.await {
+            if !error.is_cancelled() {
+                log::error!("background task join failed: {error}");
+                failed = true;
+            }
+        }
+    }
+    // libmdns can panic during runtime destruction. Exit only after the explicit
+    // application cleanup above; this is not a graceful drain of HAP client sockets.
+    std::process::exit(i32::from(failed));
 }
 
 async fn run_apply_settings(

@@ -1,157 +1,145 @@
 //! Maps Amcrest AI detection events onto the HomeKit motion sensor services.
 
+use crate::{accessory::motion_service_iids, amcrest::CameraEvent, metrics::Metrics};
+use hap::{HapType, pointer};
 use log::{debug, info, warn};
 use serde_json::json;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use tokio::sync::broadcast;
-use tokio::time::{Duration, sleep};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use tokio::{
+    sync::broadcast,
+    time::{Duration, Instant, sleep_until},
+};
 
-use hap::{HapType, pointer};
-
-use crate::accessory::motion_service_iids;
-use crate::amcrest::CameraEvent;
-use crate::metrics::Metrics;
-
-/// Safety net: clear a motion sensor this long after the last Start if the
-/// camera never sends a Stop.
 const MOTION_TIMEOUT: Duration = Duration::from_secs(90);
 
-#[derive(Clone)]
+/// One replaceable deadline per sensor, owned by the mapper (no detached reset tasks).
+#[derive(Default)]
+struct MotionDeadlines([Option<Instant>; 2]);
+impl MotionDeadlines {
+    fn set(&mut self, vehicle: bool, detected: bool, now: Instant) {
+        self.0[usize::from(vehicle)] = detected.then(|| now + MOTION_TIMEOUT);
+    }
+    fn next(&self) -> Option<(Instant, bool)> {
+        self.0
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, t)| t.map(|t| (t, i == 1)))
+            .min()
+    }
+    fn active(&self) -> bool {
+        self.0.iter().any(Option::is_some)
+    }
+}
 pub struct MotionMapper {
     camera_name: String,
     accessory: pointer::Accessory,
-    person_gen: Arc<AtomicU64>,
-    vehicle_gen: Arc<AtomicU64>,
-    person_active: Arc<AtomicBool>,
-    vehicle_active: Arc<AtomicBool>,
-    /// Shared "any motion active" flag, used by the HSV recording stream to
-    /// decide when to mark end-of-stream.
-    motion_active: Arc<std::sync::atomic::AtomicBool>,
+    motion_active: Arc<AtomicBool>,
     metrics: Arc<Metrics>,
+    deadlines: MotionDeadlines,
 }
-
 impl MotionMapper {
     pub fn new(
         camera_name: String,
         accessory: pointer::Accessory,
-        motion_active: Arc<std::sync::atomic::AtomicBool>,
+        motion_active: Arc<AtomicBool>,
         metrics: Arc<Metrics>,
     ) -> Self {
         Self {
             camera_name,
             accessory,
-            person_gen: Arc::new(AtomicU64::new(0)),
-            vehicle_gen: Arc::new(AtomicU64::new(0)),
-            person_active: Arc::new(AtomicBool::new(false)),
-            vehicle_active: Arc::new(AtomicBool::new(false)),
             motion_active,
             metrics,
+            deadlines: Default::default(),
         }
     }
-
-    pub async fn run(self, mut rx: broadcast::Receiver<CameraEvent>) {
+    pub async fn run(mut self, mut rx: broadcast::Receiver<CameraEvent>) {
         loop {
-            match rx.recv().await {
-                Ok(event) => self.handle(event).await,
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    warn!("motion mapper lagged, skipped {n} events");
+            let next = self.deadlines.next();
+            tokio::select! {
+                biased;
+                vehicle = async { let (at, vehicle) = next?; sleep_until(at).await; Some(vehicle) }, if next.is_some() => {
+                    self.update(vehicle.expect("armed motion deadline"), false).await;
                 }
-                Err(broadcast::error::RecvError::Closed) => break,
+                message = rx.recv() => match message {
+                    Ok(event) => self.handle(event).await,
+                    Err(broadcast::error::RecvError::Lagged(n)) => warn!("motion mapper lagged, skipped {n} events"),
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
             }
         }
     }
-
-    async fn handle(&self, event: CameraEvent) {
+    async fn handle(&mut self, event: CameraEvent) {
         debug!(
             "camera event index={} timestamp={}",
             event.index, event.timestamp
         );
-        let (person_iid, vehicle_iid) = motion_service_iids();
-
-        // SmartMotion events are explicitly typed; IVS cross-line/region events
-        // carry the object type in their data payload.
-        let is_vehicle = match event.code.as_str() {
+        let vehicle = match event.code.as_str() {
             "SmartMotionVehicle" => true,
             "SmartMotionHuman" => false,
             _ => event.data.to_string().contains("Vehicle"),
         };
-        let (iid, generation, active, other_active, label) = if is_vehicle {
-            (
-                vehicle_iid,
-                &self.vehicle_gen,
-                &self.vehicle_active,
-                &self.person_active,
-                "vehicle",
-            )
-        } else {
-            (
-                person_iid,
-                &self.person_gen,
-                &self.person_active,
-                &self.vehicle_active,
-                "person",
-            )
+        self.metrics.event(vehicle, &event.action);
+        let detected = match event.action.as_str() {
+            "Start" => true,
+            "Stop" => false,
+            other => {
+                warn!("unhandled event action: {other}");
+                return;
+            }
         };
-        self.metrics.event(is_vehicle, &event.action);
-
-        match event.action.as_str() {
-            "Start" => {
-                info!(
-                    "[{}] {} motion started ({})",
-                    self.camera_name, label, event.code
-                );
-                active.store(true, Ordering::SeqCst);
-                self.motion_active.store(true, Ordering::SeqCst);
-                self.metrics.motion_active(true);
-                let generation_at_start = generation.fetch_add(1, Ordering::SeqCst) + 1;
-                set_motion(&self.accessory, iid, true).await;
-
-                // Schedule the safety-net reset.
-                let accessory = self.accessory.clone();
-                let generation = generation.clone();
-                let active = active.clone();
-                let other_active = other_active.clone();
-                let motion_active = self.motion_active.clone();
-                let metrics = self.metrics.clone();
-                tokio::spawn(async move {
-                    sleep(MOTION_TIMEOUT).await;
-                    if generation.load(Ordering::SeqCst) == generation_at_start {
-                        active.store(false, Ordering::SeqCst);
-                        motion_active.store(other_active.load(Ordering::SeqCst), Ordering::SeqCst);
-                        metrics.motion_active(other_active.load(Ordering::SeqCst));
-                        set_motion(&accessory, iid, false).await;
+        info!(
+            "[{}] {} motion {} ({})",
+            self.camera_name,
+            if vehicle { "vehicle" } else { "person" },
+            event.action,
+            event.code
+        );
+        self.update(vehicle, detected).await;
+    }
+    async fn update(&mut self, vehicle: bool, detected: bool) {
+        self.deadlines.set(vehicle, detected, Instant::now());
+        let active = self.deadlines.active();
+        self.motion_active.store(active, Ordering::SeqCst);
+        self.metrics.motion_active(active);
+        let (person_iid, vehicle_iid) = motion_service_iids();
+        let iid = if vehicle { vehicle_iid } else { person_iid };
+        let mut acc = self.accessory.lock().await;
+        for service in acc.get_mut_services() {
+            if service.get_id() == iid {
+                if let Some(c) = service.get_mut_characteristic(HapType::MotionDetected) {
+                    if let Err(e) = c.set_value(json!(detected)).await {
+                        warn!("failed to set motion state: {e:?}");
                     }
-                });
+                }
+                return;
             }
-            "Stop" => {
-                info!(
-                    "[{}] {} motion stopped ({})",
-                    self.camera_name, label, event.code
-                );
-                active.store(false, Ordering::SeqCst);
-                self.motion_active
-                    .store(other_active.load(Ordering::SeqCst), Ordering::SeqCst);
-                self.metrics
-                    .motion_active(other_active.load(Ordering::SeqCst));
-                generation.fetch_add(1, Ordering::SeqCst);
-                set_motion(&self.accessory, iid, false).await;
-            }
-            other => warn!("unhandled event action: {other}"),
         }
     }
 }
-
-async fn set_motion(accessory: &pointer::Accessory, service_iid: u64, detected: bool) {
-    let mut acc = accessory.lock().await;
-    for service in acc.get_mut_services() {
-        if service.get_id() == service_iid {
-            if let Some(c) = service.get_mut_characteristic(HapType::MotionDetected) {
-                if let Err(e) = c.set_value(json!(detected)).await {
-                    warn!("failed to set motion state: {e:?}");
-                }
-            }
-            return;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn refresh_and_stop_replace_only_the_matching_deadline() {
+        let t = Instant::now();
+        let mut d = MotionDeadlines::default();
+        d.set(false, true, t);
+        d.set(true, true, t);
+        for i in 1..1000 {
+            d.set(false, true, t + Duration::from_millis(i));
         }
+        assert_eq!(d.next(), Some((t + MOTION_TIMEOUT, true)));
+        d.set(true, false, t + MOTION_TIMEOUT);
+        assert!(d.active());
+        assert_eq!(
+            d.next(),
+            Some((t + MOTION_TIMEOUT + Duration::from_millis(999), false))
+        );
+        d.set(false, false, t + MOTION_TIMEOUT);
+        assert!(!d.active());
+        assert!(d.next().is_none());
     }
 }

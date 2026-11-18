@@ -48,7 +48,8 @@ pub struct HdsServer {
     camera_name: Arc<str>,
     port: u16,
     inner: Arc<Mutex<Inner>>,
-    shutdown_lock: Arc<Mutex<()>>,
+    // Keep the draining join handle reachable if a shutdown wait is cancelled.
+    draining: Arc<Mutex<Option<Listener>>>,
     state: Arc<HsvState>,
     /// True while a dataSend recording stream is running (one at a time).
     recording_busy: Arc<AtomicBool>,
@@ -70,7 +71,7 @@ impl HdsServer {
                 prepared: Vec::new(),
                 stopped: false,
             })),
-            shutdown_lock: Arc::new(Mutex::new(())),
+            draining: Arc::new(Mutex::new(None)),
             state,
             recording_busy: Arc::new(AtomicBool::new(false)),
             metrics,
@@ -94,11 +95,6 @@ impl HdsServer {
         if inner.stopped || inner.prepared.len() >= 16 {
             return Err("HDS admission closed".into());
         }
-        inner.prepared.push(PreparedSession {
-            keys,
-            created: Instant::now(),
-        });
-
         let port = match &inner.listener {
             Some(listener) => listener.port,
             None => {
@@ -143,23 +139,30 @@ impl HdsServer {
             }
         };
 
+        inner.prepared.push(PreparedSession {
+            keys,
+            created: Instant::now(),
+        });
         Ok((port, accessory_salt))
     }
 
     pub async fn shutdown(&self) {
-        let _shutdown = self.shutdown_lock.lock().await;
-        let listener = {
+        let mut draining = self.draining.lock().await;
+        if draining.is_none() {
             let mut inner = self.inner.lock().await;
             inner.stopped = true;
             inner.prepared.clear();
             if let Some(listener) = &inner.listener {
                 listener.stop.revoke();
             }
-            inner.listener.take()
-        };
-        if let Some(listener) = listener {
-            let _ = listener.task.await;
+            *draining = inner.listener.take();
         }
+        if let Some(listener) = draining.as_mut() {
+            if let Err(error) = (&mut listener.task).await {
+                error!("HDS listener join failed: {error}");
+            }
+        }
+        draining.take();
     }
 
     async fn handle_connection(&self, mut stream: TcpStream, stop: &Lease) -> Result<(), String> {

@@ -405,6 +405,11 @@ not the physical camera: coordinate any existing instance controlling that encod
 - [ ] Settle start/end presentation with those devices. Characterize the remaining
   whole-AU tail and decoder-state behavior; do not assume front edits solve end trims
   or turn residual sample differences into an implicit tolerance.
+- [x] Route serving-time SIGTERM/SIGINT through one explicit media shutdown path;
+  keep the HDS listener join reachable across cancelled shutdown waits, and bound
+  motion safety timeouts to two mapper-owned deadlines instead of detached tasks.
+- [ ] Exercise deployed service stop/restart with live and HSV clients, including
+  startup interruption, port reuse, fresh acquisitions and actual controller recovery.
 - [ ] Exercise stopped/slow viewers, output backpressure, camera disconnect/stall,
   reconnect, encoder change, repeated start/stop and HomeKit privacy disable/re-enable.
   Verify another subscriber/camera survives local failures; check for leaked work.

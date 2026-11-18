@@ -375,6 +375,21 @@ Health/Prometheus expose the caps, unique owned-ID count, setup/start capacity r
 and lazily observed expiration counter. These bounds cover live control/transport ownership,
 not aggregate allocator/native RSS, request-rate limiting or every application's allocation.
 
+## Service stop while serving
+
+The foreground service accepts Unix SIGTERM (including systemd stop) as well as
+SIGINT. Both signals, HAP return and foreground worker failure leave the same
+serving scope. Camera event reconnect and motion mapping are scoped futures rather
+than detached tasks. Each sensor has one replaceable 90-second deadline; the mapper
+serializes expiry, HAP updates and events, so repeated starts never accumulate timers.
+
+Teardown closes live admission, stops snapshots and recording, drains HDS, joins
+the registry, then cancels and joins the metrics listener and stats reporter tasks.
+HDS closes preparation admission before waiting and retains its listener join handle
+if that wait is cancelled. The process exits explicitly after cleanup to avoid the
+existing libmdns runtime-drop issue. This is not graceful HAP/HTTP client socket
+drain, startup signal handling, SIGKILL recovery or proof of controller reconnection.
+
 ## Source recovery observations
 
 Each supervisor publishes a bounded recovery record alongside source counters. It

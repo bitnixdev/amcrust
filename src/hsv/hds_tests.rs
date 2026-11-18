@@ -290,6 +290,37 @@ async fn shutdown_joins_unidentified_connections_and_closes_admission() {
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(20)).await;
+    // Delay completion after the real connection has drained; cancel one waiter.
+    let (joined, observed) = tokio::sync::oneshot::channel();
+    let (release, wait) = tokio::sync::oneshot::channel();
+    {
+        let mut inner = server.inner.lock().await;
+        let mut listener = inner.listener.take().unwrap();
+        let original = listener.task;
+        listener.task = tokio::spawn(async move {
+            original.await.unwrap();
+            joined.send(()).unwrap();
+            wait.await.unwrap();
+        });
+        inner.listener = Some(listener);
+    }
+    let first = tokio::spawn({
+        let s = server.clone();
+        async move { s.shutdown().await }
+    });
+    timeout(Duration::from_secs(1), observed)
+        .await
+        .unwrap()
+        .unwrap();
+    first.abort();
+    assert!(first.await.unwrap_err().is_cancelled());
+    assert!(server.setup(&[3; 32], &[4; 32]).await.is_err());
+    assert!(
+        timeout(Duration::from_millis(20), server.shutdown())
+            .await
+            .is_err()
+    );
+    release.send(()).unwrap();
     timeout(Duration::from_secs(1), server.shutdown())
         .await
         .unwrap();
