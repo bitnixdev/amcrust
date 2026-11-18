@@ -28,6 +28,48 @@ as application library code and is wired into `src/main.rs` for live video/audio
 MediaMTX was investigated but not added or launched. Apple HSV acceptance, full live
 privacy transitions and unattended recovery remain separate requirements.
 
+### Snapshot epochs through encrypted HTTP delivery
+
+The snapshot path no longer relies on before/after booleans alone. Requests capture
+sticky epoch permission before reading mode flags. Camera-off/on and periodic/event
+snapshot changes retire old frames, scaled fallback images and copied response data.
+Only a new epoch can publish new frames. The detached forever refresher was replaced
+with drop cancellation and retained, joined shutdown ownership; an in-flight HTTP fetch
+is cancelled on epoch retirement or shutdown.
+
+The HAP serializer now distinguishes HTTP message boundaries from flush boundaries:
+partial headers/bodies remain associated with their permission, and pipelined responses
+are split. Current finite HAP bodies are supported; ambiguous/chunked framing is refused.
+A bounded connection-local permission identifier survives serialization to the encrypted
+writer. Revocation serializes with the final socket write and wakes an unread-peer wait.
+A retired partial response poisons/closes the connection; previously accepted bytes
+cannot be recalled. Opt-in local image saves use the same permission.
+
+Local checks exercised:
+- Existing encrypted HTTP snapshot round-trip/authentication and delivery accounting.
+- Partial flushes plus pipelined snapshot/non-snapshot responses, with independent
+  permissions and refusal of unfenced image responses.
+- An unread encrypted TCP peer with constrained socket buffers: a pending one-MiB
+  response wakes on revoke, refuses continuation and cannot append another plaintext.
+- Off/on with populated raw/scaled caches: old fallback images remain retired, and
+  a fresh local HTTP response supplies a new source frame.
+- Joined shutdown during a stalled local HTTP fetch, no late cache publication,
+  periodic/event flag changes and refusal to revive epochs after shutdown.
+- Last cache-owner drop retires escaped permissions while a remaining owner preserves
+  them; drop signals cancellation, whereas explicit shutdown additionally joins.
+
+Validation passed: **49 library +62 application +16 HAP tests**, workspace integration
+checks and three HAP doctests, all-target compilation, strict application-library Clippy,
+formatting, two sampler tests and the pinned Nix package. Packaging now includes workspace
+checks so the HAP transport tests are not omitted. The bounded review returned no findings;
+a subsequent last-owner drop hardening passed the repeated workspace checks/package build.
+The existing metrics `fetch_update` deprecation warning remains.
+
+No real camera was accessed, encoder changed or recording retained for this increment.
+These are local lifetime, framing and kernel-write checks—not deployed Apple snapshot
+acceptance or evidence that a Home client recovers automatically from mid-image close.
+JPEG scaling still uses the FFmpeg executable; removing media readers did not remove it.
+
 ### Camera-off integration and retained live join ownership
 
 HomeKit Camera Active now gates setup/start, clears prepared sessions and disables all
@@ -59,9 +101,10 @@ checks, all-target compilation, strict library Clippy, formatting, two sampler t
 and the pinned Nix package. The bounded review returned no findings. The existing
 metrics `fetch_update` deprecation warning is unchanged.
 
-Snapshot-cache epochs/final HTTP writes (especially off/on overlap), per-stream Active,
-encoder-change source retirement/profile refresh, Apple camera-mode/HSV behavior and
-unattended recovery remain open. These results do not complete whole-camera privacy
+At that stage snapshot-cache epochs/final HTTP writes were still open; the later
+snapshot increment above wires them. Per-stream Active, encoder-change source
+retirement/profile refresh, Apple camera-mode/HSV behavior and unattended recovery
+remain open. These results do not complete whole-camera privacy
 or a deployed Home acceptance run.
 
 ### Shared recording cutover and removal of the last media reader

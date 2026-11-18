@@ -59,6 +59,7 @@ struct Handlers {
 }
 
 struct Api {
+    serialized_output: crate::transport::tcp::SerializedOutput,
     controller_id: pointer::ControllerId,
     event_subscriptions: pointer::EventSubscriptions,
     config: pointer::Config,
@@ -83,8 +84,10 @@ impl Api {
         conn_shared_secret: std::sync::Arc<std::sync::RwLock<Option<[u8; 32]>>>,
         secret_slot: pointer::SharedSecretSlot,
         session_sender: oneshot::Sender<Session>,
+        serialized_output: crate::transport::tcp::SerializedOutput,
     ) -> Self {
         Api {
+            serialized_output,
             controller_id,
             event_subscriptions,
             config,
@@ -146,6 +149,7 @@ impl Service<Request<Body>> for Api {
 
         if method == Method::POST && uri.path() == "/resource" {
             let snapshot_handler = self.snapshot_handler.clone();
+            let serialized_output = self.serialized_output.clone();
             // Only serve snapshots on sessions that have completed pair-verify.
             let verified = self
                 .controller_id
@@ -176,23 +180,34 @@ impl Service<Request<Body>> for Api {
                     Some(handler) => match handler(width, height, request.reason).await {
                         Ok(pointer::SnapshotResult::Jpeg {
                             image,
+                            permission,
                             camera_name,
                             source_generation,
                             output_fingerprint,
-                        }) => Ok(Response::builder()
-                            .status(StatusCode::OK)
-                            .header("Content-Type", "image/jpeg")
-                            .header("Content-Length", image.len().to_string())
-                            .header("Cache-Control", "no-store, no-cache, must-revalidate")
-                            .header("Pragma", "no-cache")
-                            .header("X-Amcrust-Camera", camera_name)
-                            .header("X-Amcrust-Source-Generation", source_generation.to_string())
-                            .header(
-                                "X-Amcrust-Output-Fingerprint",
-                                format!("{output_fingerprint:016x}"),
-                            )
-                            .body(Body::from(image))
-                            .expect("couldn't build snapshot response")),
+                        }) => {
+                            let id = match serialized_output.register_snapshot(permission) {
+                                Ok(id) => id,
+                                Err(_) => return status_response(StatusCode::SERVICE_UNAVAILABLE),
+                            };
+                            Ok(Response::builder()
+                                .status(StatusCode::OK)
+                                .header("Content-Type", "image/jpeg")
+                                .header("X-Hap-Snapshot-Permit", id.to_string())
+                                .header("Content-Length", image.len().to_string())
+                                .header("Cache-Control", "no-store, no-cache, must-revalidate")
+                                .header("Pragma", "no-cache")
+                                .header("X-Amcrust-Camera", camera_name)
+                                .header(
+                                    "X-Amcrust-Source-Generation",
+                                    source_generation.to_string(),
+                                )
+                                .header(
+                                    "X-Amcrust-Output-Fingerprint",
+                                    format!("{output_fingerprint:016x}"),
+                                )
+                                .body(Body::from(image))
+                                .expect("couldn't build snapshot response"))
+                        }
                         Ok(pointer::SnapshotResult::HapStatus(code)) => {
                             let body = serde_json::json!({ "status": code }).to_string();
                             Ok(Response::builder()
@@ -349,6 +364,7 @@ impl Server {
                     encrypted_stream.session_shared_secret.clone(),
                     secret_slot.clone(),
                     session_sender,
+                    serialized_output.clone(),
                 );
 
                 event_emitter

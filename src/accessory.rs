@@ -291,11 +291,13 @@ async fn build_operating_mode(
         .await?;
     let hsv_ = hsv.clone();
     svc.event_snapshots_active
-        .on_update(Some(move |_: &bool, new: &bool| {
-            hsv_.event_snapshots.store(*new, Ordering::SeqCst);
+        .on_update_async(Some(move |_: bool, new: bool| {
             let hsv = hsv_.clone();
-            tokio::spawn(async move { hsv.persist().await });
-            Ok(())
+            async move {
+                hsv.set_snapshot_active(false, new).await;
+                Ok(())
+            }
+            .boxed()
         }));
 
     svc.homekit_camera_active
@@ -319,11 +321,13 @@ async fn build_operating_mode(
             .set_value(json!(hsv.periodic_snapshots.load(Ordering::SeqCst)))
             .await?;
         let hsv_ = hsv.clone();
-        periodic.on_update(Some(move |_: &bool, new: &bool| {
-            hsv_.periodic_snapshots.store(*new, Ordering::SeqCst);
+        periodic.on_update_async(Some(move |_: bool, new: bool| {
             let hsv = hsv_.clone();
-            tokio::spawn(async move { hsv.persist().await });
-            Ok(())
+            async move {
+                hsv.set_snapshot_active(true, new).await;
+                Ok(())
+            }
+            .boxed()
         }));
     }
 

@@ -52,6 +52,7 @@ pub struct HsvState {
     pub homekit_active: AtomicBool,
     pub selected: Mutex<Option<SelectedConfig>>,
     pub recorder: Recorder,
+    pub snapshots: crate::amcrest::SnapshotCache,
     pub motion_active: Arc<AtomicBool>,
     camera: AmcrestClient,
     path: PathBuf,
@@ -104,7 +105,12 @@ impl HsvState {
                     ))
             });
 
+        let snapshots = crate::amcrest::SnapshotCache::new(camera.clone());
+        snapshots.invalidate(
+            persisted.homekit_active && (persisted.event_snapshots || persisted.periodic_snapshots),
+        );
         Arc::new(Self {
+            snapshots,
             camera_name,
             recording_active: AtomicBool::new(persisted.recording_active),
             audio_active: AtomicBool::new(persisted.audio_active),
@@ -324,18 +330,41 @@ impl HsvState {
             return Err(amcrust::source::Terminal::Shutdown);
         }
         self.homekit_active.store(active, Ordering::SeqCst);
+        self.snapshots.invalidate(
+            active
+                && (self.periodic_snapshots.load(Ordering::SeqCst)
+                    || self.event_snapshots.load(Ordering::SeqCst)),
+        );
         let result = streams.set_enabled(active).await;
         if result.is_err() {
             self.homekit_active.store(false, Ordering::SeqCst);
+            self.snapshots.invalidate(false);
         }
         self.sync_recorder().await;
         self.persist().await;
         result
     }
 
+    pub async fn set_snapshot_active(&self, periodic: bool, active: bool) {
+        let _guard = self.camera_lock.lock().await;
+        if periodic {
+            self.periodic_snapshots.store(active, Ordering::SeqCst);
+        } else {
+            self.event_snapshots.store(active, Ordering::SeqCst);
+        }
+        self.snapshots.invalidate(
+            self.homekit_active.load(Ordering::SeqCst)
+                && !self.stopped.load(Ordering::SeqCst)
+                && (self.periodic_snapshots.load(Ordering::SeqCst)
+                    || self.event_snapshots.load(Ordering::SeqCst)),
+        );
+        self.persist().await;
+    }
+
     pub async fn shutdown(&self) {
         self.stopped.store(true, Ordering::SeqCst);
         let _camera = self.camera_lock.lock().await;
+        self.snapshots.shutdown().await;
         let _guard = self.recorder_lock.lock().await;
         self.recorder.stop().await;
     }

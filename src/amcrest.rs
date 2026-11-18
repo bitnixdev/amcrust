@@ -1541,6 +1541,8 @@ impl AmcrestClient {
 #[derive(Clone)]
 pub struct SnapshotCache {
     client: AmcrestClient,
+    permission: std::sync::Arc<std::sync::Mutex<hap::pointer::SnapshotPermit>>,
+    refresher: Option<std::sync::Arc<SnapshotRefresher>>,
     latest: std::sync::Arc<tokio::sync::RwLock<Option<SnapshotFrame>>>,
     scaled:
         std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<(u32, u32), ScaledSnapshot>>>,
@@ -1548,8 +1550,24 @@ pub struct SnapshotCache {
     next_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
+struct SnapshotRefresher {
+    permission: std::sync::Arc<std::sync::Mutex<hap::pointer::SnapshotPermit>>,
+    stop: tokio::sync::watch::Sender<bool>,
+    task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+impl Drop for SnapshotRefresher {
+    fn drop(&mut self) {
+        self.permission
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .revoke();
+        self.stop.send_replace(true);
+    }
+}
+
 #[derive(Clone)]
 struct SnapshotFrame {
+    permission: hap::pointer::SnapshotPermit,
     generation: u64,
     fetched_at: tokio::time::Instant,
     fingerprint: u64,
@@ -1558,6 +1576,7 @@ struct SnapshotFrame {
 
 #[derive(Clone)]
 struct ScaledSnapshot {
+    permission: hap::pointer::SnapshotPermit,
     source_generation: u64,
     source_fetched_at: tokio::time::Instant,
     source_fingerprint: u64,
@@ -1581,8 +1600,16 @@ const SNAPSHOT_MAX_AGE: Duration = Duration::from_secs(120);
 
 impl SnapshotCache {
     pub fn new(client: AmcrestClient) -> Self {
+        let permission =
+            std::sync::Arc::new(std::sync::Mutex::new(hap::pointer::SnapshotPermit::new()));
         Self {
             client,
+            permission: permission.clone(),
+            refresher: Some(std::sync::Arc::new(SnapshotRefresher {
+                permission,
+                stop: tokio::sync::watch::channel(false).0,
+                task: tokio::sync::Mutex::new(None),
+            })),
             latest: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
             scaled: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             refresh_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
@@ -1590,20 +1617,71 @@ impl SnapshotCache {
         }
     }
 
-    /// Spawns the background refresh loop.
-    pub fn spawn_refresher(&self) {
-        let cache = self.clone();
-        tokio::spawn(async move {
+    pub fn permission(&self) -> hap::pointer::SnapshotPermit {
+        self.permission
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Rotate, never revive, the epoch. Old cached/copied images remain revoked.
+    pub fn invalidate(&self, enabled: bool) {
+        let mut current = self.permission.lock().unwrap_or_else(|e| e.into_inner());
+        current.revoke();
+        let next = hap::pointer::SnapshotPermit::new();
+        if !enabled || self.refresher.as_ref().is_some_and(|r| *r.stop.borrow()) {
+            next.revoke();
+        }
+        *current = next;
+    }
+
+    pub async fn spawn_refresher(&self) {
+        let owner = self.refresher.as_ref().expect("refresher owner");
+        let mut task = owner.task.lock().await;
+        if task.is_some() || *owner.stop.borrow() {
+            return;
+        }
+        let mut stop = owner.stop.subscribe();
+        // The task must not own its own join handle or the drop cancellation sender.
+        let cache = Self {
+            refresher: None,
+            ..self.clone()
+        };
+        *task = Some(tokio::spawn(async move {
             let mut interval = tokio::time::interval(SNAPSHOT_REFRESH);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
-                interval.tick().await;
-                match cache.refresh().await {
-                    Ok(_) => {}
-                    Err(e) => warn!("[{}] snapshot refresh failed: {e}", cache.client.host),
+                tokio::select! { biased;
+                    _ = stop.changed() => break,
+                    _ = interval.tick() => {}
+                }
+                if !cache.permission().current() {
+                    continue;
+                }
+                tokio::select! { biased;
+                    _ = stop.changed() => break,
+                    result = cache.refresh() => {
+                        if let Err(e) = result {
+                            if cache.permission().current() { warn!("[{}] snapshot refresh failed: {e}", cache.client.host); }
+                        }
+                    }
                 }
             }
-        });
+        }));
+    }
+
+    pub async fn shutdown(&self) {
+        if let Some(owner) = &self.refresher {
+            owner.stop.send_replace(true);
+            self.invalidate(false);
+            let mut task = owner.task.lock().await;
+            if let Some(task) = task.as_mut() {
+                let _ = task.await;
+            }
+            task.take();
+        }
+        *self.latest.write().await = None;
+        self.scaled.lock().await.clear();
     }
 
     async fn refresh(&self) -> Result<SnapshotFrame, Box<dyn std::error::Error + Send + Sync>> {
@@ -1611,29 +1689,36 @@ impl SnapshotCache {
         use std::sync::atomic::Ordering;
 
         let _guard = self.refresh_lock.lock().await;
+        let permission = self.permission();
+        permission.write(|| ())?;
         if let Some(frame) = self.latest.read().await.clone()
+            && frame.permission.current()
             && frame.fetched_at.elapsed() <= SNAPSHOT_REFRESH_DEDUP
         {
             return Ok(frame);
         }
-        let bytes = tokio::time::timeout(SNAPSHOT_FETCH_TIMEOUT, self.client.snapshot())
-            .await
-            .map_err(|_| {
-                format!(
-                    "camera snapshot timed out after {}s",
-                    SNAPSHOT_FETCH_TIMEOUT.as_secs()
-                )
-            })??;
+        let bytes = tokio::select! { biased;
+            _ = permission.retired() => return Err("snapshot epoch retired".into()),
+            result = tokio::time::timeout(SNAPSHOT_FETCH_TIMEOUT, self.client.snapshot()) => result,
+        }
+        .map_err(|_| {
+            format!(
+                "camera snapshot timed out after {}s",
+                SNAPSHOT_FETCH_TIMEOUT.as_secs()
+            )
+        })??;
         validate_jpeg_envelope(&bytes)?;
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         bytes.hash(&mut hasher);
         let frame = SnapshotFrame {
+            permission: permission.clone(),
             generation: self.next_generation.fetch_add(1, Ordering::Relaxed),
             fetched_at: tokio::time::Instant::now(),
             fingerprint: hasher.finish(),
             bytes,
         };
-        *self.latest.write().await = Some(frame.clone());
+        let mut latest = self.latest.write().await;
+        permission.write(|| *latest = Some(frame.clone()))?;
         Ok(frame)
     }
 
@@ -1641,6 +1726,7 @@ impl SnapshotCache {
     /// last good frame, but never for longer than SNAPSHOT_MAX_AGE.
     async fn get(&self) -> Result<SnapshotFrame, Box<dyn std::error::Error + Send + Sync>> {
         if let Some(frame) = self.latest.read().await.clone()
+            && frame.permission.current()
             && frame.fetched_at.elapsed() <= SNAPSHOT_MAX_AGE
         {
             return Ok(frame);
@@ -1650,6 +1736,7 @@ impl SnapshotCache {
             Ok(frame) => Ok(frame),
             Err(error) => {
                 if let Some(frame) = self.latest.read().await.clone()
+                    && frame.permission.current()
                     && frame.fetched_at.elapsed() <= SNAPSHOT_MAX_AGE
                 {
                     warn!(
@@ -1671,10 +1758,22 @@ impl SnapshotCache {
         width: u32,
         height: u32,
     ) -> Result<SnapshotImage, Box<dyn std::error::Error + Send + Sync>> {
+        let permission = self.permission();
+        permission.write(|| ())?;
+        let image = self.get_scaled_inner(width, height).await?;
+        Ok(permission.write(|| image)?)
+    }
+
+    async fn get_scaled_inner(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Result<SnapshotImage, Box<dyn std::error::Error + Send + Sync>> {
         let raw = self.get().await?;
         let stale = {
             let scaled = self.scaled.lock().await;
             if let Some(snapshot) = scaled.get(&(width, height))
+                && snapshot.permission.current()
                 && snapshot.source_generation == raw.generation
             {
                 return Ok(SnapshotImage {
@@ -1687,7 +1786,10 @@ impl SnapshotCache {
             }
             scaled
                 .get(&(width, height))
-                .filter(|snapshot| snapshot.source_fetched_at.elapsed() <= SNAPSHOT_MAX_AGE)
+                .filter(|snapshot| {
+                    snapshot.permission.current()
+                        && snapshot.source_fetched_at.elapsed() <= SNAPSHOT_MAX_AGE
+                })
                 .cloned()
         };
 
@@ -1711,15 +1813,19 @@ impl SnapshotCache {
                 return Err(error);
             }
         };
-        self.scaled.lock().await.insert(
-            (width, height),
-            ScaledSnapshot {
-                source_generation: raw.generation,
-                source_fetched_at: raw.fetched_at,
-                source_fingerprint: raw.fingerprint,
-                bytes: bytes.clone(),
-            },
-        );
+        let mut scaled = self.scaled.lock().await;
+        raw.permission.write(|| {
+            scaled.insert(
+                (width, height),
+                ScaledSnapshot {
+                    permission: raw.permission.clone(),
+                    source_generation: raw.generation,
+                    source_fetched_at: raw.fetched_at,
+                    source_fingerprint: raw.fingerprint,
+                    bytes: bytes.clone(),
+                },
+            )
+        })?;
         Ok(SnapshotImage {
             output_fingerprint: fingerprint(&bytes),
             bytes,
@@ -2114,6 +2220,116 @@ fn parse_event_line(line: &str) -> Option<CameraEvent> {
 }
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn last_snapshot_cache_owner_retires_escaped_permission() {
+        use super::*;
+        let cache = SnapshotCache::new(AmcrestClient::new(
+            "127.0.0.1".into(),
+            "unused".into(),
+            "unused".into(),
+        ));
+        let other = cache.clone();
+        let permission = cache.permission();
+        drop(cache);
+        assert!(permission.current());
+        drop(other);
+        assert!(!permission.current());
+    }
+
+    #[tokio::test]
+    async fn snapshot_epochs_refuse_old_scaled_fallback_and_join_refresher() {
+        use super::*;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let cache = SnapshotCache::new(AmcrestClient::new(
+            listener.local_addr().unwrap().to_string(),
+            "unused".into(),
+            "unused".into(),
+        ));
+        let old = cache.permission();
+        let now = tokio::time::Instant::now();
+        *cache.latest.write().await = Some(SnapshotFrame {
+            permission: old.clone(),
+            generation: 99,
+            fetched_at: now,
+            fingerprint: 7,
+            bytes: vec![0xff, 0xd8, 0xff, 0xd9],
+        });
+        cache.scaled.lock().await.insert(
+            (1, 1),
+            ScaledSnapshot {
+                permission: old.clone(),
+                source_generation: 99,
+                source_fetched_at: now,
+                source_fingerprint: 7,
+                bytes: vec![0xff, 0xd8, 0xff, 0xd9],
+            },
+        );
+        assert_eq!(cache.get_scaled(1, 1).await.unwrap().source_generation, 99);
+        cache.invalidate(false);
+        assert!(!old.current());
+        assert!(cache.get_scaled(1, 1).await.is_err());
+        cache.invalidate(true);
+        assert!(!old.current());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            socket.read(&mut request).await.unwrap();
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\n\xff\xd8\xff\xd9").await.unwrap();
+        });
+        let fresh = cache.get().await.unwrap();
+        assert_ne!(fresh.generation, 99);
+        assert!(fresh.permission.current());
+        assert!(
+            !cache
+                .scaled
+                .lock()
+                .await
+                .get(&(1, 1))
+                .unwrap()
+                .permission
+                .current()
+        );
+        server.await.unwrap();
+        cache.spawn_refresher().await;
+        cache.shutdown().await;
+        assert!(!fresh.permission.current());
+        cache.invalidate(true);
+        assert!(!cache.permission().current());
+        assert!(cache.latest.read().await.is_none());
+        assert!(cache.scaled.lock().await.is_empty());
+        assert!(
+            cache
+                .refresher
+                .as_ref()
+                .unwrap()
+                .task
+                .lock()
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_shutdown_cancels_inflight_fetch_without_publication() {
+        use super::*;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let cache = SnapshotCache::new(AmcrestClient::new(
+            listener.local_addr().unwrap().to_string(),
+            "unused".into(),
+            "unused".into(),
+        ));
+        cache.spawn_refresher().await;
+        let (peer, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), cache.shutdown())
+            .await
+            .unwrap();
+        assert!(cache.latest.read().await.is_none());
+        drop(peer);
+    }
     use std::collections::HashSet;
 
     use super::*;

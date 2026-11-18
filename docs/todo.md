@@ -324,9 +324,12 @@ upstream FFmpeg libraries are not legacy acquisition fallbacks.
     Two real off/on cycles authenticated live A/V and refused retained recording output.
   - [x] Retain live owner join handles across cancelled teardown and permanently close
     admission on shutdown; remove the old remove/drain-before-await ownership pattern.
-  - [ ] Fence snapshot-cache epochs and final HTTP writes, including off/on overlap;
-    current request checks are not final-write permission. Qualify per-stream Active
-    behavior and other Home camera modes separately.
+  - [x] Fence snapshot cache/publication and final encrypted HTTP writes with sticky
+    epochs across off/on and snapshot-reason changes. Join the refresher on shutdown;
+    reject old fallback frames, wake blocked writes and poison partial responses.
+    Local encrypted delivery/backpressure checks pass; no new camera access was used.
+  - [ ] Qualify per-stream Active behavior, other Home camera modes and Apple behavior
+    when snapshot retirement closes a connection mid-response.
   - [ ] Retire affected shared sources before encoder changes and refresh live profile
     selection; recording-only reconciliation is not complete configuration ownership.
   - [x] Join recording disable/configuration replacement and preserve live subscribers;

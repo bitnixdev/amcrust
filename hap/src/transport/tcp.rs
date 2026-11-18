@@ -10,7 +10,7 @@ use futures::{
     io::Error,
     Stream,
 };
-use log::{debug, error};
+use log::debug;
 use std::{
     cmp::min,
     collections::VecDeque,
@@ -30,17 +30,20 @@ use crate::{pointer, Result};
 
 #[derive(Debug, Default)]
 struct SerializedOutputState {
+    closed: bool,
     http_response: Vec<u8>,
     deferred_events: VecDeque<Vec<u8>>,
+    snapshot_permissions: std::collections::HashMap<u64, pointer::SnapshotPermit>,
+    next_snapshot: u64,
 }
 
 /// Serializes complete HTTP responses and asynchronous EVENT messages before
 /// they enter the encrypted transport. Hyper may issue several `poll_write`
-/// calls for one response, so events are deferred until `poll_flush` publishes
-/// the complete response as a single queue item.
+/// calls/flushes for one response or combine pipelined responses. Fixed-length
+/// framing, not flush boundaries, binds each response to its own permission.
 #[derive(Clone)]
 pub struct SerializedOutput {
-    sender: UnboundedSender<Vec<u8>>,
+    sender: UnboundedSender<Outgoing>,
     outgoing_waker: Arc<Mutex<Option<Waker>>>,
     state: Arc<Mutex<SerializedOutputState>>,
     snapshot_delivery_handler: pointer::SnapshotDeliveryHandler,
@@ -48,7 +51,7 @@ pub struct SerializedOutput {
 
 impl SerializedOutput {
     fn new(
-        sender: UnboundedSender<Vec<u8>>,
+        sender: UnboundedSender<Outgoing>,
         outgoing_waker: Arc<Mutex<Option<Waker>>>,
         snapshot_delivery_handler: pointer::SnapshotDeliveryHandler,
     ) -> Self {
@@ -58,6 +61,23 @@ impl SerializedOutput {
             state: Arc::new(Mutex::new(SerializedOutputState::default())),
             snapshot_delivery_handler,
         }
+    }
+
+    pub(crate) fn register_snapshot(&self, permission: pointer::SnapshotPermit) -> io::Result<u64> {
+        let mut state = self.state.lock().expect("accessing serialized output");
+        if state.closed || state.snapshot_permissions.len() >= 16 {
+            return Err(io::Error::new(
+                ErrorKind::Other,
+                "snapshot response admission full",
+            ));
+        }
+        state.next_snapshot = state
+            .next_snapshot
+            .checked_add(1)
+            .ok_or_else(|| io::Error::new(ErrorKind::Other, "snapshot identifier exhausted"))?;
+        let id = state.next_snapshot;
+        state.snapshot_permissions.insert(id, permission);
+        Ok(id)
     }
 
     fn append_http(&self, bytes: &[u8]) {
@@ -70,10 +90,23 @@ impl SerializedOutput {
 
     fn flush_http(&self) -> io::Result<()> {
         let mut state = self.state.lock().expect("accessing serialized output");
-        if !state.http_response.is_empty() {
-            let response = std::mem::take(&mut state.http_response);
-            let is_snapshot = snapshot_body_len(&response).is_some();
-            if self.sender.unbounded_send(response).is_err() {
+        // Flush boundaries are not HTTP response boundaries. Split complete fixed-
+        // length responses, retaining partial headers/bodies and their permissions.
+        while let Some(length) = response_length(&state.http_response)? {
+            let response: Vec<u8> = state.http_response.drain(..length).collect();
+            let permission = snapshot_permission_id(&response)?
+                .map(|id| {
+                    state.snapshot_permissions.remove(&id).ok_or_else(|| {
+                        io::Error::new(ErrorKind::PermissionDenied, "unknown snapshot permission")
+                    })
+                })
+                .transpose()?;
+            let is_snapshot = permission.is_some();
+            if self
+                .sender
+                .unbounded_send(Outgoing::new(response, permission))
+                .is_err()
+            {
                 if is_snapshot {
                     notify_snapshot_delivery(
                         &self.snapshot_delivery_handler,
@@ -81,15 +114,22 @@ impl SerializedOutput {
                     );
                 }
                 return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
+                    ErrorKind::BrokenPipe,
                     "controller disconnected",
                 ));
             }
         }
+        if !state.http_response.is_empty() {
+            drop(state);
+            self.wake_writer();
+            return Ok(());
+        }
         while let Some(event) = state.deferred_events.pop_front() {
-            self.sender.unbounded_send(event).map_err(|_| {
-                io::Error::new(io::ErrorKind::BrokenPipe, "controller disconnected")
-            })?;
+            self.sender
+                .unbounded_send(Outgoing::new(event, None))
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "controller disconnected")
+                })?;
         }
         drop(state);
         self.wake_writer();
@@ -98,10 +138,15 @@ impl SerializedOutput {
 
     pub fn send_event(&self, event: Vec<u8>) -> io::Result<()> {
         let mut state = self.state.lock().expect("accessing serialized output");
+        if state.closed {
+            return Err(io::Error::new(ErrorKind::BrokenPipe, "HTTP owner closed"));
+        }
         if state.http_response.is_empty() {
-            self.sender.unbounded_send(event).map_err(|_| {
-                io::Error::new(io::ErrorKind::BrokenPipe, "controller disconnected")
-            })?;
+            self.sender
+                .unbounded_send(Outgoing::new(event, None))
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "controller disconnected")
+                })?;
         } else {
             state.deferred_events.push_back(event);
         }
@@ -164,6 +209,21 @@ impl StreamWrapper {
                 Poll::Ready(0)
             }
         }
+    }
+}
+
+impl Drop for StreamWrapper {
+    fn drop(&mut self) {
+        // Event listeners may retain SerializedOutput after HTTP ownership ends.
+        let mut state = self
+            .serialized_output
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        state.closed = true;
+        state.http_response = Vec::new();
+        state.deferred_events.clear();
+        state.snapshot_permissions.clear();
     }
 }
 
@@ -262,11 +322,29 @@ pub struct Session {
     pub shared_secret: [u8; 32],
 }
 
+struct Outgoing {
+    data: Vec<u8>,
+    permission: Option<pointer::SnapshotPermit>,
+    retired: Option<futures::future::BoxFuture<'static, ()>>,
+}
+impl Outgoing {
+    fn new(data: Vec<u8>, permission: Option<pointer::SnapshotPermit>) -> Self {
+        let retired = permission.as_ref().map(|p| p.retired());
+        Self {
+            data,
+            permission,
+            retired,
+        }
+    }
+}
+
 pub struct EncryptedStream {
     stream: TcpStream,
     incoming_sender: UnboundedSender<Vec<u8>>,
-    outgoing_receiver: UnboundedReceiver<Vec<u8>>,
-    outgoing_current: Option<Vec<u8>>,
+    outgoing_receiver: UnboundedReceiver<Outgoing>,
+    outgoing_current: Option<Outgoing>,
+    write_permission: Option<pointer::SnapshotPermit>,
+    poisoned: bool,
     incoming_waker: Arc<Mutex<Option<Waker>>>,
     outgoing_waker: Arc<Mutex<Option<Waker>>>,
     session_receiver: oneshot::Receiver<Session>,
@@ -315,6 +393,8 @@ impl EncryptedStream {
                 incoming_sender,
                 outgoing_receiver,
                 outgoing_current: None,
+                write_permission: None,
+                poisoned: false,
                 incoming_waker: incoming_waker.clone(),
                 outgoing_waker: outgoing_waker.clone(),
                 session_receiver: receiver,
@@ -365,75 +445,68 @@ impl EncryptedStream {
         Ok(true)
     }
 
-    fn poll_outgoing(
-        self: Pin<&mut Self>,
-        cx: &mut Context,
-    ) -> Poll<std::result::Result<(), io::Error>> {
-        let encrypted_stream = Pin::into_inner(self);
+    fn poll_outgoing(self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
+        let stream = Pin::into_inner(self);
         loop {
-            if let Some(data) = encrypted_stream.outgoing_current.take() {
-                match AsyncWrite::poll_write(Pin::new(encrypted_stream), cx, &data) {
+            if let Some(mut output) = stream.outgoing_current.take() {
+                if output
+                    .retired
+                    .as_mut()
+                    .is_some_and(|retired| retired.as_mut().poll(cx).is_ready())
+                {
+                    stream.poisoned = true;
+                    stream.notify_snapshot_delivery(pointer::SnapshotDelivery::Failed);
+                    return Poll::Ready(Err(io::Error::new(
+                        ErrorKind::PermissionDenied,
+                        "snapshot retired during delivery",
+                    )));
+                }
+                stream.write_permission = output.permission.clone();
+                match AsyncWrite::poll_write(Pin::new(&mut *stream), cx, &output.data) {
                     Poll::Pending => {
-                        encrypted_stream.outgoing_current = Some(data);
+                        stream.outgoing_current = Some(output);
                         return Poll::Pending;
                     }
-                    Poll::Ready(Err(e)) => {
-                        if snapshot_body_len(&data).is_some() {
-                            encrypted_stream
-                                .notify_snapshot_delivery(pointer::SnapshotDelivery::Failed);
+                    Poll::Ready(Err(error)) => {
+                        stream.poisoned = true;
+                        if output.permission.is_some() || snapshot_body_len(&output.data).is_some()
+                        {
+                            stream.notify_snapshot_delivery(pointer::SnapshotDelivery::Failed);
                         }
-                        match e.kind() {
-                            io::ErrorKind::BrokenPipe
-                            | io::ErrorKind::ConnectionReset
-                            | io::ErrorKind::NotConnected => {
-                                debug!("outgoing controller stream disconnected: {e}")
-                            }
-                            _ => error!("error writing to outgoing stream: {e}"),
-                        }
-                        return Poll::Ready(Err(e));
+                        return Poll::Ready(Err(error));
                     }
                     Poll::Ready(Ok(0)) => {
+                        stream.poisoned = true;
                         return Poll::Ready(Err(io::Error::new(
                             ErrorKind::WriteZero,
-                            "could not write outgoing HAP data",
+                            "could not write HAP response",
                         )));
                     }
-                    Poll::Ready(Ok(written)) if written < data.len() => {
-                        encrypted_stream.outgoing_current = Some(data[written..].to_vec());
-                        continue;
+                    Poll::Ready(Ok(written)) if written < output.data.len() => {
+                        output.data.drain(..written);
+                        stream.outgoing_current = Some(output);
                     }
-                    Poll::Ready(Ok(written)) => {
-                        debug!("wrote {written} plaintext Bytes to outgoing TCP stream");
-                        if let Some(bytes) = snapshot_body_len(&data) {
-                            encrypted_stream.notify_snapshot_delivery(
-                                pointer::SnapshotDelivery::Delivered { bytes },
-                            );
-                            log::info!(
-                                "encrypted snapshot body flushed to controller TCP socket ({written} bytes)"
-                            );
+                    Poll::Ready(Ok(_)) => {
+                        if let Some(bytes) = snapshot_body_len(&output.data) {
+                            stream.notify_snapshot_delivery(pointer::SnapshotDelivery::Delivered {
+                                bytes,
+                            });
                         }
-                        continue;
+                        stream.write_permission = None;
                     }
                 }
+                continue;
             }
-
-            match Stream::poll_next(Pin::new(&mut encrypted_stream.outgoing_receiver), cx) {
+            match Stream::poll_next(Pin::new(&mut stream.outgoing_receiver), cx) {
                 Poll::Pending => {
-                    *encrypted_stream
+                    *stream
                         .outgoing_waker
                         .lock()
                         .expect("setting outgoing_waker") = Some(cx.waker().clone());
                     return Poll::Pending;
                 }
-                Poll::Ready(Some(data)) => {
-                    debug!("writing {} Bytes to outgoing TCP stream", data.len());
-                    encrypted_stream.outgoing_current = Some(data);
-                }
-                Poll::Ready(None) => {
-                    debug!("outgoing TCP stream ended");
-
-                    return Poll::Ready(Ok(()));
-                }
+                Poll::Ready(Some(output)) => stream.outgoing_current = Some(output),
+                Poll::Ready(None) => return Poll::Ready(Ok(())),
             }
         }
     }
@@ -576,6 +649,13 @@ impl AsyncWrite for EncryptedStream {
     ) -> Poll<std::result::Result<usize, Error>> {
         let encrypted_stream = Pin::into_inner(self);
 
+        if encrypted_stream.poisoned {
+            return Poll::Ready(Err(io::Error::new(
+                ErrorKind::BrokenPipe,
+                "snapshot transport poisoned",
+            )));
+        }
+        let permission = encrypted_stream.write_permission.clone();
         if let Some(shared_secret) = encrypted_stream.shared_secret {
             if buf.is_empty() {
                 return Poll::Ready(Ok(0));
@@ -602,11 +682,27 @@ impl AsyncWrite for EncryptedStream {
             }
 
             while !encrypted_stream.pending_encrypted_write.is_empty() {
-                match AsyncWrite::poll_write(
-                    Pin::new(&mut encrypted_stream.stream),
-                    cx,
-                    &encrypted_stream.pending_encrypted_write,
-                ) {
+                let write = || {
+                    AsyncWrite::poll_write(
+                        Pin::new(&mut encrypted_stream.stream),
+                        cx,
+                        &encrypted_stream.pending_encrypted_write,
+                    )
+                };
+                let result = match permission.as_ref() {
+                    Some(permission) => match permission.write(write) {
+                        Ok(result) => result,
+                        Err(error) => {
+                            encrypted_stream.poisoned = true;
+                            return Poll::Ready(Err(error));
+                        }
+                    },
+                    None => {
+                        let mut write = write;
+                        write()
+                    }
+                };
+                match result {
                     Poll::Pending => return Poll::Pending,
                     Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                     Poll::Ready(Ok(0)) => {
@@ -624,7 +720,20 @@ impl AsyncWrite for EncryptedStream {
             encrypted_stream.pending_plaintext_len = 0;
             Poll::Ready(Ok(written))
         } else {
-            AsyncWrite::poll_write(Pin::new(&mut encrypted_stream.stream), cx, buf)
+            let write = || AsyncWrite::poll_write(Pin::new(&mut encrypted_stream.stream), cx, buf);
+            match permission.as_ref() {
+                Some(permission) => match permission.write(write) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        encrypted_stream.poisoned = true;
+                        Poll::Ready(Err(error))
+                    }
+                },
+                None => {
+                    let mut write = write;
+                    write()
+                }
+            }
         }
     }
 
@@ -667,6 +776,93 @@ fn decrypt_chunk(
     )?;
 
     Ok(buffer)
+}
+
+// HAP handlers return finite Body::from/empty responses. Do not silently accept
+// ambiguous/chunked framing at this privacy boundary.
+fn response_length(response: &[u8]) -> io::Result<Option<usize>> {
+    let end = match response.windows(4).position(|w| w == b"\r\n\r\n") {
+        Some(end) if end <= 65536 => end,
+        None if response.len() <= 65536 => return Ok(None),
+        _ => {
+            return Err(io::Error::new(
+                ErrorKind::InvalidData,
+                "HAP headers too large",
+            ))
+        }
+    };
+    let headers = std::str::from_utf8(&response[..end])
+        .map_err(|_| io::Error::new(ErrorKind::InvalidData, "invalid HAP headers"))?;
+    let mut length = None;
+    for line in headers.lines().skip(1) {
+        let (name, value) = line
+            .split_once(':')
+            .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "invalid HAP header"))?;
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err(io::Error::new(
+                ErrorKind::InvalidData,
+                "unsupported streamed HAP response",
+            ));
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            if length.is_some() {
+                return Err(io::Error::new(
+                    ErrorKind::InvalidData,
+                    "duplicate content length",
+                ));
+            }
+            length =
+                Some(value.trim().parse::<usize>().map_err(|_| {
+                    io::Error::new(ErrorKind::InvalidData, "invalid content length")
+                })?);
+        }
+    }
+    let body = length.unwrap_or(0);
+    if body > 16 * 1024 * 1024 {
+        return Err(io::Error::new(
+            ErrorKind::InvalidData,
+            "HAP response too large",
+        ));
+    }
+    let total = end + 4 + body;
+    Ok((response.len() >= total).then_some(total))
+}
+
+fn snapshot_permission_id(response: &[u8]) -> io::Result<Option<u64>> {
+    let end = response
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "incomplete response"))?;
+    let headers = std::str::from_utf8(&response[..end])
+        .map_err(|_| io::Error::new(ErrorKind::InvalidData, "invalid headers"))?;
+    let mut id = None;
+    let mut jpeg = false;
+    for line in headers.lines().skip(1) {
+        let (name, value) = line
+            .split_once(':')
+            .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "invalid header"))?;
+        if name.eq_ignore_ascii_case("content-type") {
+            jpeg |= value.trim().eq_ignore_ascii_case("image/jpeg");
+        }
+        if name.eq_ignore_ascii_case("x-hap-snapshot-permit") {
+            if id.is_some() {
+                return Err(io::Error::new(
+                    ErrorKind::PermissionDenied,
+                    "duplicate snapshot permission",
+                ));
+            }
+            id = Some(value.trim().parse().map_err(|_| {
+                io::Error::new(ErrorKind::PermissionDenied, "invalid snapshot permission")
+            })?);
+        }
+    }
+    if jpeg && id.is_none() {
+        return Err(io::Error::new(
+            ErrorKind::PermissionDenied,
+            "unfenced snapshot",
+        ));
+    }
+    Ok(id)
 }
 
 fn snapshot_body_len(response: &[u8]) -> Option<usize> {
@@ -814,6 +1010,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn partial_flush_and_pipelining_keep_exact_snapshot_permissions() {
+        let (sender, mut receiver) = mpsc::unbounded();
+        let output = SerializedOutput::new(sender, Arc::new(Mutex::new(None)), delivery_handler());
+        let first = pointer::SnapshotPermit::new();
+        let second = pointer::SnapshotPermit::new();
+        let a = output.register_snapshot(first.clone()).unwrap();
+        let b = output.register_snapshot(second.clone()).unwrap();
+        output.append_http(format!("HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: 4\r\nX-Hap-Snapshot-Permit: {a}\r\n\r\n").as_bytes());
+        output.flush_http().unwrap();
+        assert!(receiver.try_recv().is_err());
+        output.append_http(&[0xff, 0xd8, 0xff, 0xd9]);
+        output.append_http(b"HTTP/1.1 204 No Content\r\n\r\n");
+        output.append_http(format!("HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: 4\r\nX-Hap-Snapshot-Permit: {b}\r\n\r\n").as_bytes());
+        output.append_http(&[0xff, 0xd8, 0xff, 0xd9]);
+        output.flush_http().unwrap();
+        first.revoke();
+        assert!(!receiver.next().await.unwrap().permission.unwrap().current());
+        assert!(receiver.next().await.unwrap().permission.is_none());
+        assert!(receiver.next().await.unwrap().permission.unwrap().current());
+        assert!(output.state.lock().unwrap().snapshot_permissions.is_empty());
+        assert!(
+            snapshot_permission_id(b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\n\r\n").is_err()
+        );
+        assert!(response_length(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n").is_err());
+    }
+
+    #[tokio::test]
+    async fn revocation_wakes_unread_encrypted_snapshot_and_poisons_connection() {
+        use std::time::Duration;
+        let listener = tokio::net::TcpSocket::new_v4().unwrap();
+        listener.set_send_buffer_size(4096).unwrap();
+        listener.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let listener = listener.listen(1).unwrap();
+        let client = tokio::net::TcpSocket::new_v4().unwrap();
+        client.set_recv_buffer_size(4096).unwrap();
+        let (client, server) = tokio::join!(
+            client.connect(listener.local_addr().unwrap()),
+            listener.accept()
+        );
+        let _unread_peer = client.unwrap();
+        let (mut encrypted, _, serialized, _, _, _) =
+            EncryptedStream::new(server.unwrap().0, delivery_handler());
+        encrypted.shared_secret = Some([4; 32]);
+        let permission = pointer::SnapshotPermit::new();
+        let id = serialized.register_snapshot(permission.clone()).unwrap();
+        let length = 1024 * 1024;
+        serialized.append_http(format!("HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {length}\r\nX-Hap-Snapshot-Permit: {id}\r\n\r\n").as_bytes());
+        serialized.append_http(&vec![0x55; length]);
+        serialized.flush_http().unwrap();
+        let (blocked, wait) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let mut blocked = Some(blocked);
+            let result = futures::future::poll_fn(|cx| {
+                let result = Pin::new(&mut encrypted).poll_outgoing(cx);
+                if result.is_pending() {
+                    assert!(!encrypted.pending_encrypted_write.is_empty());
+                    if let Some(blocked) = blocked.take() {
+                        let _ = blocked.send(());
+                    }
+                }
+                result
+            })
+            .await;
+            assert_eq!(result.unwrap_err().kind(), ErrorKind::PermissionDenied);
+            assert!(encrypted.poisoned);
+            assert!(encrypted
+                .write_all(b"must not append after truncated ciphertext")
+                .await
+                .is_err());
+        });
+        tokio::time::timeout(Duration::from_secs(5), wait)
+            .await
+            .unwrap()
+            .unwrap();
+        permission.revoke();
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn event_is_deferred_until_complete_http_response_is_flushed() {
         use crate::transport::http::{event_response, EventObject};
 
@@ -845,10 +1123,10 @@ mod tests {
         wrapper.flush().await.unwrap();
 
         assert_eq!(
-            outgoing_receiver.next().await.unwrap(),
+            outgoing_receiver.next().await.unwrap().data,
             b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nJPEG"
         );
-        assert_eq!(outgoing_receiver.next().await.unwrap(), event);
+        assert_eq!(outgoing_receiver.next().await.unwrap().data, event);
     }
 
     #[tokio::test]
@@ -868,6 +1146,8 @@ mod tests {
         let secret = [0x33; 32];
         let (encrypted, incoming, serialized, session_sender, incoming_waker, outgoing_waker) =
             EncryptedStream::new(server, handler);
+        let permission = pointer::SnapshotPermit::new();
+        let id = serialized.register_snapshot(permission).unwrap();
         let wrapper = StreamWrapper::new(incoming, serialized, incoming_waker, outgoing_waker);
         session_sender
             .send(Session {
@@ -882,12 +1162,13 @@ mod tests {
                 .http1_only(true)
                 .serve_connection(
                     wrapper,
-                    service_fn(|_| async {
+                    service_fn(move |_| async move {
                         Ok::<_, Infallible>(
                             Response::builder()
                                 .status(200)
                                 .header("Content-Type", "image/jpeg")
                                 .header("Content-Length", "4")
+                                .header("X-Hap-Snapshot-Permit", id.to_string())
                                 .body(Body::from(vec![0xff, 0xd8, 0xff, 0xd9]))
                                 .unwrap(),
                         )

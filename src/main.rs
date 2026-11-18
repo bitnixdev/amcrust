@@ -20,7 +20,7 @@ use hap::{
 };
 
 use accessory::CameraAccessory;
-use amcrest::{AmcrestClient, CameraEvent, EncoderCapabilities, SnapshotCache, VideoProfile};
+use amcrest::{AmcrestClient, CameraEvent, EncoderCapabilities, VideoProfile};
 use hsv::fmp4::{RecorderConfig, probe_recording_pipeline};
 use hsv::hds::HdsServer;
 use hsv::recording::HsvState;
@@ -382,8 +382,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Snapshots for the Home app tiles, served from a background-refreshed
     // cache so requests answer instantly. Secure-video gating: reject when the
     // corresponding snapshot type is disabled.
-    let snapshots = SnapshotCache::new(camera.clone());
-    snapshots.spawn_refresher();
+    let snapshots = hsv_state.snapshots.clone();
+    snapshots.spawn_refresher().await;
     let snapshot_hsv = hsv_state.clone();
     let snapshot_host = camera.host.clone();
     let snapshot_name = args.name.clone();
@@ -398,6 +398,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let metrics = snapshot_metrics.clone();
             async move {
                 metrics.snapshot_request();
+                // Capture before reading mode flags; any intervening change retires it.
+                let permission = snapshots.permission();
                 let periodic_ok = hsv.periodic_snapshots.load(Ordering::SeqCst);
                 let event_ok = hsv.event_snapshots.load(Ordering::SeqCst);
                 let allowed = hsv.homekit_active.load(Ordering::SeqCst) && match reason {
@@ -405,7 +407,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Some(1) => event_ok,
                     _ => periodic_ok && event_ok,
                 };
-                if !allowed {
+                if !allowed || !permission.current() {
                     let status = match reason {
                         // -70401 insufficient privileges (missing reason),
                         // -70412 not allowed in current state.
@@ -418,9 +420,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return Ok(hap::pointer::SnapshotResult::HapStatus(status));
                 }
                 let result = snapshots.get_scaled(width, height).await;
-                // Recheck camera-off after asynchronous fetching. Snapshot-cache
-                // epochs and final HTTP socket fencing remain separate work.
-                if !hsv.homekit_active.load(Ordering::SeqCst) {
+                if !permission.current() {
                     return Ok(hap::pointer::SnapshotResult::HapStatus(-70412));
                 }
                 match &result {
@@ -428,7 +428,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         metrics.snapshot_success();
                         if save_snapshots {
                             let filename = snapshot_filename(&name);
-                            if let Err(e) = tokio::fs::write(&filename, &image.bytes).await {
+                            // Gate the optional diagnostic write without blocking a runtime worker.
+                            let saved_permission = permission.clone();
+                            let bytes = image.bytes.clone();
+                            let saved_path = filename.clone();
+                            let saved = tokio::task::spawn_blocking(move || {
+                                saved_permission.write(|| std::fs::write(saved_path, bytes)).and_then(|r| r)
+                            }).await?;
+                            if let Err(e) = saved {
                                 warn!("[{name}@{host}] could not save snapshot to {filename}: {e}");
                             }
                         }
@@ -448,6 +455,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 result.map(|image| hap::pointer::SnapshotResult::Jpeg {
                     image: image.bytes,
+                    permission,
                     camera_name: name
                         .chars()
                         .map(|c| if c.is_ascii() && !c.is_ascii_control() { c } else { '_' })

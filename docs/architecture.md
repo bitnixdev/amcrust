@@ -362,11 +362,31 @@ a wait therefore leaves the join owned for a later teardown, rather than detachi
 via remove/drain-before-await. An interrupted mode change is not an acknowledged
 completion; it can be reconciled again. Recording-only disable remains independent.
 
-This is the RTSP/live/recording boundary, not complete camera-wide privacy acceptance.
-Snapshot handlers check Camera Active before and after fetching, but snapshot cache
-epochs, off/on overlap and the HAP server's final HTTP write still need fencing.
-Per-stream Active behavior, encoder-change retirement/profile updates, real Home mode
-transitions and long outage/reboot recovery remain open.
+Snapshots now carry a sticky epoch through cache publication and final encrypted HTTP
+writes as well. Camera and snapshot-reason changes retire the previous epoch; re-enable
+creates a new one. Cached/scaled fallback images from retired epochs are never reused.
+A request captures permission before reading mode flags, closing off/on and reason-change
+races. The refresher has drop cancellation, cancellable HTTP fetching and an owned,
+repeatably joinable shutdown handle instead of a detached forever loop.
+
+The HAP adapter binds a permission to each snapshot response via a connection-local
+identifier. Its serializer parses complete fixed-length responses across partial flushes
+and pipelined responses, not merely the first JPEG-looking buffer. Registered permissions
+cap at sixteen per connection; headers at 64 KiB and individual response bodies at 16 MiB.
+Current HAP handlers use finite bodies; chunked/ambiguous framing is explicitly refused.
+These are not aggregate connection, image-cache or native allocator budgets.
+
+A write holds the epoch read gate only across the nonblocking socket poll/syscall;
+encryption occurs outside it. Retirement wakes blocked writes. Any retired/failed partial
+response poisons the connection, preserving ciphertext/counter integrity rather than
+appending another response. Already kernel-accepted bytes cannot be retracted. Opt-in
+local snapshot saves carry the same permission in an awaited blocking-file job. Shutdown
+clears cache storage; retirement alone invalidates retained copies rather than claiming
+their memory is freed.
+
+Per-stream Active behavior, encoder-change retirement/profile updates, actual Home
+behavior on mid-response close, and long outage/reboot recovery remain open. This wiring
+is not complete camera-wide Apple privacy acceptance.
 
 ## Implemented secure transport boundary
 

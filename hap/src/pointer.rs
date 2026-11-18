@@ -20,11 +20,65 @@ pub type Config = Arc<Mutex<crate::Config>>;
 
 pub type MdnsResponder = Arc<Mutex<crate::transport::mdns::MdnsResponder>>;
 
+/// Sticky snapshot-epoch permission, including escaped/copied response bytes.
+/// Revocation serializes with the final nonblocking socket write.
+#[derive(Clone, Debug)]
+pub struct SnapshotPermit(Arc<SnapshotPermission>);
+#[derive(Debug)]
+struct SnapshotPermission {
+    current: RwLock<bool>,
+    retired: tokio::sync::watch::Sender<bool>,
+}
+impl SnapshotPermit {
+    pub fn new() -> Self {
+        Self(Arc::new(SnapshotPermission {
+            current: RwLock::new(true),
+            retired: tokio::sync::watch::channel(false).0,
+        }))
+    }
+    pub fn revoke(&self) {
+        *self.0.current.write().unwrap_or_else(|e| e.into_inner()) = false;
+        self.0.retired.send_replace(true);
+    }
+    pub fn current(&self) -> bool {
+        self.0.current.read().map(|v| *v).unwrap_or(false)
+    }
+    pub fn write<T>(&self, syscall: impl FnOnce() -> T) -> std::io::Result<T> {
+        let current = self.0.current.read().map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "snapshot permission poisoned",
+            )
+        })?;
+        if !*current {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "snapshot retired",
+            ));
+        }
+        Ok(syscall())
+    }
+    pub fn retired(&self) -> futures::future::BoxFuture<'static, ()> {
+        let mut retired = self.0.retired.subscribe();
+        Box::pin(async move {
+            if !*retired.borrow() {
+                let _ = retired.changed().await;
+            }
+        })
+    }
+}
+impl Default for SnapshotPermit {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Outcome of a snapshot request.
 pub enum SnapshotResult {
     /// Serve the image.
     Jpeg {
         image: Vec<u8>,
+        permission: SnapshotPermit,
         camera_name: String,
         source_generation: u64,
         output_fingerprint: u64,

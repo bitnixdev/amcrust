@@ -61,8 +61,10 @@ acceptance. Snapshot JPEG scaling still uses the FFmpeg executable.
   See the [HDS wire reference](docs/hds-wire-format.md).
 - **Camera-off ownership**: HomeKit Camera Active closes live admission, retires shared
   RTSP sources and joins live/recording workers before acknowledgment. Re-enable needs
-  fresh live setup; shutdown cannot reopen admission. Snapshot request checks also honor
-  camera-off, but snapshot-cache/final-HTTP fencing and other Home modes remain unqualified.
+  fresh live setup; shutdown cannot reopen admission. Snapshot epochs extend through
+  cache publication and encrypted HTTP writes, including queued copies and off/on overlap.
+  Revoking a partially delivered image closes that connection rather than appending to
+  truncated ciphertext. Other Home modes and actual Apple behavior remain unqualified.
 - **Optional audio** (`--audio`): the camera's main-stream 48 kHz AAC audio is
   transcoded to the Opus format negotiated by HomeKit. Live audio carries RTP
   and RTCP in both directions through an SRTP/SRTCP proxy, including sender

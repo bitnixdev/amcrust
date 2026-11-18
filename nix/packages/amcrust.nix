@@ -18,5 +18,6 @@ in
     cargoLock.lockFile = ../../Cargo.lock;
     nativeBuildInputs = [pkg-config rustPlatform.bindgenHook];
     buildInputs = [ffmpeg];
+    cargoTestFlags = ["--workspace"];
     meta.mainProgram = "amcrust";
   }

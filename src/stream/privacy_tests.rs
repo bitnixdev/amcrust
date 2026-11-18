@@ -222,6 +222,29 @@ async fn camera_off_joins_all_encoders_and_recording_then_requires_fresh_setup()
 }
 
 #[tokio::test]
+async fn snapshot_mode_changes_never_revive_pending_permissions() {
+    let mut registry = super::tests::registry();
+    let source = super::tests::register(&mut registry, 1, "rtsp://127.0.0.1:9/unused".into());
+    let directory = Directory::new();
+    let hsv = state(source, &directory, Metrics::new());
+    let pending = hsv.snapshots.permission();
+    hsv.set_snapshot_active(true, false).await;
+    assert!(!pending.current());
+    assert!(hsv.snapshots.permission().current()); // events still allowed
+    let event = hsv.snapshots.permission();
+    hsv.set_snapshot_active(false, false).await;
+    assert!(!event.current());
+    assert!(!hsv.snapshots.permission().current());
+    hsv.set_snapshot_active(true, true).await;
+    assert!(hsv.snapshots.permission().current());
+    assert!(!pending.current() && !event.current());
+    hsv.shutdown().await;
+    hsv.set_snapshot_active(false, true).await;
+    assert!(!hsv.snapshots.permission().current());
+    registry.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn cancelled_teardown_keeps_join_ownership_and_shutdown_admission_closed() {
     let mut registry = super::tests::registry();
     let source = super::tests::register(&mut registry, 1, "rtsp://127.0.0.1:9/unused".into());
