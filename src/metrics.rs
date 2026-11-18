@@ -206,7 +206,7 @@ impl Metrics {
 
     pub fn data_stream_closed(&self) {
         self.data_stream_connections
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
             .ok();
     }
 
