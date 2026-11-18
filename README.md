@@ -59,6 +59,10 @@ acceptance. Snapshot JPEG scaling still uses the FFmpeg executable.
   recording output-rate changes do not reconfigure that source. Requires a home hub
   and iCloud+; actual Home playback, seek and event continuation still need acceptance.
   See the [HDS wire reference](docs/hds-wire-format.md).
+- **Independent live control**: RTP Stream Management Active now stops all live sessions
+  served by that service without disabling HSV recording or snapshots. It is persisted,
+  restored before startup exposure, and cannot override camera-off or shutdown. Re-enable
+  requires fresh setup; actual Home mode/automation acceptance remains pending.
 - **Camera-off ownership**: HomeKit Camera Active closes live admission, retires shared
   RTSP sources and joins live/recording workers before acknowledgment. Re-enable needs
   fresh live setup; shutdown cannot reopen admission. Snapshot epochs extend through

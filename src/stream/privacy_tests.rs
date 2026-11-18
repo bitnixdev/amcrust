@@ -375,6 +375,195 @@ async fn main_reconfiguration_joins_only_affected_owners_and_rejects_stale_profi
     drop((main_peer, other_peer, fresh_peer, held));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_service_off_preserves_recording_source_and_snapshots() {
+    use amcrust::source::{SubscriptionLimits, Tracks};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut registry = super::tests::registry();
+    let source = super::tests::register(
+        &mut registry,
+        1,
+        format!("rtsp://{}/stalled", listener.local_addr().unwrap()),
+    );
+    let metrics = Metrics::new();
+    let manager = StreamManager::new(
+        vec![VideoSource {
+            source: source.clone(),
+            profile: VideoProfile::LIVE_1080P,
+        }],
+        source.clone(),
+        true,
+        Ipv4Addr::LOCALHOST.into(),
+        metrics.clone(),
+    );
+    let directory = Directory::new();
+    let hsv = state(source.clone(), &directory, metrics.clone());
+    *hsv.selected.lock().await = Some(selected());
+    hsv.recording_active.store(true, Ordering::SeqCst);
+    hsv.sync_recorder().await;
+    let (peer, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let permission = hsv.snapshots.permission();
+    let mut independent = source
+        .subscribe(Tracks::Video, SubscriptionLimits::default())
+        .await
+        .unwrap();
+    manager.handle_setup_write(setup(&[1; 16])).await;
+    manager
+        .handle_selected_write(start(&[1; 16]))
+        .await
+        .unwrap();
+    manager.handle_setup_write(setup(&[2; 16])).await;
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        hsv.set_streaming_active(&manager, false),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(status(&manager).await, 2);
+    assert!(hsv.recorder.is_running().await);
+    assert!(permission.current());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), independent.recv())
+            .await
+            .is_err()
+    );
+    assert_eq!(source.snapshot().open_attempts, 1);
+    {
+        let inner = manager.inner.lock().await;
+        assert!(
+            inner.video_proxies.is_empty()
+                && inner.audio_proxies.is_empty()
+                && inner.sessions.is_empty()
+        );
+    }
+    assert!(
+        !state(source.clone(), &directory, metrics)
+            .streaming_active
+            .load(Ordering::SeqCst)
+    );
+    manager.handle_setup_write(setup(&[3; 16])).await;
+    assert_eq!(
+        tlv8::find_u8(
+            &tlv8::parse(&manager.setup_read().await.unwrap()),
+            SETUP_STATUS
+        ),
+        Some(2)
+    );
+    assert!(
+        manager
+            .handle_selected_write(start(&[1; 16]))
+            .await
+            .is_err()
+    );
+
+    // Camera privacy can cycle without clearing the independent live-only gate.
+    hsv.set_camera_active(&manager, false).await.unwrap();
+    hsv.recording_active.store(false, Ordering::SeqCst);
+    hsv.set_camera_active(&manager, true).await.unwrap();
+    assert_eq!(status(&manager).await, 2);
+    hsv.set_streaming_active(&manager, true).await.unwrap();
+    assert_eq!(status(&manager).await, 0);
+    for id in [1, 2, 3] {
+        assert!(
+            manager
+                .handle_selected_write(start(&[id; 16]))
+                .await
+                .is_err()
+        );
+    }
+    hsv.set_camera_active(&manager, false).await.unwrap();
+    hsv.set_streaming_active(&manager, true).await.unwrap();
+    assert_eq!(status(&manager).await, 2); // live enable cannot override camera-off
+    manager.stop_stream().await;
+    assert!(hsv.set_streaming_active(&manager, true).await.is_err());
+    hsv.shutdown().await;
+    registry.shutdown().await.unwrap();
+    drop((peer, independent));
+}
+
+#[tokio::test]
+async fn live_service_enable_finishes_cancelled_disable_before_admission() {
+    let mut registry = super::tests::registry();
+    let source = super::tests::register(&mut registry, 1, "rtsp://127.0.0.1:9/unused".into());
+    let manager = StreamManager::new(
+        vec![VideoSource {
+            source: source.clone(),
+            profile: VideoProfile::LIVE_1080P,
+        }],
+        source.clone(),
+        false,
+        Ipv4Addr::LOCALHOST.into(),
+        Metrics::new(),
+    );
+    let control = shared::Control::pending();
+    let (release, wait) = tokio::sync::oneshot::channel();
+    manager.inner.lock().await.video_proxies.insert(
+        vec![1],
+        MediaProxy {
+            source,
+            transport: control.clone(),
+            task: Some(tokio::spawn(async move {
+                let _ = wait.await;
+            })),
+        },
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), manager.set_live_enabled(false))
+            .await
+            .is_err()
+    );
+    assert!(control.is_closed());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), manager.set_live_enabled(true))
+            .await
+            .is_err()
+    );
+    assert_eq!(status(&manager).await, 2);
+    assert!(
+        manager.inner.lock().await.video_proxies[&vec![1]]
+            .task
+            .is_some()
+    );
+    release.send(()).unwrap();
+    manager.set_live_enabled(true).await.unwrap();
+    assert!(manager.inner.lock().await.video_proxies.is_empty());
+    assert_eq!(status(&manager).await, 0);
+    manager.stop_stream().await;
+    registry.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn live_mode_state_migrates_without_resetting_privacy_and_corruption_fails_closed() {
+    let mut registry = super::tests::registry();
+    let source = super::tests::register(&mut registry, 1, "rtsp://127.0.0.1:9/unused".into());
+    let directory = Directory::new();
+    std::fs::write(directory.0.join("hsv.json"), br#"{"selected_b64":null,"recording_active":true,"audio_active":false,"event_snapshots":false,"periodic_snapshots":false,"homekit_active":false}"#).unwrap();
+    let old = state(source.clone(), &directory, Metrics::new());
+    assert!(old.streaming_active.load(Ordering::SeqCst));
+    assert!(!old.homekit_active.load(Ordering::SeqCst));
+    assert!(old.recording_active.load(Ordering::SeqCst));
+    assert!(!old.audio_active.load(Ordering::SeqCst));
+    old.persist().await;
+    assert!(!directory.0.join("hsv.json.tmp").exists());
+    assert!(
+        !state(source.clone(), &directory, Metrics::new())
+            .homekit_active
+            .load(Ordering::SeqCst)
+    );
+    std::fs::write(directory.0.join("hsv.json"), b"{partial").unwrap();
+    let corrupt = state(source, &directory, Metrics::new());
+    assert!(!corrupt.homekit_active.load(Ordering::SeqCst));
+    assert!(!corrupt.streaming_active.load(Ordering::SeqCst));
+    assert!(!corrupt.snapshots.permission().current());
+    old.shutdown().await;
+    corrupt.shutdown().await;
+    registry.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn snapshot_mode_changes_never_revive_pending_permissions() {
     let mut registry = super::tests::registry();

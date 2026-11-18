@@ -117,6 +117,7 @@ struct Session {
 #[derive(Default)]
 struct Inner {
     disabled: bool,
+    live_disabled: bool,
     main_blocked: bool,
     shutdown: bool,
     /// Prepared sessions and running streams, keyed by HAP session id.
@@ -250,7 +251,11 @@ impl StreamManager {
 
         // Serialize admission, socket reservation and publication with privacy.
         let mut inner = self.inner.lock().await;
-        if inner.disabled || inner.shutdown || self.available_video_sources().is_empty() {
+        if inner.disabled
+            || inner.live_disabled
+            || inner.shutdown
+            || self.available_video_sources().is_empty()
+        {
             inner.setup_response = tlv8::Writer::new()
                 .bytes(SETUP_SESSION_ID, &session_id)
                 .u8(SETUP_STATUS, 2)
@@ -373,7 +378,11 @@ impl StreamManager {
         tlv8::Writer::new()
             .u8(
                 0x01,
-                if inner.disabled || inner.shutdown || self.available_video_sources().is_empty() {
+                if inner.disabled
+                    || inner.live_disabled
+                    || inner.shutdown
+                    || self.available_video_sources().is_empty()
+                {
                     2
                 } else {
                     0
@@ -514,7 +523,7 @@ impl StreamManager {
         }
         let mut inner = self.inner.lock().await;
 
-        if inner.disabled || inner.shutdown {
+        if inner.disabled || inner.live_disabled || inner.shutdown {
             return false;
         }
         if video_source.source.same_owner(&self.audio_source)
@@ -625,6 +634,25 @@ impl StreamManager {
     async fn end_session(&self, session_id: Option<Vec<u8>>) {
         let mut inner = self.inner.lock().await;
         inner.stop(session_id.as_deref()).await;
+    }
+
+    /// RTP-service Active is independent of camera/source and recording permission.
+    /// Leave shared acquisition running for non-live consumers; never revive sessions.
+    pub async fn set_live_enabled(&self, enabled: bool) -> Result<(), amcrust::source::Terminal> {
+        let mut inner = self.inner.lock().await;
+        if enabled && inner.shutdown {
+            return Err(amcrust::source::Terminal::Shutdown);
+        }
+        if enabled && !inner.live_disabled {
+            return Ok(());
+        }
+        inner.live_disabled = true;
+        inner.sessions.clear();
+        inner.setup_response.clear();
+        // Also finish an interrupted disable before reopening admission.
+        inner.stop(None).await;
+        inner.live_disabled = !enabled;
+        Ok(())
     }
 
     /// Camera-wide RTSP privacy. Sources retire recording as well as live grants.

@@ -330,8 +330,12 @@ upstream FFmpeg libraries are not legacy acquisition fallbacks.
     epochs across off/on and snapshot-reason changes. Join the refresher on shutdown;
     reject old fallback frames, wake blocked writes and poison partial responses.
     Local encrypted delivery/backpressure checks pass; no new camera access was used.
-  - [ ] Qualify per-stream Active behavior, other Home camera modes and Apple behavior
-    when snapshot retirement closes a connection mid-response.
+  - [x] Wire RTP-service Active through persistence and joined live admission/teardown,
+    independently of recording/snapshots. Remove the hard-coded always-active value.
+    Local characteristic, cancellation, state migration and shared-owner checks pass.
+  - [ ] Qualify actual Home camera modes/automations and Apple behavior when source or
+    snapshot retirement closes a session mid-response; service-level wiring is not
+    deployed client acceptance.
   - [x] Retire the main source and join affected live/recording owners before encoder
     writes; invalidate snapshot epochs, publish refreshed live profiles only on success,
     and propagate settings errors. Failed/cancelled encoder transitions stay blocked

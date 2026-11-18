@@ -164,7 +164,7 @@ impl CameraAccessory {
         }
         .to_service(1, id)?;
 
-        let stream_management = build_stream_management(id, streams).await?;
+        let stream_management = build_stream_management(id, streams, hsv).await?;
 
         let mut motion_person = HsvMotionSensorService::new(IID_MOTION_PERSON, id);
         if let Some(n) = motion_person.inner_mut().name.as_mut() {
@@ -223,6 +223,7 @@ impl CameraAccessory {
 async fn build_stream_management(
     id: u64,
     streams: &StreamManager,
+    hsv: &Arc<HsvState>,
 ) -> Result<CameraStreamManagementService> {
     let mut svc = CameraStreamManagementService::new(IID_STREAM_MGMT, id);
     svc.set_primary(true);
@@ -230,7 +231,28 @@ async fn build_stream_management(
     // The secure-video spec requires the Active characteristic on the RTP
     // stream management service (generated at IID_STREAM_MGMT + 7).
     if let Some(active) = svc.active.as_mut() {
-        active.set_value(json!(1u8)).await?;
+        active
+            .set_value(json!(hsv.streaming_active.load(Ordering::SeqCst) as u8))
+            .await?;
+        let hsv_ = hsv.clone();
+        let streams_ = streams.clone();
+        active.on_update_async(Some(move |_: u8, new: u8| {
+            let hsv = hsv_.clone();
+            let streams = streams_.clone();
+            async move {
+                if new > 1 {
+                    return Err("invalid RTP streaming Active value".into());
+                }
+                hsv.set_streaming_active(&streams, new == 1).await?;
+                Ok(())
+            }
+            .boxed()
+        }));
+        let hsv_ = hsv.clone();
+        active.on_read_async(Some(move || {
+            let hsv = hsv_.clone();
+            async move { Ok(Some(hsv.streaming_active.load(Ordering::SeqCst) as u8)) }.boxed()
+        }));
     }
 
     svc.supported_video_stream_configuration
@@ -590,4 +612,82 @@ impl Serialize for CameraAccessory {
 /// accessory pointer after the accessory has been moved into the server.
 pub fn motion_service_iids() -> (u64, u64) {
     (IID_MOTION_PERSON, IID_MOTION_VEHICLE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn rtp_active_characteristic_drives_live_gate_and_rejects_invalid_values() {
+        use crate::amcrest::{AmcrestClient, EncoderCapabilities, VideoProfile};
+        use crate::metrics::Metrics;
+        use crate::stream::VideoSource;
+        use amcrust::source::{Encoder, Limits, Registry, SourceKey, Timing};
+        use std::sync::atomic::AtomicBool;
+        let mut registry = Registry::new(Limits {
+            timing: Timing::Presentation,
+            ..Default::default()
+        })
+        .unwrap();
+        let source = registry
+            .register(
+                SourceKey {
+                    camera: 1,
+                    encoder: Encoder::Main,
+                },
+                amcrust::ingest::CameraUrl::new("rtsp://127.0.0.1:9/unused".into()).unwrap(),
+            )
+            .unwrap();
+        let metrics = Metrics::new();
+        let streams = StreamManager::new(
+            vec![VideoSource {
+                source: source.clone(),
+                profile: VideoProfile::LIVE_1080P,
+            }],
+            source.clone(),
+            true,
+            "127.0.0.1".parse().unwrap(),
+            metrics.clone(),
+        );
+        let directory =
+            std::env::temp_dir().join(format!("amcrust-active-{:016x}", rand::random::<u64>()));
+        std::fs::create_dir(&directory).unwrap();
+        let hsv = HsvState::load(
+            "active-test".into(),
+            directory.to_str().unwrap(),
+            AmcrestClient::new("127.0.0.1".into(), "unused".into(), "unused".into()),
+            Arc::new(AtomicBool::new(false)),
+            metrics,
+            EncoderCapabilities::default(),
+            source.clone(),
+        );
+        let permission = hsv.snapshots.permission();
+        let mut service = build_stream_management(1, &streams, &hsv).await.unwrap();
+        let active = service.active.as_mut().unwrap();
+        assert_eq!(active.get_value().await.unwrap(), json!(1));
+        active.set_value(json!(0)).await.unwrap();
+        assert_eq!(active.get_value().await.unwrap(), json!(0));
+        assert!(!hsv.streaming_active.load(Ordering::SeqCst));
+        assert_eq!(
+            crate::tlv8::find_u8(&crate::tlv8::parse(&streams.streaming_status().await), 1),
+            Some(2)
+        );
+        assert!(active.set_value(json!(2)).await.is_err());
+        assert_eq!(active.get_value().await.unwrap(), json!(0));
+        active.set_value(json!(1)).await.unwrap();
+        assert!(hsv.streaming_active.load(Ordering::SeqCst));
+        assert_eq!(
+            crate::tlv8::find_u8(&crate::tlv8::parse(&streams.streaming_status().await), 1),
+            Some(0)
+        );
+        assert!(permission.current());
+        assert_eq!(source.snapshot().open_attempts, 0);
+        streams.stop_stream().await;
+        assert!(active.set_value(json!(1)).await.is_err());
+        hsv.shutdown().await;
+        registry.shutdown().await.unwrap();
+        std::fs::remove_file(directory.join("hsv.json")).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
 }

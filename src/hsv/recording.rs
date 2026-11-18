@@ -45,6 +45,13 @@ struct PersistedState {
     event_snapshots: bool,
     periodic_snapshots: bool,
     homekit_active: bool,
+    // Existing state files predate live-only privacy; preserve their other flags.
+    #[serde(default = "default_streaming_active")]
+    streaming_active: bool,
+}
+
+fn default_streaming_active() -> bool {
+    true
 }
 
 pub struct HsvState {
@@ -54,12 +61,14 @@ pub struct HsvState {
     pub event_snapshots: AtomicBool,
     pub periodic_snapshots: AtomicBool,
     pub homekit_active: AtomicBool,
+    pub streaming_active: AtomicBool,
     pub selected: Mutex<Option<SelectedConfig>>,
     pub recorder: Recorder,
     pub snapshots: crate::amcrest::SnapshotCache,
     pub motion_active: Arc<AtomicBool>,
     camera: AmcrestClient,
     path: PathBuf,
+    persistence_lock: Mutex<()>,
     configuration_lock: Mutex<()>,
     recorder_lock: Mutex<()>,
     camera_lock: Mutex<()>,
@@ -80,17 +89,25 @@ impl HsvState {
         source: amcrust::source::Source,
     ) -> Arc<Self> {
         let path = PathBuf::from(data_dir).join("hsv.json");
-        let persisted: PersistedState = std::fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or(PersistedState {
+        let persisted: PersistedState = match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+                warn!("invalid HSV state; starting with media modes disabled");
+                PersistedState::default()
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => PersistedState {
                 selected_b64: None,
                 recording_active: false,
                 audio_active: true,
                 event_snapshots: true,
                 periodic_snapshots: true,
                 homekit_active: true,
-            });
+                streaming_active: true,
+            },
+            Err(error) => {
+                warn!("cannot read HSV state; starting with media modes disabled: {error}");
+                PersistedState::default()
+            }
+        };
 
         let selected = persisted
             .selected_b64
@@ -123,11 +140,13 @@ impl HsvState {
             event_snapshots: AtomicBool::new(persisted.event_snapshots),
             periodic_snapshots: AtomicBool::new(persisted.periodic_snapshots),
             homekit_active: AtomicBool::new(persisted.homekit_active),
+            streaming_active: AtomicBool::new(persisted.streaming_active),
             selected: Mutex::new(selected),
             recorder: Recorder::new(source, metrics),
             motion_active,
             camera,
             path,
+            persistence_lock: Mutex::new(()),
             configuration_lock: Mutex::new(()),
             recorder_lock: Mutex::new(()),
             camera_lock: Mutex::new(()),
@@ -153,6 +172,8 @@ impl HsvState {
 
     pub async fn persist(&self) {
         use base64::Engine;
+        // Read current desired values only after serialization ownership.
+        let _guard = self.persistence_lock.lock().await;
         let selected_b64 = self
             .selected
             .lock()
@@ -166,9 +187,13 @@ impl HsvState {
             event_snapshots: self.event_snapshots.load(Ordering::SeqCst),
             periodic_snapshots: self.periodic_snapshots.load(Ordering::SeqCst),
             homekit_active: self.homekit_active.load(Ordering::SeqCst),
+            streaming_active: self.streaming_active.load(Ordering::SeqCst),
         };
         if let Ok(bytes) = serde_json::to_vec_pretty(&state) {
-            if let Err(e) = std::fs::write(&self.path, bytes) {
+            let temporary = self.path.with_extension("json.tmp");
+            let result = std::fs::write(&temporary, bytes)
+                .and_then(|_| std::fs::rename(&temporary, &self.path));
+            if let Err(e) = result {
                 warn!("failed to persist HSV state: {e}");
             }
         }
@@ -344,6 +369,24 @@ impl HsvState {
             self.snapshots.invalidate(false);
         }
         self.sync_recorder().await;
+        self.persist().await;
+        result
+    }
+
+    pub async fn set_streaming_active(
+        &self,
+        streams: &crate::stream::StreamManager,
+        active: bool,
+    ) -> Result<(), amcrust::source::Terminal> {
+        let _guard = self.camera_lock.lock().await;
+        if self.stopped.load(Ordering::SeqCst) {
+            return Err(amcrust::source::Terminal::Shutdown);
+        }
+        self.streaming_active.store(active, Ordering::SeqCst);
+        let result = streams.set_live_enabled(active).await;
+        if result.is_err() {
+            self.streaming_active.store(false, Ordering::SeqCst);
+        }
         self.persist().await;
         result
     }

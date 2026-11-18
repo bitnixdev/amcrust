@@ -309,7 +309,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         local_ip,
         metrics.clone(),
     );
-    // Apply persisted privacy before exposing any media consumer or HAP endpoint.
+    // Apply both persisted gates before exposing any media consumer or HAP endpoint.
+    streams
+        .set_live_enabled(hsv_state.streaming_active.load(Ordering::SeqCst))
+        .await?;
     streams
         .set_enabled(hsv_state.homekit_active.load(Ordering::SeqCst))
         .await?;

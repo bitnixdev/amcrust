@@ -382,6 +382,22 @@ automatically after a source change.
 
 ## Camera-mode lifetime
 
+RTP Stream Management Active is a separate, persisted live-only gate. This application
+has one such service, so the gate covers all of its live sessions, not one viewer.
+Inactive closes setup/start admission, discards prepared sessions and revokes/joins
+live video/audio without disabling shared sources or recording/snapshot permission.
+Enable completes any interrupted disable before reopening and requires fresh setup.
+Duplicate enable does not terminate a healthy live session. Effective admission also
+requires Camera Active, a current profile and a non-shutdown manager.
+
+Both persisted gates are applied before HAP exposure. Existing valid state files
+without the new live flag retain their other flags and default live intent to enabled,
+matching the previous behavior. Only a missing file receives first-launch defaults;
+unreadable/malformed state disables media modes. Persistence is serialized and uses
+same-directory temporary-file replacement instead of truncating the live state file.
+Write failures remain logged/best-effort; power-loss durability is not established.
+
+
 HomeKit Camera Active now reconciles live admission, all encoder sources and recording
 under serialized mode ownership. Off revokes live controls and clears prepared sessions,
 disables source owners (invalidating escaped recording/RTP grants), then joins live and
@@ -416,8 +432,8 @@ local snapshot saves carry the same permission in an awaited blocking-file job. 
 clears cache storage; retirement alone invalidates retained copies rather than claiming
 their memory is freed.
 
-Per-stream Active behavior, real encoder-change/firmware and controller qualification,
-actual Home behavior on mid-response close, and long outage/reboot recovery remain open. This wiring
+Actual Home mode/automation behavior, real encoder-change/firmware and controller
+qualification, mid-response close handling and long outage/reboot recovery remain open. This wiring
 is not complete camera-wide Apple privacy acceptance.
 
 ## Implemented secure transport boundary

@@ -28,6 +28,39 @@ as application library code and is wired into `src/main.rs` for live video/audio
 MediaMTX was investigated but not added or launched. Apple HSV acceptance, full live
 privacy transitions and unattended recovery remain separate requirements.
 
+### RTP-service Active and independent live shutdown
+
+The previously hard-coded RTP Stream Management Active value is now backed by a
+persisted live-only gate. Its characteristic callback validates 0/1, joins live teardown,
+and reports desired state on reads. Setup/start and streaming status honor both this
+gate and camera-wide privacy. Re-enable cannot revive old sessions, bypass camera-off,
+or reopen shutdown; it first completes retained joins from an interrupted disable.
+
+Local results:
+- The actual HAP characteristic callback toggles admission, rejects an invalid value,
+  preserves snapshot permission and refuses enable after shutdown.
+- With a stalled local RTSP endpoint, live video/audio owners and prepared sessions are
+  removed while the recording owner and an independent source subscription remain
+  current. No second acquisition opens. This is ownership evidence, not recording
+  playback or continued decoded media from a real camera.
+- An interrupted live disable retains its join. An enable attempt stays blocked until
+  that worker exits, then admits fresh demand only.
+- Camera-off/on preserves the independent live-disabled intent; live enable cannot
+  override camera-off. Old setup/session identifiers remain unusable.
+- Older valid state without the new flag preserves recording/audio/camera privacy
+  values. New live state round-trips. Malformed state fails closed rather than
+  silently applying enabled first-launch defaults.
+
+Validation passed: **49 library +71 application +16 HAP tests**, workspace integration
+checks and three HAP doctests, all-target compilation, strict application-library Clippy,
+formatting, two sampler tests and the pinned Nix package. The bounded review returned
+no findings. The existing metrics `fetch_update` warning remains unchanged.
+
+State writes now serialize current-state snapshots and atomically replace the file
+instead of truncating it in place. Write errors remain best-effort/logged, and these
+tests do not establish power-loss durability. No camera was accessed or reconfigured.
+Actual Apple modes, automation behavior, deployment and outage recovery remain open.
+
 ### Encoder-change retirement and current live selection
 
 The selected-recording and startup paths now use a shared transaction rather than
