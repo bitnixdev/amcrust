@@ -302,12 +302,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if video_sources.is_empty() {
         return Err("camera has no verified native live stream".into());
     }
-    let streams = StreamManager::new(
+    let streams = StreamManager::with_job_budget(
         video_sources,
         main_source,
         args.audio,
         local_ip,
         metrics.clone(),
+        &hsv_state.recorder.job_budget,
     );
     // Apply both persisted gates before exposing any media consumer or HAP endpoint.
     streams

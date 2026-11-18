@@ -429,7 +429,18 @@ generation, open/fault counters, subscriber counts, logical charges/limits and s
 oldest active-subscription delivery age. Unregistered substream roles are marked absent,
 not given fabricated source counters. Observation never subscribes or opens acquisition.
 
-Live Opus, recording AAC and recording mux pools expose reserved jobs/bytes and limits.
+Live Opus, recording AAC and recording mux pools share an application ceiling of
+10 jobs and 160 MiB of logical reservations. The largest currently configured mix
+(8 × 2 MiB Opus, 1 × 12 MiB AAC and 1 × 130.125 MiB mux including metadata)
+fits without a new pressure refusal. Local role ceilings still apply first. Refusal
+at the parent rolls back the local reservation and does not evict existing jobs.
+Both charges are owned by the same job as its output permissions; stopping a worker
+does not release charges still retained by escaped output.
+
+Health exposes the parent as `media.recording.shared_job_budget` and Prometheus
+as `pool="shared_jobs"`. Each pool reports jobs, bytes, limits and refusals at that
+limit. Parent and child bytes describe the same job, not additive memory. Neither
+counts source acquisition, transport buffers, recording history, or native RSS.
 Reserved slots include ownership retained by output objects; they are not thread or
 active-codec counts. Live owner counts include prepared sessions and retained video/audio
 owners, including teardown. Recording history reports payload bytes, entries, end-time

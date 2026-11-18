@@ -126,10 +126,12 @@ pub struct Recorder {
     source: Source,
     audio_pool: audio::Pool,
     mux_pool: fmp4::Pool,
+    pub(crate) job_budget: amcrust::media::JobBudget,
     metrics: Arc<Metrics>,
 }
 #[derive(Debug, serde::Serialize)]
 pub struct RecordingResources {
+    pub shared_job_budget: amcrust::media::PoolSnapshot,
     pub aac: amcrust::media::PoolSnapshot,
     pub mux: amcrust::media::PoolSnapshot,
     pub history: Option<HistoryResources>,
@@ -147,6 +149,7 @@ impl Recorder {
     /// Do not wait behind publication/teardown on the metrics HTTP path.
     pub fn resources(&self) -> RecordingResources {
         RecordingResources {
+            shared_job_budget: self.job_budget.snapshot(),
             aac: self.audio_pool.snapshot(),
             mux: self.mux_pool.snapshot(),
             history: self.state.try_lock().ok().map(|state| HistoryResources {
@@ -161,14 +164,19 @@ impl Recorder {
         }
     }
     pub fn new(source: Source, metrics: Arc<Metrics>) -> Self {
+        // 8 Opus + 1 AAC + 1 production mux (including chunk metadata) fit concurrently.
+        let job_budget =
+            amcrust::media::JobBudget::new(10, 160 * 1024 * 1024).expect("fixed media budget");
         Self {
             lifetime: Arc::new(Lifetime::default()),
             state: Arc::new(Mutex::new(RecorderState::default())),
             operation: Arc::new(Mutex::new(())),
             source,
-            audio_pool: audio::Pool::new(1, audio::AAC_RESERVATION_BYTES)
+            audio_pool: audio::Pool::new_in(&job_budget, 1, audio::AAC_RESERVATION_BYTES)
                 .expect("fixed recording audio pool"),
-            mux_pool: fmp4::Pool::new(1, 140 * 1024 * 1024).expect("fixed recording mux pool"),
+            mux_pool: fmp4::Pool::new_in(&job_budget, 1, 140 * 1024 * 1024)
+                .expect("fixed recording mux pool"),
+            job_budget,
             metrics,
         }
     }

@@ -28,6 +28,24 @@ as application library code and is wired into `src/main.rs` for live video/audio
 MediaMTX was investigated but not added or launched. Apple HSV acceptance, full live
 privacy transitions and unattended recovery remain separate requirements.
 
+### Shared live/recording job admission
+
+Live Opus, recording AAC and fMP4 mux constructors now reserve their full logical
+allowance against both their role and a common production ceiling before allocating
+native codec/mux state. The shared cap is 10 jobs/160 MiB; the current maximum
+configured mix requests 158.125 MiB. This preserves the previous mix, not a promise
+of ten usable streams. The shared reservation lives on the existing output-retained
+job rather than on the worker thread.
+
+Local budget tests distinguished local saturation, aggregate byte exhaustion and
+aggregate slot exhaustion. Failed sibling reservations left no partial charge and
+did not revoke retained output ownership. Sixteen racing roles requesting three
+units each under a ten-unit ceiling admitted exactly three and counted thirteen
+refusals; releasing those reservations returned both observed totals to zero.
+HTTP and fixed-label rendering cover parent limits and refusal reporting.
+These are reservation/ownership checks: no camera, native RSS measurement,
+deployment, or controller recovery is claimed.
+
 ### Aggregate acquisition budgets and retained slots
 
 Production health/Prometheus now read the registry's existing aggregate byte/slot

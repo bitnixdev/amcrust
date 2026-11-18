@@ -175,7 +175,10 @@ upstream FFmpeg libraries are not legacy acquisition fallbacks.
     per-source slots and slot-refusal counters through health/Prometheus. Validate
     cross-source pressure, partial-reservation rollback and retained ownership across
     retirement/shutdown. These reuse the existing limits; they are not allocator/RSS caps.
-  - [ ] Complete cross-pipeline accounting/admission and consumer-recovery observability;
+  - [x] Enforce one shared codec/mux ceiling (10 jobs/160 MiB) across live Opus,
+    recording AAC and clip muxing in addition to each role limit. Retain both charges
+    with escaped job outputs and expose reservations/refusals at the limiting pool.
+  - [ ] Complete remaining pipeline accounting and consumer-recovery observability;
     evaluate pressure, actual native RSS and matched real production workloads.
     Per-source charges, history payloads and full-job reservations overlap and must
     not be summed as allocator memory.

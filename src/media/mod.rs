@@ -8,8 +8,12 @@ pub struct PoolSnapshot {
     pub job_limit: usize,
     pub reserved_bytes: usize,
     pub byte_limit: usize,
+    /// Count only refusals at this particular limit (local role or shared budget).
+    pub refusals: u64,
 }
 
+mod budget;
+pub use budget::JobBudget;
 pub mod audio;
 mod audio_clock;
 mod audio_recovery;

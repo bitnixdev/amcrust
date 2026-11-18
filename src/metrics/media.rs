@@ -95,6 +95,11 @@ pub(super) fn render(streams: &StreamResources, recording: &RecordingResources) 
             "counter",
         ),
         (
+            "media_budget_refusals_total",
+            "Job reservations refused at this role or shared limit, not both.",
+            "counter",
+        ),
+        (
             "media_reserved_jobs",
             "Reserved job slots including escaped output ownership; not running threads.",
             "gauge",
@@ -278,10 +283,17 @@ pub(super) fn render(streams: &StreamResources, recording: &RecordingResources) 
         .unwrap();
     }
     for (label, pool) in [
+        ("shared_jobs", &recording.shared_job_budget),
         ("live_opus", &streams.live_opus),
         ("recording_aac", &recording.aac),
         ("recording_mux", &recording.mux),
     ] {
+        writeln!(
+            out,
+            "amcrust_media_budget_refusals_total{{pool=\"{label}\"}} {}",
+            pool.refusals
+        )
+        .unwrap();
         for (name, value) in [
             ("reserved_jobs", pool.reserved_jobs),
             ("job_limit", pool.job_limit),
@@ -374,6 +386,7 @@ mod tests {
             reserved_jobs: 1,
             job_limit: 2,
             reserved_bytes: 4096,
+            refusals: 3,
             byte_limit: 8192,
         };
         let mut streams = StreamResources {
@@ -392,6 +405,7 @@ mod tests {
             }),
         };
         let mut recording = RecordingResources {
+            shared_job_budget: pool,
             aac: pool,
             mux: pool,
             history: Some(HistoryResources {
@@ -429,6 +443,9 @@ mod tests {
                 .contains("amcrust_source_oldest_delivery_seconds{encoder=\"sub_stream2\"} 1.250")
         );
         assert!(output.contains("amcrust_media_reserved_bytes{pool=\"recording_mux\"} 4096"));
+        assert!(output.contains("# TYPE amcrust_media_budget_refusals_total counter\n"));
+        assert!(output.contains("amcrust_media_budget_refusals_total{pool=\"shared_jobs\"} 3"));
+        assert!(output.contains("amcrust_media_job_limit{pool=\"shared_jobs\"} 2"));
         assert!(output.contains("amcrust_recording_history_bytes 456"));
         assert!(output.contains("amcrust_live_start_busy_total 1"));
         assert!(

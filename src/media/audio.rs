@@ -73,55 +73,22 @@ impl Config {
     }
 }
 #[derive(Clone)]
-pub struct Pool {
-    jobs: Arc<Semaphore>,
-    bytes: Arc<Semaphore>,
-    capacity: usize,
-    job_limit: usize,
-}
+pub struct Pool(super::budget::RolePool);
 impl Pool {
     pub fn new(jobs: usize, bytes: usize) -> Result<Self, Error> {
-        if jobs == 0 || jobs > 64 || bytes < RESERVATION || bytes > u32::MAX as usize {
+        if bytes < RESERVATION {
             return Err(Error::Configuration);
         }
-        Ok(Self {
-            jobs: Arc::new(Semaphore::new(jobs)),
-            bytes: Arc::new(Semaphore::new(bytes)),
-            capacity: bytes,
-            job_limit: jobs,
-        })
+        Ok(Self(super::budget::RolePool::new(jobs, bytes)?))
+    }
+    pub fn new_in(parent: &super::JobBudget, jobs: usize, bytes: usize) -> Result<Self, Error> {
+        Ok(Self(Self::new(jobs, bytes)?.0.attach(parent)))
     }
     pub fn snapshot(&self) -> super::PoolSnapshot {
-        super::PoolSnapshot {
-            reserved_jobs: self.job_limit - self.jobs.available_permits(),
-            job_limit: self.job_limit,
-            reserved_bytes: self.reserved_bytes(),
-            byte_limit: self.capacity,
-        }
+        self.0.snapshot()
     }
     pub fn reserved_bytes(&self) -> usize {
-        self.capacity - self.bytes.available_permits()
-    }
-}
-
-#[cfg(test)]
-mod pool_accounting_tests {
-    use super::*;
-    #[test]
-    fn snapshots_follow_retained_reservations() {
-        let pool = Pool::new(2, 4 * 1024 * 1024).unwrap();
-        let observer = pool.clone();
-        let job = pool.jobs.clone().try_acquire_owned().unwrap();
-        let bytes = pool.bytes.clone().try_acquire_many_owned(1024).unwrap();
-        drop(pool);
-        let snapshot = observer.snapshot();
-        assert_eq!(snapshot.reserved_jobs, 1);
-        assert_eq!(snapshot.job_limit, 2);
-        assert_eq!(snapshot.reserved_bytes, 1024);
-        assert_eq!(snapshot.byte_limit, 4 * 1024 * 1024);
-        drop((job, bytes));
-        assert_eq!(observer.snapshot().reserved_jobs, 0);
-        assert_eq!(observer.snapshot().reserved_bytes, 0);
+        self.snapshot().reserved_bytes
     }
 }
 
@@ -262,7 +229,7 @@ struct Job {
     initial_padding: i32,
     output_residence: Duration,
     outputs: Arc<Semaphore>,
-    _permits: Vec<OwnedSemaphorePermit>,
+    _permits: super::budget::Reservation,
 }
 impl Job {
     fn fail(&self, error: Error) -> Error {
@@ -821,20 +788,11 @@ impl Transcoder {
         {
             return Err(Error::Configuration);
         }
-        let permits = vec![
-            pool.jobs
-                .clone()
-                .try_acquire_owned()
-                .map_err(|_| Error::Limit)?,
-            pool.bytes
-                .clone()
-                .try_acquire_many_owned(if aac {
-                    AAC_RESERVATION_BYTES as u32
-                } else {
-                    RESERVATION as u32
-                })
-                .map_err(|_| Error::Limit)?,
-        ];
+        let permits = pool.0.reserve(if aac {
+            AAC_RESERVATION_BYTES
+        } else {
+            RESERVATION
+        })?;
         if (first.timing()? == crate::source::Timing::Presentation) != presentation.is_some() {
             return Err(Error::Configuration);
         }

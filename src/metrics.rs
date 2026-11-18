@@ -596,7 +596,7 @@ mod tests {
             },
             source.clone(),
         );
-        let streams = crate::stream::StreamManager::new(
+        let streams = crate::stream::StreamManager::with_job_budget(
             vec![crate::stream::VideoSource {
                 source: source.clone(),
                 profile: crate::amcrest::VideoProfile::LIVE_1080P,
@@ -605,6 +605,7 @@ mod tests {
             false,
             "127.0.0.1".parse().unwrap(),
             metrics.clone(),
+            &hsv.recorder.job_budget,
         );
         let state = HttpState {
             metrics,
@@ -635,6 +636,11 @@ mod tests {
         );
         assert!(health["media"]["streams"]["main"]["recovery"]["last_fault"].is_null());
         assert_eq!(health["media"]["recording"]["mux"]["job_limit"], 1);
+        let shared = &health["media"]["recording"]["shared_job_budget"];
+        assert_eq!(shared["job_limit"], 10);
+        assert_eq!(shared["byte_limit"], 160 * 1024 * 1024);
+        assert_eq!(shared["reserved_jobs"], 0);
+        assert_eq!(shared["refusals"], 0);
         assert_eq!(health["media"]["source_budget"]["reserved_subscribers"], 0);
         assert_eq!(health["media"]["source_budget"]["subscriber_limit"], 64);
         assert!(health["media"]["streams"]["sub_stream2"].is_null());

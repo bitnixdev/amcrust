@@ -288,12 +288,30 @@ impl StreamManager {
             }),
         }
     }
+    #[cfg(test)]
     pub fn new(
         video_sources: Vec<VideoSource>,
         audio_source: amcrust::source::Source,
         audio: bool,
         local_ip: IpAddr,
         metrics: Arc<Metrics>,
+    ) -> Self {
+        Self::with_job_budget(
+            video_sources,
+            audio_source,
+            audio,
+            local_ip,
+            metrics,
+            &amcrust::media::JobBudget::new(10, 160 * 1024 * 1024).unwrap(),
+        )
+    }
+    pub fn with_job_budget(
+        video_sources: Vec<VideoSource>,
+        audio_source: amcrust::source::Source,
+        audio: bool,
+        local_ip: IpAddr,
+        metrics: Arc<Metrics>,
+        job_budget: &amcrust::media::JobBudget,
     ) -> Self {
         assert!(
             !video_sources.is_empty(),
@@ -308,7 +326,7 @@ impl StreamManager {
             inner: Arc::new(Mutex::new(Inner::default())),
             video_sources,
             audio_source,
-            audio_pool: amcrust::media::audio::Pool::new(8, 16 * 1024 * 1024)
+            audio_pool: amcrust::media::audio::Pool::new_in(job_budget, 8, 16 * 1024 * 1024)
                 .expect("fixed audio budget"),
             audio,
             local_ip,
