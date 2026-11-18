@@ -8,8 +8,10 @@
 mod admission;
 mod audio_timing;
 pub mod clock;
+mod recovery;
 mod subscription;
 pub(crate) use admission::nals;
+pub use recovery::{FaultKind, RecoveryPhase, RecoverySnapshot};
 pub(crate) use subscription::DeliveryGuard;
 pub use subscription::{Delivery, Subscription, SubscriptionLimits, Tracks};
 
@@ -151,6 +153,7 @@ struct Metrics {
     missing_clocks: AtomicU64,
     oldest_ms: AtomicU64,
     clock: Mutex<Option<clock::Observations>>,
+    recovery: Mutex<recovery::Record>,
 }
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct Snapshot {
@@ -164,6 +167,7 @@ pub struct Snapshot {
     pub byte_limit: usize,
     /// Queued AND held delivery age for active subscriptions, not just channel residence.
     pub oldest_delivery_ms: u64,
+    pub recovery: RecoverySnapshot,
 }
 
 /// Non-secret consumer handle. Credentials remain inside the supervisor.
@@ -244,6 +248,12 @@ impl Source {
             charged_bytes: self.byte_limit - self.bytes.available_permits(),
             byte_limit: self.byte_limit,
             oldest_delivery_ms: self.metrics.oldest_ms.load(Ordering::Relaxed),
+            recovery: self
+                .metrics
+                .recovery
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .snapshot(),
         }
     }
 }
@@ -313,6 +323,9 @@ impl Registry {
             generation: 0,
             failures: 0,
             next_open: Instant::now(),
+            last_fault: None,
+            cooldowns: 0,
+            cooldown_resets: 0,
         };
         let task = runtime.spawn(supervisor.run());
         self.owners.insert(
@@ -484,6 +497,9 @@ struct Supervisor {
     generation: u64,
     failures: u32,
     next_open: Instant,
+    last_fault: Option<FaultKind>,
+    cooldowns: u64,
+    cooldown_resets: u64,
 }
 impl Drop for Supervisor {
     fn drop(&mut self) {
@@ -494,9 +510,51 @@ impl Drop for Supervisor {
             run.cancel.cancel();
         }
         self.metrics.active.store(false, Ordering::Release);
+        let mut recovery = self
+            .metrics
+            .recovery
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if recovery.snapshot.phase != RecoveryPhase::Shutdown {
+            recovery.snapshot.phase = RecoveryPhase::Failed;
+        }
+        recovery.retry_at = None;
     }
 }
 impl Supervisor {
+    fn publish_recovery(&self, phase: Option<RecoveryPhase>) {
+        let mut record = self
+            .metrics
+            .recovery
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        record.snapshot = RecoverySnapshot {
+            consecutive_failures: self.failures,
+            last_fault: self.last_fault,
+            cooldowns: self.cooldowns,
+            cooldown_resets: self.cooldown_resets,
+            ..RecoverySnapshot::default()
+        };
+        record.retry_at =
+            (self.failures > 0 && self.next_open > Instant::now()).then_some(self.next_open);
+        record.snapshot.phase = phase.unwrap_or_else(|| {
+            if !self.enabled {
+                RecoveryPhase::Disabled
+            } else if let Some(run) = &self.running {
+                if run.configuration.is_some() {
+                    RecoveryPhase::Acquiring
+                } else {
+                    RecoveryPhase::Opening
+                }
+            } else if self.failures >= self.limits.failures_before_reset {
+                RecoveryPhase::Cooldown
+            } else if record.retry_at.is_some() {
+                RecoveryPhase::Backoff
+            } else {
+                RecoveryPhase::Idle
+            }
+        });
+    }
     async fn run(mut self) {
         let mut tick = tokio::time::interval(Duration::from_millis(25));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -520,6 +578,7 @@ impl Supervisor {
                     self.retire(reason).await;
                 }
             }
+            self.publish_recovery(None);
             tokio::select! {
                 _ = self.stop.wake.notified() => (),
                 command = self.rx.recv() => match command {
@@ -544,6 +603,7 @@ impl Supervisor {
             }
         }
         self.retire(Terminal::Shutdown).await;
+        self.publish_recovery(Some(RecoveryPhase::Shutdown));
         self.rx.close();
         // Pending oneshots close with the supervisor, waking all callers.
     }
@@ -583,6 +643,7 @@ impl Supervisor {
                 } else {
                     self.add(tracks, limits)
                 };
+                self.publish_recovery(None);
                 let _ = reply.send(result);
             }
             Command::Enable(enabled, reply) => {
@@ -590,6 +651,7 @@ impl Supervisor {
                 if !enabled {
                     self.retire(Terminal::Disabled).await;
                 }
+                self.publish_recovery(None);
                 let _ = reply.send(());
             }
             Command::Reset(url, reply) => {
@@ -599,6 +661,7 @@ impl Supervisor {
                 }
                 self.failures = 0;
                 self.next_open = Instant::now();
+                self.publish_recovery(None);
                 let _ = reply.send(());
             }
         }
@@ -865,6 +928,7 @@ impl Supervisor {
         self.metrics.oldest_ms.store(0, Ordering::Relaxed);
     }
     async fn retire(&mut self, reason: Terminal) {
+        self.publish_recovery(Some(RecoveryPhase::Retiring));
         self.revoke(reason);
         if let Some(mut run) = self.running.take() {
             run.cancel.cancel();
@@ -880,9 +944,10 @@ impl Supervisor {
             // Only future demand is admitted. Old subscriptions/crypto epochs never
             // revive, and an idle or privacy-disabled source is never reopened here.
             self.failures = 0;
+            self.cooldown_resets = self.cooldown_resets.saturating_add(1);
         }
     }
-    fn backoff(&mut self) {
+    fn backoff(&mut self, reason: Terminal) {
         self.metrics.faults.fetch_add(1, Ordering::Relaxed);
         self.failures = self.failures.saturating_add(1);
         let delay = self
@@ -896,15 +961,20 @@ impl Supervisor {
             } else {
                 delay
             };
+        self.last_fault = Some(FaultKind::from_terminal(reason));
+        if self.failures >= self.limits.failures_before_reset {
+            self.cooldowns = self.cooldowns.saturating_add(1);
+        }
+        self.publish_recovery(None);
     }
     async fn fault(&mut self, reason: Terminal) {
         self.retire(reason).await;
-        self.backoff();
+        self.backoff(reason);
     }
     async fn fault_finished(&mut self, reason: Terminal) {
         self.revoke(reason);
         self.running.take(); // worker has already been joined
         self.metrics.active.store(false, Ordering::Release);
-        self.backoff();
+        self.backoff(reason);
     }
 }

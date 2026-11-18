@@ -28,6 +28,33 @@ as application library code and is wired into `src/main.rs` for live video/audio
 MediaMTX was investigated but not added or launched. Apple HSV acceptance, full live
 privacy transitions and unattended recovery remain separate requirements.
 
+### Source recovery-state telemetry
+
+Health and Prometheus now expose bounded supervisor phases, consecutive failures,
+remaining monotonic retry delay, last fault category and cooldown entry/reset counters.
+The record is observational: no retry timing, admission or generation policy changed.
+
+Local native tests cover real loopback RTSP connection resets and a stalled open:
+- Three exhausted retry bursts publish cooldowns and subsequent timed resets without
+  opening idle sources or reviving the original subscriptions.
+- Cooling down while disabled leaves the source disabled and does not open acquisition.
+- Opening differs from backoff; remaining delay declines without new demand.
+- Administrative reset while disabled clears the failure/delay barrier, retains fault
+  history and does not claim a timed reset. Enabling idle state does not open a reader.
+- Fresh demand opens a new attempt; privacy cancellation joins the stalled native reader
+  and is not counted as another source fault. Shutdown publishes a terminal phase.
+- HTTP schema and fixed-label exposition distinguish initial no-fault/idle observations.
+
+The acquiring phase is metadata acceptance, not decoded/playback readiness. Cooldown reset
+counts are not successful media or controller recovery counts. No camera access,
+deployment, Apple acceptance, unattended outage soak or native RSS claim is made.
+
+Validation: 51 library +76 application +16 HAP tests, workspace integration tests
+(including the new local recovery-state test), three HAP doctests, all-target compilation,
+strict library Clippy, formatting and two sampler tests passed. The bounded review
+returned no findings and the pinned Nix package build passed. The existing metrics
+fetch_update warning is unchanged.
+
 ### Bounded live preparation and session admission
 
 Local tests exercise production control paths using loopback UDP reservations and

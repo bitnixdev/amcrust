@@ -167,7 +167,11 @@ upstream FFmpeg libraries are not legacy acquisition fallbacks.
     deadline, and join completed owners before reclaiming slots. Expose caps, capacity
     refusals and expired preparations through health/metrics. These are ceilings, not
     a guarantee of eight A/V viewers; source/codec limits still apply.
-  - [ ] Complete aggregate accounting/admission and recovery-state observability;
+  - [x] Publish source opening/acquisition/backoff/cooldown/retirement/mode phases,
+    consecutive failures, monotonic remaining delay, bounded last-fault categories and
+    circuit entry/reset counters. Validate local native reset/stall, privacy/reset,
+    sticky old subscriptions and fresh-demand semantics without changing retry policy.
+  - [ ] Complete aggregate accounting/admission and consumer-recovery observability;
     evaluate pressure, actual native RSS and matched real production workloads.
     Per-source charges, history payloads and full-job reservations overlap and must
     not be summed as allocator memory.

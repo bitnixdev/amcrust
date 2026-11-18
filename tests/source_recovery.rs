@@ -1,7 +1,10 @@
 //! Deterministic native acquisition failures, not simulated media. No camera access.
 use amcrust::{
     ingest::CameraUrl,
-    source::{Encoder, Limits, Registry, SourceKey, SubscriptionLimits, Terminal, Tracks},
+    source::{
+        Encoder, FaultKind, Limits, RecoveryPhase, Registry, SourceKey, SubscriptionLimits,
+        Terminal, Tracks,
+    },
 };
 use std::time::Duration;
 
@@ -54,20 +57,47 @@ async fn circuit_cools_down_without_reviving_old_subscriptions_or_opening_idle_s
                     .await,
                 Err(Terminal::RetryExhausted)
             ));
+            let recovery = source.snapshot().recovery;
+            assert_eq!(recovery.phase, RecoveryPhase::Cooldown);
+            assert_eq!(recovery.consecutive_failures, 1);
+            assert!(recovery.retry_remaining_ms > 0 && recovery.retry_remaining_ms <= 250);
+            assert_eq!(recovery.cooldowns, attempt);
+            assert_eq!(recovery.cooldown_resets, attempt - 1);
+            assert!(matches!(
+                recovery.last_fault,
+                Some(FaultKind::Native | FaultKind::Worker)
+            ));
             old.push((subscription, reason));
             assert_eq!(source.snapshot().open_attempts, attempt);
+            if attempt == 3 {
+                source.set_enabled(false).await.unwrap();
+            }
             tokio::time::sleep(Duration::from_millis(325)).await;
             assert_eq!(
                 source.snapshot().open_attempts,
                 attempt,
                 "cooldown must not acquire without fresh demand"
             );
+            let recovery = source.snapshot().recovery;
+            assert_eq!(
+                recovery.phase,
+                if attempt == 3 {
+                    RecoveryPhase::Disabled
+                } else {
+                    RecoveryPhase::Idle
+                }
+            );
+            assert_eq!(recovery.consecutive_failures, 0);
+            assert_eq!(recovery.retry_remaining_ms, 0);
+            assert_eq!(recovery.cooldown_resets, attempt);
+            assert!(recovery.last_fault.is_some()); // historical fault is not erased by cooldown
             for (subscription, reason) in &mut old {
                 assert_eq!(subscription.terminal(), Some(*reason));
                 assert!(matches!(subscription.recv().await, Err(e) if e == *reason));
             }
         }
         source.set_enabled(false).await.unwrap();
+        assert_eq!(source.snapshot().recovery.phase, RecoveryPhase::Disabled);
         tokio::time::sleep(Duration::from_millis(325)).await;
         assert!(matches!(
             source
@@ -84,4 +114,5 @@ async fn circuit_cools_down_without_reviving_old_subscriptions_or_opening_idle_s
     let _ = peer.await;
     outcome.expect("bounded repeated recovery");
     assert_eq!(source.snapshot().charged_bytes, 0);
+    assert_eq!(source.snapshot().recovery.phase, RecoveryPhase::Shutdown);
 }

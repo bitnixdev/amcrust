@@ -117,6 +117,44 @@ pub(super) fn render(streams: &StreamResources, recording: &RecordingResources) 
         )
         .unwrap();
     }
+    for (name, kind, help) in [
+        (
+            "recovery_phase",
+            "gauge",
+            "Observed supervisor phase; acquiring is not playback readiness.",
+        ),
+        (
+            "last_fault",
+            "gauge",
+            "Last completed fault category, retained across resets; none before first fault.",
+        ),
+        (
+            "consecutive_failures",
+            "gauge",
+            "Current circuit failure count.",
+        ),
+        (
+            "retry_remaining_seconds",
+            "gauge",
+            "Remaining retry delay barrier; opening still requires eligible demand.",
+        ),
+        (
+            "cooldowns_total",
+            "counter",
+            "Exhausted retry bursts entering cooldown.",
+        ),
+        (
+            "cooldown_resets_total",
+            "counter",
+            "Timed circuit resets, not media or controller recovery successes.",
+        ),
+    ] {
+        writeln!(
+            out,
+            "# HELP amcrust_source_{name} {help}\n# TYPE amcrust_source_{name} {kind}"
+        )
+        .unwrap();
+    }
     for (label, snapshot) in [
         ("main", Some(&streams.main)),
         ("sub_stream2", streams.sub_stream2.as_ref()),
@@ -128,8 +166,40 @@ pub(super) fn render(streams: &StreamResources, recording: &RecordingResources) 
         )
         .unwrap();
         let Some(s) = snapshot else { continue };
+        for phase in amcrust::source::RecoveryPhase::ALL {
+            writeln!(
+                out,
+                "amcrust_source_recovery_phase{{encoder=\"{label}\",phase=\"{}\"}} {}",
+                phase.label(),
+                u8::from(s.recovery.phase == phase)
+            )
+            .unwrap();
+        }
+        for fault in
+            std::iter::once(None).chain(amcrust::source::FaultKind::ALL.into_iter().map(Some))
+        {
+            writeln!(
+                out,
+                "amcrust_source_last_fault{{encoder=\"{label}\",kind=\"{}\"}} {}",
+                fault.map_or("none", |f| f.label()),
+                u8::from(s.recovery.last_fault == fault)
+            )
+            .unwrap();
+        }
+        writeln!(
+            out,
+            "amcrust_source_retry_remaining_seconds{{encoder=\"{label}\"}} {:.3}",
+            s.recovery.retry_remaining_ms as f64 / 1000.0
+        )
+        .unwrap();
         for (name, value) in [
             ("active", u64::from(s.active)),
+            (
+                "consecutive_failures",
+                u64::from(s.recovery.consecutive_failures),
+            ),
+            ("cooldowns_total", s.recovery.cooldowns),
+            ("cooldown_resets_total", s.recovery.cooldown_resets),
             ("generation", s.generation),
             ("open_attempts_total", s.open_attempts),
             ("faults_total", s.faults),
@@ -235,6 +305,7 @@ mod tests {
             charged_bytes: 1234,
             byte_limit: 8192,
             oldest_delivery_ms: 1250,
+            recovery: Default::default(),
         };
         let pool = PoolSnapshot {
             reserved_jobs: 1,
@@ -278,6 +349,13 @@ mod tests {
         assert!(output.contains("amcrust_media_reserved_bytes{pool=\"recording_mux\"} 4096"));
         assert!(output.contains("amcrust_recording_history_bytes 456"));
         assert!(output.contains("amcrust_live_start_busy_total 1"));
+        assert!(
+            output.contains("amcrust_source_recovery_phase{encoder=\"main\",phase=\"idle\"} 1")
+        );
+        assert!(
+            output.contains("amcrust_source_recovery_phase{encoder=\"main\",phase=\"cooldown\"} 0")
+        );
+        assert!(output.contains("amcrust_source_last_fault{encoder=\"main\",kind=\"none\"} 1"));
         assert!(output.contains("amcrust_live_prepared_expired_total 4"));
         assert!(output.contains("amcrust_live_session_limit 8"));
         assert!(output.contains("amcrust_live_owned_session_ids 3"));

@@ -375,6 +375,31 @@ Health/Prometheus expose the caps, unique owned-ID count, setup/start capacity r
 and lazily observed expiration counter. These bounds cover live control/transport ownership,
 not aggregate allocator/native RSS, request-rate limiting or every application's allocation.
 
+## Source recovery observations
+
+Each supervisor publishes a bounded recovery record alongside source counters. It
+distinguishes idle, opening, acquiring, backoff, cooldown, disabled, retiring, shutdown
+and unexpected supervisor failure. Acquiring means configuration has been accepted,
+not that a viewer has decoded media or that clock/audio readiness is established.
+Retiring is published before awaiting native teardown; privacy/reset acknowledgements
+publish their resulting state before returning.
+
+The record contains consecutive failures, last fault category, cooldown entries and timed
+cooldown resets. Last-fault categories are fixed enums, never native text, codes, URLs or
+credentials. Fault history survives administrative resets and privacy changes. Timed
+circuit resets are not successful stream/controller recoveries; administrative resets do
+not increment that counter. Normal privacy cancellation is not counted as a source fault.
+
+The retry deadline uses the existing supervisor's monotonic clock. Scrapes compute its
+remaining delay without touching admission or scheduling work. A zero delay is not an
+instruction to open: fresh eligible demand and all mode gates still apply. Published
+phase may lag the countdown reaching zero until the supervisor next runs. The recovery
+record is copied under a short synchronous data lock, never held across native I/O or an
+await; the wider source/pool snapshot remains independently sampled.
+
+This instrumentation does not alter backoff, burst thresholds or cooldown policy, revive
+old subscriptions, restart failed supervisors, or qualify unattended/controller recovery.
+
 ## Production resource telemetry
 
 The metrics server samples the actual StreamManager and Recorder, not diagnostic-only
