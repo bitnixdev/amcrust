@@ -28,6 +28,30 @@ as application library code and is wired into `src/main.rs` for live video/audio
 MediaMTX was investigated but not added or launched. Apple HSV acceptance, full live
 privacy transitions and unattended recovery remain separate requirements.
 
+### North-driveway: live A/V versus live A/V plus recording
+
+Two serial 40-second runs of the debug application test binary used the same main
+encoder, authenticated loopback receivers, 16 kHz/20 ms Opus with local decoding,
+and production shared job budget. The second added the shared-video/AAC fMP4
+recorder. Both passed finite media, single-open and cleanup assertions; shared
+jobs, reserved bytes and shared refusals ended at zero. No encoder settings changed.
+
+One-second process-tree samples used the baseline sampler's `ps` fields, plus
+PID-filtered `lsof` established TCP sockets to the camera RTSP port. For the
+same elapsed window [10 s, 25 s), 15 observations per arm:
+
+| Workload | RSS KiB min / median / max | ps CPU % min / median / max | Processes / established camera sockets |
+|---|---:|---:|---:|
+| Live A/V | 33,248 / 33,456 / 33,472 | 27.1 / 36.5 / 69.2 | 1 / 1 at every sample |
+| Live A/V + recording | 39,952 / 42,704 / 43,152 | 10.2 / 14.6 / 46.6 | 1 / 1 at every sample |
+
+The combined run received 6,176 authenticated video and 1,980 audio RTP packets
+and decoded 1,900,800 Opus samples at 48 kHz. Recording completed before teardown;
+stopping recording preserved live delivery. RSS includes the in-process test
+receiver/decoder. These are two individual runs, not a release-service benchmark:
+OS-defined CPU percentages are not interval CPU time, socket samples cannot exclude
+remote readers, and no old-backend savings, Apple playback or iCloud delivery were measured.
+
 ### Serving-time shutdown and motion lifetime
 
 Isolated child test processes installed the production stop listeners, received real

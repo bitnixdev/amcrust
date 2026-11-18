@@ -387,7 +387,10 @@ cargo run --release -- --name amcrust-test --host 10.76.14.10
 
 Use credentials already supplied through the environment/`.env`; never copy secrets,
 RTSP URLs containing credentials, setup PINs or captured media into tracked evidence.
-Startup/encoder writes are authorized. The accessory name isolates pairing state,
+North-driveway has standing authorization for camera testing; run read-only tests serially
+without requesting another idle confirmation. Normal startup/encoder writes are authorized;
+interrupting a running service or conducting a disruptive encoder-transition experiment
+is separate. The accessory name isolates pairing state,
 not the physical camera: coordinate any existing instance controlling that encoder.
 
 - [ ] Launch the replacement, report the actual source/backend in use, and verify
@@ -417,6 +420,9 @@ not the physical camera: coordinate any existing instance controlling that encod
   children, first RTP/IDR **and separately** first decoded picture, recovery and HSV.
   Use `scripts/ingest_baseline.py` where useful; historical synthetic savings are not
   production measurements. Do not run old/new acquisition together as a shipped mode.
+  - [x] Sample matched 40-second real-camera A/V and A/V-plus-recording test workloads
+    with the production shared job budget: process-tree RSS/CPU and actual established
+    camera TCP sockets. Deployed and old/new comparisons remain open.
 - [ ] Repeat acceptance on both `IP8M-2696E-AI` and `IP8M-2796E-AI` when available,
   using Apple OS 27 clients. Record which model/client/path was actually exercised.
 - [ ] Update [Evidence](evidence.md) with concise real outcomes and outstanding failures;

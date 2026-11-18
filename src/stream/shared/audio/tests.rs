@@ -144,12 +144,15 @@ async fn production_av(recording: bool) {
         source: source.clone(),
         profile: VideoProfile::LIVE_1080P,
     };
-    let manager = StreamManager::new(
+    let recorder = crate::hsv::fmp4::Recorder::new(source.clone(), metrics.clone());
+    let job_budget = recorder.job_budget.clone();
+    let manager = StreamManager::with_job_budget(
         vec![video_source.clone()],
         source.clone(),
         true,
         Ipv4Addr::LOCALHOST.into(),
         metrics.clone(),
+        &job_budget,
     );
     let video = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let audio = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -195,7 +198,6 @@ async fn production_av(recording: bool) {
     assert!((2..=1800).contains(&seconds));
     let recording_task = if recording {
         assert!((20..=90).contains(&seconds));
-        let recorder = crate::hsv::fmp4::Recorder::new(source.clone(), metrics.clone());
         Some(tokio::spawn(async move {
             use crate::hsv::fmp4::{Message, RecorderConfig};
             recorder
@@ -300,6 +302,11 @@ async fn production_av(recording: bool) {
     registry.shutdown().await.unwrap();
     assert_eq!(manager.audio_pool.reserved_bytes(), 0);
     assert_eq!(source.snapshot().charged_bytes, 0);
+    let jobs = job_budget.snapshot();
+    assert_eq!(
+        (jobs.reserved_jobs, jobs.reserved_bytes, jobs.refusals),
+        (0, 0, 0)
+    );
     result.expect("production A/V deadline");
 }
 
