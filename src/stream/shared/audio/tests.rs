@@ -159,6 +159,7 @@ async fn production_av(recording: bool) {
     manager.inner.lock().await.sessions.insert(
         id.clone(),
         Session {
+            prepared_at: std::time::Instant::now(),
             id: id.clone(),
             controller_ip: "127.0.0.1".into(),
             video_port: video.local_addr().unwrap().port(),

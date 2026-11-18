@@ -82,7 +82,7 @@ pub(super) fn render(streams: &StreamResources, recording: &RecordingResources) 
         ),
         (
             "live_owned_sessions",
-            "Prepared sessions or retained live owners, including teardown.",
+            "Retained preparations or live owners, including pending expiry cleanup and teardown.",
             "gauge",
         ),
         (
@@ -167,7 +167,30 @@ pub(super) fn render(streams: &StreamResources, recording: &RecordingResources) 
         u8::from(streams.owners.is_some())
     )
     .unwrap();
+    for (name, value) in [
+        ("live_setup_byte_limit", streams.limits.setup_bytes as u64),
+        ("live_session_limit", streams.limits.live_sessions as u64),
+        (
+            "live_prepared_limit",
+            streams.limits.prepared_sessions as u64,
+        ),
+        (
+            "live_prepared_lifetime_seconds",
+            streams.limits.prepared_lifetime_seconds,
+        ),
+    ] {
+        writeln!(out, "# HELP amcrust_{name} Configured live admission limit.\n# TYPE amcrust_{name} gauge\namcrust_{name} {value}").unwrap();
+    }
+    for name in [
+        "live_setup_busy_total",
+        "live_start_busy_total",
+        "live_prepared_expired_total",
+    ] {
+        writeln!(out, "# HELP amcrust_{name} Live admission busy refusals or expired preparations.\n# TYPE amcrust_{name} counter").unwrap();
+    }
+    writeln!(out, "# HELP amcrust_live_owned_session_ids Retained live session identifiers, counted once across both tracks.\n# TYPE amcrust_live_owned_session_ids gauge").unwrap();
     if let Some(owners) = &streams.owners {
+        writeln!(out, "amcrust_live_owned_session_ids {}\namcrust_live_setup_busy_total {}\namcrust_live_start_busy_total {}\namcrust_live_prepared_expired_total {}", owners.live_sessions, owners.setup_busy, owners.start_busy, owners.expired_prepared).unwrap();
         for (label, value) in [
             ("prepared", owners.prepared_sessions),
             ("video", owners.video),
@@ -223,10 +246,15 @@ mod tests {
             main: source,
             sub_stream2: Some(source),
             live_opus: pool,
+            limits: Default::default(),
             owners: Some(LiveOwners {
                 prepared_sessions: 2,
                 video: 3,
                 audio: 1,
+                live_sessions: 3,
+                setup_busy: 2,
+                start_busy: 1,
+                expired_prepared: 4,
             }),
         };
         let mut recording = RecordingResources {
@@ -249,6 +277,10 @@ mod tests {
         );
         assert!(output.contains("amcrust_media_reserved_bytes{pool=\"recording_mux\"} 4096"));
         assert!(output.contains("amcrust_recording_history_bytes 456"));
+        assert!(output.contains("amcrust_live_start_busy_total 1"));
+        assert!(output.contains("amcrust_live_prepared_expired_total 4"));
+        assert!(output.contains("amcrust_live_session_limit 8"));
+        assert!(output.contains("amcrust_live_owned_session_ids 3"));
         assert!(output.contains("amcrust_live_owned_sessions{kind=\"prepared\"} 2"));
         streams.owners = None;
         recording.history = None;

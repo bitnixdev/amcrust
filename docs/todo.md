@@ -162,6 +162,11 @@ upstream FFmpeg libraries are not legacy acquisition fallbacks.
   - [x] Connect fixed-label source snapshots, live Opus/recording AAC/mux pool
     reservations, retained live-owner counts and recording history to production
     Prometheus and health responses. Scrapes report lock contention explicitly.
+  - [x] Bound live admission to 16 retained preparations and eight owned session IDs
+    across both tracks; bound setup metadata, reject starts after a 30-second preparation
+    deadline, and join completed owners before reclaiming slots. Expose caps, capacity
+    refusals and expired preparations through health/metrics. These are ceilings, not
+    a guarantee of eight A/V viewers; source/codec limits still apply.
   - [ ] Complete aggregate accounting/admission and recovery-state observability;
     evaluate pressure, actual native RSS and matched real production workloads.
     Per-source charges, history payloads and full-job reservations overlap and must

@@ -348,6 +348,33 @@ lock before acknowledging changes. Whole-camera live privacy transitions, automa
 controller outage recovery, allocator-wide accounting, and Apple recording acceptance
 remain separate open work.
 
+## Live-session admission and reclamation
+
+The single RTP-service manager admits at most 16 retained preparations and eight live
+session identifiers, counting video/audio for the same ID once. Limits apply under the
+same lock as socket reservation, stream publication and privacy transitions. A full
+budget returns SetupEndpoints Busy before socket allocation; Start checks capacity again.
+Replacing an existing ID does not require an additional live slot, but still revokes and
+joins the old owners before publishing replacements. Existing source/subscriber/codec
+budgets may refuse earlier: eight is a ceiling, not a supported-viewer guarantee.
+
+Setup payloads are limited to 1024 bytes and require a 16-byte session ID before retaining
+endpoints. Preparations have a 30-second monotonic start deadline. Expiration is checked
+on setup, setup read, status and start; cleanup drops expired sockets and clears a matching
+cached success response. This is lazy cleanup: idle expired sockets may remain retained
+within the 16-preparation cap until the next control operation, not a timer-driven eviction
+claim. No scrape or start can turn an expired preparation into a fresh grant.
+
+Before setup/start/status admission, completed live tasks are joined with their handles
+still in the owner maps, then removed. Running or cancellation-pending tasks are not
+discarded. A session remains counted while either track has an owner. Saturation does not
+revoke other viewers, recording or shared acquisition; privacy/shutdown gates still take
+precedence. Streaming status reports Busy at capacity and Unavailable when mode gates close.
+
+Health/Prometheus expose the caps, unique owned-ID count, setup/start capacity refusals
+and lazily observed expiration counter. These bounds cover live control/transport ownership,
+not aggregate allocator/native RSS, request-rate limiting or every application's allocation.
+
 ## Production resource telemetry
 
 The metrics server samples the actual StreamManager and Recorder, not diagnostic-only

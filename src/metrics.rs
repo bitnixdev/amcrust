@@ -622,6 +622,8 @@ mod tests {
         assert_eq!(health["health_scope"], "process_liveness");
         assert_eq!(health["media_backend"], "rust_shared_ffmpeg");
         assert_eq!(health["media"]["streams"]["main"]["open_attempts"], 0);
+        assert_eq!(health["media"]["streams"]["limits"]["live_sessions"], 8);
+        assert_eq!(health["media"]["streams"]["owners"]["setup_busy"], 0);
         assert_eq!(health["media"]["recording"]["mux"]["job_limit"], 1);
         assert!(health["media"]["streams"]["sub_stream2"].is_null());
 

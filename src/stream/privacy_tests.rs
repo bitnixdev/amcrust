@@ -4,7 +4,7 @@ use crate::hsv::recording::{HsvState, SelectedConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-fn setup(id: &[u8]) -> Vec<u8> {
+pub(super) fn setup(id: &[u8]) -> Vec<u8> {
     setup_at(id, 9, 9)
 }
 fn setup_at(id: &[u8], video_port: u16, audio_port: u16) -> Vec<u8> {
@@ -24,7 +24,7 @@ fn setup_at(id: &[u8], video_port: u16, audio_port: u16) -> Vec<u8> {
         .bytes(SETUP_AUDIO_SRTP, &crypto)
         .build()
 }
-fn start(id: &[u8]) -> Vec<u8> {
+pub(super) fn start(id: &[u8]) -> Vec<u8> {
     let control = tlv8::Writer::new()
         .bytes(CONTROL_SESSION_ID, id)
         .u8(CONTROL_COMMAND, COMMAND_START)
@@ -33,7 +33,7 @@ fn start(id: &[u8]) -> Vec<u8> {
         .bytes(SELECTED_SESSION_CONTROL, &control)
         .build()
 }
-async fn status(manager: &StreamManager) -> u8 {
+pub(super) async fn status(manager: &StreamManager) -> u8 {
     tlv8::find_u8(&tlv8::parse(&manager.streaming_status().await), 1).unwrap()
 }
 struct Directory(std::path::PathBuf);

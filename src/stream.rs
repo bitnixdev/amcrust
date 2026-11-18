@@ -14,6 +14,8 @@ use amcrust::media::rtcp;
 use amcrust::media::transport::{Error as TransportError, Transport};
 
 #[cfg(test)]
+mod admission_tests;
+#[cfg(test)]
 mod privacy_tests;
 mod shared;
 
@@ -99,7 +101,13 @@ const RTP_MAX_BITRATE: u8 = 0x03;
 const RTP_MIN_RTCP_INTERVAL: u8 = 0x04;
 const RTP_MAX_MTU: u8 = 0x05;
 
+pub(crate) const MAX_PREPARED_SESSIONS: usize = 16;
+pub(crate) const MAX_LIVE_SESSIONS: usize = 8;
+pub(crate) const PREPARED_LIFETIME: std::time::Duration = std::time::Duration::from_secs(30);
+const MAX_SETUP_BYTES: usize = 1024;
+
 struct Session {
+    prepared_at: std::time::Instant,
     id: Vec<u8>,
     controller_ip: String,
     video_port: u16,
@@ -128,9 +136,55 @@ struct Inner {
     /// Response for the most recent SetupEndpoints write, read back by the
     /// controller immediately after writing.
     setup_response: Vec<u8>,
+    setup_busy: u64,
+    start_busy: u64,
+    expired_prepared: u64,
 }
 
 impl Inner {
+    fn live_sessions(&self) -> usize {
+        self.video_proxies.len()
+            + self
+                .audio_proxies
+                .keys()
+                .filter(|id| !self.video_proxies.contains_key(*id))
+                .count()
+    }
+    fn owns_session(&self, id: &[u8]) -> bool {
+        self.video_proxies.contains_key(id) || self.audio_proxies.contains_key(id)
+    }
+    fn expire_prepared(&mut self) {
+        let now = std::time::Instant::now();
+        let response = tlv8::parse(&self.setup_response);
+        let response_id = tlv8::find(&response, SETUP_SESSION_ID);
+        let mut clear_response = false;
+        let before = self.sessions.len();
+        self.sessions.retain(|id, session| {
+            let keep = now.duration_since(session.prepared_at) < PREPARED_LIFETIME;
+            clear_response |=
+                !keep && response_id.is_some_and(|response_id| response_id == id.as_slice());
+            keep
+        });
+        self.expired_prepared = self
+            .expired_prepared
+            .saturating_add((before - self.sessions.len()) as u64);
+        if clear_response {
+            self.setup_response.clear();
+        }
+    }
+    async fn reap_finished(&mut self) {
+        for owner in self
+            .video_proxies
+            .values_mut()
+            .chain(self.audio_proxies.values_mut())
+        {
+            if owner.task.as_ref().is_none_or(|task| task.is_finished()) {
+                owner.join().await;
+            }
+        }
+        self.video_proxies.retain(|_, owner| owner.task.is_some());
+        self.audio_proxies.retain(|_, owner| owner.task.is_some());
+    }
     // Keep owners in the maps across awaits: cancellation must not detach a join.
     async fn stop(&mut self, session: Option<&[u8]>) {
         self.revoke_transports(session);
@@ -181,12 +235,34 @@ pub struct StreamResources {
     pub sub_stream2: Option<amcrust::source::Snapshot>,
     pub live_opus: amcrust::media::PoolSnapshot,
     pub owners: Option<LiveOwners>,
+    pub limits: LiveAdmissionLimits,
+}
+#[derive(Debug, serde::Serialize)]
+pub struct LiveAdmissionLimits {
+    pub prepared_sessions: usize,
+    pub live_sessions: usize,
+    pub prepared_lifetime_seconds: u64,
+    pub setup_bytes: usize,
+}
+impl Default for LiveAdmissionLimits {
+    fn default() -> Self {
+        Self {
+            prepared_sessions: MAX_PREPARED_SESSIONS,
+            live_sessions: MAX_LIVE_SESSIONS,
+            prepared_lifetime_seconds: PREPARED_LIFETIME.as_secs(),
+            setup_bytes: MAX_SETUP_BYTES,
+        }
+    }
 }
 #[derive(Debug, serde::Serialize)]
 pub struct LiveOwners {
     pub prepared_sessions: usize,
     pub video: usize,
     pub audio: usize,
+    pub live_sessions: usize,
+    pub setup_busy: u64,
+    pub start_busy: u64,
+    pub expired_prepared: u64,
 }
 
 impl StreamManager {
@@ -200,10 +276,15 @@ impl StreamManager {
                 .find(|s| !s.source.same_owner(&self.audio_source))
                 .map(|s| s.source.snapshot()),
             live_opus: self.audio_pool.snapshot(),
+            limits: LiveAdmissionLimits::default(),
             owners: self.inner.try_lock().ok().map(|inner| LiveOwners {
                 prepared_sessions: inner.sessions.len(),
                 video: inner.video_proxies.len(),
                 audio: inner.audio_proxies.len(),
+                live_sessions: inner.live_sessions(),
+                setup_busy: inner.setup_busy,
+                start_busy: inner.start_busy,
+                expired_prepared: inner.expired_prepared,
             }),
         }
     }
@@ -268,6 +349,11 @@ impl StreamManager {
     /// Handles a controller write to SetupEndpoints and prepares the response
     /// that the controller will read back.
     pub async fn handle_setup_write(&self, payload: Vec<u8>) {
+        if payload.len() > MAX_SETUP_BYTES {
+            self.inner.lock().await.setup_response =
+                tlv8::Writer::new().u8(SETUP_STATUS, 2).build();
+            return;
+        }
         let items = tlv8::parse(&payload);
 
         // Status is a response-only tag, not a valid setup request.
@@ -282,6 +368,12 @@ impl StreamManager {
 
         // Serialize admission, socket reservation and publication with privacy.
         let mut inner = self.inner.lock().await;
+        if session_id.len() != 16 {
+            inner.setup_response = tlv8::Writer::new().u8(SETUP_STATUS, 2).build();
+            return;
+        }
+        inner.expire_prepared();
+        inner.reap_finished().await;
         if inner.disabled
             || inner.live_disabled
             || inner.shutdown
@@ -290,6 +382,17 @@ impl StreamManager {
             inner.setup_response = tlv8::Writer::new()
                 .bytes(SETUP_SESSION_ID, &session_id)
                 .u8(SETUP_STATUS, 2)
+                .build();
+            return;
+        }
+        if (inner.sessions.len() >= MAX_PREPARED_SESSIONS
+            && !inner.sessions.contains_key(&session_id))
+            || (inner.live_sessions() >= MAX_LIVE_SESSIONS && !inner.owns_session(&session_id))
+        {
+            inner.setup_busy = inner.setup_busy.saturating_add(1);
+            inner.setup_response = tlv8::Writer::new()
+                .bytes(SETUP_SESSION_ID, &session_id)
+                .u8(SETUP_STATUS, 1)
                 .build();
             return;
         }
@@ -349,6 +452,7 @@ impl StreamManager {
         };
         let audio_local_port = audio_out_socket.local_addr().map(|a| a.port()).unwrap_or(0);
         let session = Session {
+            prepared_at: std::time::Instant::now(),
             id: session_id.clone(),
             controller_ip: controller_ip.clone(),
             video_port,
@@ -395,7 +499,8 @@ impl StreamManager {
 
     /// The response to a controller read of SetupEndpoints.
     pub async fn setup_read(&self) -> Option<Vec<u8>> {
-        let inner = self.inner.lock().await;
+        let mut inner = self.inner.lock().await;
+        inner.expire_prepared();
         if inner.setup_response.is_empty() {
             None
         } else {
@@ -405,7 +510,9 @@ impl StreamManager {
 
     /// Report unavailable while privacy or shutdown closes admission.
     pub async fn streaming_status(&self) -> Vec<u8> {
-        let inner = self.inner.lock().await;
+        let mut inner = self.inner.lock().await;
+        inner.expire_prepared();
+        inner.reap_finished().await;
         tlv8::Writer::new()
             .u8(
                 0x01,
@@ -415,6 +522,10 @@ impl StreamManager {
                     || self.available_video_sources().is_empty()
                 {
                     2
+                } else if inner.live_sessions() >= MAX_LIVE_SESSIONS
+                    || inner.sessions.len() >= MAX_PREPARED_SESSIONS
+                {
+                    1
                 } else {
                     0
                 },
@@ -561,6 +672,17 @@ impl StreamManager {
             && (inner.main_blocked
                 || *self.main_profile.read().unwrap() != Some(video_source.profile))
         {
+            return false;
+        }
+        inner.expire_prepared();
+        inner.reap_finished().await;
+        let requested = session_id.as_deref().or_else(|| {
+            (inner.sessions.len() == 1).then(|| inner.sessions.keys().next().unwrap().as_slice())
+        });
+        if inner.live_sessions() >= MAX_LIVE_SESSIONS
+            && !requested.is_some_and(|id| inner.owns_session(id))
+        {
+            inner.start_busy = inner.start_busy.saturating_add(1);
             return false;
         }
         let session = match &session_id {
@@ -1041,6 +1163,7 @@ mod tests {
         manager.inner.lock().await.sessions.insert(
             id.clone(),
             Session {
+                prepared_at: std::time::Instant::now(),
                 id: id.clone(),
                 controller_ip: "127.0.0.1".into(),
                 video_port: controller.local_addr().unwrap().port(),

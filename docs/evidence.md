@@ -28,6 +28,33 @@ as application library code and is wired into `src/main.rs` for live video/audio
 MediaMTX was investigated but not added or launched. Apple HSV acceptance, full live
 privacy transitions and unattended recovery remain separate requirements.
 
+### Bounded live preparation and session admission
+
+Local tests exercise production control paths using loopback UDP reservations and
+controlled task owners, without opening a camera acquisition:
+- 32 concurrent setup writes retain exactly 16 preparations and report 16 capacity
+  refusals. Replacing an existing preparation does not require a new slot.
+- Advancing preparation timestamps past the 30-second deadline rejects Start both
+  with and without a preceding read; stale success/key responses are cleared and
+  expired UDP ports can be rebound. Fresh preparation remains possible.
+- Eight retained video session IDs plus an audio owner for an existing ID count as
+  eight, not nine. New setup/start is refused without revoking existing transports.
+  Same-ID setup remains possible. Finishing video alone does not release a session
+  still owned by audio; completing and joining both restores admission.
+- Oversized setup metadata and non-16-byte IDs retain no endpoints. Source open
+  attempts remain zero throughout these admission checks.
+- Health and Prometheus cover limits, retained IDs and refusal/expiration counters.
+
+Preparations use lazy cleanup on control operations, not timed eviction of idle sockets.
+The eight-session ceiling does not override tighter source/codec budgets or establish
+eight-viewer playback support. No camera access, deployment, Apple acceptance, native RSS
+measurement or outage qualification is claimed.
+
+Validation: 51 library +76 application +16 HAP tests, workspace integration checks and
+three HAP doctests, all-target compilation, strict library Clippy, formatting and two
+sampler tests passed. The bounded review returned no findings and the pinned Nix package
+build passed. The existing metrics fetch_update warning is unchanged.
+
 ### Shared-source and media-resource telemetry
 
 Production /metrics and /health now read the actual shared-source and media owners.
