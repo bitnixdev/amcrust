@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::hsv::recording::HsvState;
+use crate::stream::StreamManager;
+mod media;
 
 #[derive(Clone, Copy)]
 pub enum ErrorSubsystem {
@@ -236,7 +238,12 @@ impl Metrics {
         u8::from(value.load(Ordering::Relaxed))
     }
 
-    pub(crate) fn render(&self, recording_pipeline_running: bool) -> String {
+    pub(crate) fn render(&self, recording_pipeline_running: impl Into<Option<bool>>) -> String {
+        let pipeline = match recording_pipeline_running.into() {
+            Some(true) => "1",
+            Some(false) => "0",
+            None => "NaN",
+        };
         let mut output = format!(
             concat!(
                 "# HELP amcrust_build_info Build and version information.\n",
@@ -322,7 +329,7 @@ impl Metrics {
             Self::load(&self.live_connections),
             Self::load(&self.data_stream_connections),
             u8::from(Self::load(&self.live_connections) > 0),
-            u8::from(recording_pipeline_running),
+            pipeline,
             Self::flag(&self.recording_stream_active),
             Self::flag(&self.motion_active),
             Self::load(&self.event_reconnects),
@@ -418,17 +425,23 @@ pub fn start_hourly_stderr_reporter(metrics: Arc<Metrics>) -> tokio::task::JoinH
 struct HttpState {
     metrics: Arc<Metrics>,
     hsv: Arc<HsvState>,
+    streams: StreamManager,
 }
 
 pub fn start_server(
     addr: SocketAddr,
     metrics: Arc<Metrics>,
     hsv: Arc<HsvState>,
+    streams: StreamManager,
 ) -> Result<(tokio::task::JoinHandle<()>, SocketAddr), Box<dyn std::error::Error>> {
     let listener = std::net::TcpListener::bind(addr)?;
     let bound_addr = listener.local_addr()?;
     listener.set_nonblocking(true)?;
-    let state = HttpState { metrics, hsv };
+    let state = HttpState {
+        metrics,
+        hsv,
+        streams,
+    };
     let service = make_service_fn(move |_| {
         let state = state.clone();
         async move { Ok::<_, Infallible>(service_fn(move |request| handle(request, state.clone()))) }
@@ -445,9 +458,13 @@ pub fn start_server(
 async fn handle(request: Request<Body>, state: HttpState) -> Result<Response<Body>, Infallible> {
     let response = match (request.method(), request.uri().path()) {
         (&Method::GET, "/health") => {
-            let recording_pipeline_running = state.hsv.recorder.is_running().await;
+            let recording = state.hsv.recorder.resources();
+            let recording_pipeline_running = recording.history.as_ref().map(|h| h.pipeline_running);
             let body = serde_json::json!({
                 "status": "ok",
+                "health_scope": "process_liveness",
+                "media_backend": "rust_shared_ffmpeg",
+                "media": { "streams": state.streams.resources(), "recording": recording },
                 "uptime_seconds": state.metrics.started.elapsed().as_secs_f64(),
                 "event_stream_connected": state.metrics.event_stream_connected.load(Ordering::Relaxed),
                 "live_connections": state.metrics.live_connections.load(Ordering::Relaxed),
@@ -460,11 +477,16 @@ async fn handle(request: Request<Body>, state: HttpState) -> Result<Response<Bod
             typed_response(StatusCode::OK, "application/json", body.to_string())
         }
         (&Method::GET, "/metrics") => {
-            let recording_pipeline_running = state.hsv.recorder.is_running().await;
+            let recording = state.hsv.recorder.resources();
+            let recording_pipeline_running = recording.history.as_ref().map(|h| h.pipeline_running);
             typed_response(
                 StatusCode::OK,
                 "text/plain; version=0.0.4; charset=utf-8",
-                state.metrics.render(recording_pipeline_running),
+                format!(
+                    "{}{}",
+                    state.metrics.render(recording_pipeline_running),
+                    media::render(&state.streams.resources(), &recording)
+                ),
             )
         }
         _ => typed_response(
@@ -568,9 +590,23 @@ mod tests {
                 main_bitrate_range: Some((3, 8192)),
                 ..Default::default()
             },
-            source,
+            source.clone(),
         );
-        let state = HttpState { metrics, hsv };
+        let streams = crate::stream::StreamManager::new(
+            vec![crate::stream::VideoSource {
+                source: source.clone(),
+                profile: crate::amcrest::VideoProfile::LIVE_1080P,
+            }],
+            source,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            metrics.clone(),
+        );
+        let state = HttpState {
+            metrics,
+            hsv,
+            streams,
+        };
 
         let health = handle(
             Request::get("/health").body(Body::empty()).unwrap(),
@@ -581,7 +617,13 @@ mod tests {
         assert_eq!(health.status(), StatusCode::OK);
         assert_eq!(health.headers()["content-type"], "application/json");
         let health_body = hyper::body::to_bytes(health.into_body()).await.unwrap();
-        assert!(String::from_utf8_lossy(&health_body).contains("\"status\":\"ok\""));
+        let health: serde_json::Value = serde_json::from_slice(&health_body).unwrap();
+        assert_eq!(health["status"], "ok");
+        assert_eq!(health["health_scope"], "process_liveness");
+        assert_eq!(health["media_backend"], "rust_shared_ffmpeg");
+        assert_eq!(health["media"]["streams"]["main"]["open_attempts"], 0);
+        assert_eq!(health["media"]["recording"]["mux"]["job_limit"], 1);
+        assert!(health["media"]["streams"]["sub_stream2"].is_null());
 
         let response = handle(Request::get("/metrics").body(Body::empty()).unwrap(), state)
             .await
@@ -594,7 +636,14 @@ mod tests {
                 .starts_with("text/plain; version=0.0.4")
         );
         let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
-        assert!(String::from_utf8_lossy(&body).contains("amcrust_uptime_seconds"));
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("amcrust_uptime_seconds"));
+        assert!(body.contains("amcrust_source_registered{encoder=\"main\"} 1"));
+        assert!(body.contains("amcrust_source_registered{encoder=\"sub_stream2\"} 0"));
+        assert!(body.contains("amcrust_media_job_limit{pool=\"live_opus\"} 8"));
+        assert!(body.contains("amcrust_recording_history_entries 0"));
+        assert!(!body.contains("rtsp://") && !body.contains("password"));
+        assert_eq!(health["media"]["streams"]["main"]["active"], false);
         registry.shutdown().await.unwrap();
     }
 }

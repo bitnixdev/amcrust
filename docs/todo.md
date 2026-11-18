@@ -159,8 +159,13 @@ upstream FFmpeg libraries are not legacy acquisition fallbacks.
     Charges are conservative logical ownership accounting, not allocator/RSS limits.
   - [x] Bound recording history, AAC jobs/outputs, clip jobs, selected input, emitted
     bytes and HDS queues; retain charges with escaped output permissions.
-  - [ ] Connect complete Prometheus source/job accounting and evaluate aggregate
-    pressure, actual native RSS and matched real production workloads.
+  - [x] Connect fixed-label source snapshots, live Opus/recording AAC/mux pool
+    reservations, retained live-owner counts and recording history to production
+    Prometheus and health responses. Scrapes report lock contention explicitly.
+  - [ ] Complete aggregate accounting/admission and recovery-state observability;
+    evaluate pressure, actual native RSS and matched real production workloads.
+    Per-source charges, history payloads and full-job reservations overlap and must
+    not be summed as allocator memory.
 
 ## 3. Wire consumers and remove direct camera readers
 

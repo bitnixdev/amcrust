@@ -92,7 +92,13 @@ acceptance. Snapshot JPEG scaling still uses the FFmpeg executable.
 - **Health and metrics**: a separate HTTP listener serves JSON at `/health` and
   Prometheus text exposition at `/metrics`, suitable for Prometheus or
   VictoriaMetrics scraping. Metrics cover uptime, camera events, errors,
-  snapshots, reconnects, open connections, motion, and live/recording video.
+  snapshots, reconnects, open connections, motion, and live/recording video. Shared-source
+  gauges/counters expose generation, opens, faults, subscribers, charged bytes/limits and
+  delivery age. Codec/mux reservations, retained live owners and recording history are
+  also exposed with fixed labels. These are overlapping logical ownership views, **not
+  RSS**. Scrapes do not wait behind media ownership locks: unavailable samples are explicit.
+  `/health` identifies the shared backend and reports process liveness, not camera or
+  playback readiness.
 
 ## Building
 

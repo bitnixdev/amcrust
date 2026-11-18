@@ -175,7 +175,38 @@ pub struct StreamManager {
     metrics: Arc<Metrics>,
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct StreamResources {
+    pub main: amcrust::source::Snapshot,
+    pub sub_stream2: Option<amcrust::source::Snapshot>,
+    pub live_opus: amcrust::media::PoolSnapshot,
+    pub owners: Option<LiveOwners>,
+}
+#[derive(Debug, serde::Serialize)]
+pub struct LiveOwners {
+    pub prepared_sessions: usize,
+    pub video: usize,
+    pub audio: usize,
+}
+
 impl StreamManager {
+    /// Nonblocking scrape: unavailable owner counts are explicit, not fabricated zeroes.
+    pub fn resources(&self) -> StreamResources {
+        StreamResources {
+            main: self.audio_source.snapshot(),
+            sub_stream2: self
+                .video_sources
+                .iter()
+                .find(|s| !s.source.same_owner(&self.audio_source))
+                .map(|s| s.source.snapshot()),
+            live_opus: self.audio_pool.snapshot(),
+            owners: self.inner.try_lock().ok().map(|inner| LiveOwners {
+                prepared_sessions: inner.sessions.len(),
+                video: inner.video_proxies.len(),
+                audio: inner.audio_proxies.len(),
+            }),
+        }
+    }
     pub fn new(
         video_sources: Vec<VideoSource>,
         audio_source: amcrust::source::Source,

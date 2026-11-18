@@ -324,8 +324,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let requested_metrics_addr = std::net::SocketAddr::from(([0, 0, 0, 0], args.metrics_port));
-    let (_metrics_server, metrics_addr) =
-        metrics::start_server(requested_metrics_addr, metrics.clone(), hsv_state.clone())?;
+    let (_metrics_server, metrics_addr) = metrics::start_server(
+        requested_metrics_addr,
+        metrics.clone(),
+        hsv_state.clone(),
+        streams.clone(),
+    )?;
     let _stats_reporter = metrics::start_hourly_stderr_reporter(metrics.clone());
     info!("health and metrics HTTP server on {metrics_addr}");
 

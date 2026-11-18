@@ -152,7 +152,7 @@ struct Metrics {
     oldest_ms: AtomicU64,
     clock: Mutex<Option<clock::Observations>>,
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct Snapshot {
     pub active: bool,
     pub generation: u64,
@@ -161,6 +161,7 @@ pub struct Snapshot {
     pub subscribers: usize,
     pub skipped_initial_clocks: u64,
     pub charged_bytes: usize,
+    pub byte_limit: usize,
     /// Queued AND held delivery age for active subscriptions, not just channel residence.
     pub oldest_delivery_ms: u64,
 }
@@ -241,6 +242,7 @@ impl Source {
             subscribers: self.metrics.subscribers.load(Ordering::Relaxed),
             skipped_initial_clocks: self.metrics.missing_clocks.load(Ordering::Relaxed),
             charged_bytes: self.byte_limit - self.bytes.available_permits(),
+            byte_limit: self.byte_limit,
             oldest_delivery_ms: self.metrics.oldest_ms.load(Ordering::Relaxed),
         }
     }

@@ -1,6 +1,31 @@
 use super::*;
 
 #[tokio::test]
+async fn resource_snapshot_reports_contention_without_waiting_or_zeroing_history() {
+    let mut registry = amcrust::source::Registry::new(Default::default()).unwrap();
+    let source = registry
+        .register(
+            amcrust::source::SourceKey {
+                camera: 1,
+                encoder: amcrust::source::Encoder::Main,
+            },
+            amcrust::ingest::CameraUrl::new("rtsp://127.0.0.1:9/unused".into()).unwrap(),
+        )
+        .unwrap();
+    let recorder = Recorder::new(source, Metrics::new());
+    let guard = recorder.state.lock().await;
+    let busy = recorder.resources();
+    assert!(busy.history.is_none());
+    assert_eq!(busy.aac.reserved_jobs, 0);
+    assert_eq!(busy.mux.job_limit, 1);
+    drop(guard);
+    let idle = recorder.resources();
+    assert_eq!(idle.history.unwrap().entries, 0);
+    recorder.stop().await;
+    registry.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn cancelled_join_keeps_native_owner_reachable() {
     let (release, wait) = tokio::sync::oneshot::channel::<()>();
     let producer = ProducerOwner(Mutex::new(Some(tokio::spawn(async move {

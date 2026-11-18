@@ -622,8 +622,10 @@ async fn cancelled_teardown_keeps_join_ownership_and_shutdown_admission_closed()
             .is_err()
     );
     assert!(control.is_closed());
+    assert_eq!(manager.resources().owners.unwrap().video, 1);
     {
         let inner = manager.inner.lock().await;
+        assert!(manager.resources().owners.is_none());
         assert!(inner.shutdown && inner.disabled);
         assert!(inner.video_proxies.get(&vec![1]).unwrap().task.is_some());
     }

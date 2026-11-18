@@ -348,6 +348,33 @@ lock before acknowledging changes. Whole-camera live privacy transitions, automa
 controller outage recovery, allocator-wide accounting, and Apple recording acceptance
 remain separate open work.
 
+## Production resource telemetry
+
+The metrics server samples the actual StreamManager and Recorder, not diagnostic-only
+copies. Source snapshots expose fixed main/sub_stream2 roles, registration/activity,
+generation, open/fault counters, subscriber counts, logical charges/limits and sampled
+oldest active-subscription delivery age. Unregistered substream roles are marked absent,
+not given fabricated source counters. Observation never subscribes or opens acquisition.
+
+Live Opus, recording AAC and recording mux pools expose reserved jobs/bytes and limits.
+Reserved slots include ownership retained by output objects; they are not thread or
+active-codec counts. Live owner counts include prepared sessions and retained video/audio
+owners, including teardown. Recording history reports payload bytes, entries, end-time
+span and retained clip owners. These views overlap: source charges, history payloads and
+full finite-job reservations cannot be summed as memory use or compared directly to RSS.
+
+Owner/history sampling uses try-locks. If contended, health returns null for that view,
+Prometheus emits an availability gauge of zero and omits its dependent counts. The
+existing recording-pipeline gauge is NaN rather than false when its state is unavailable.
+Source/pool fields are independently sampled; the result is not an atomic global ledger.
+The old awaited recorder-state lookup is removed from HTTP scrapes.
+
+Health's status is explicitly process liveness and its backend identifier describes the
+shared production implementation. An active generation or pipeline does not establish
+decoded playback, capture synchronization or camera readiness. Allocator/native RSS,
+complete aggregate admission, richer recovery-state metrics and matched real workload
+evaluation remain separate work.
+
 ## Encoder configuration transactions
 
 Recording selection now coordinates configuration, camera mode and recorder ownership.

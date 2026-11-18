@@ -28,6 +28,33 @@ as application library code and is wired into `src/main.rs` for live video/audio
 MediaMTX was investigated but not added or launched. Apple HSV acceptance, full live
 privacy transitions and unattended recovery remain separate requirements.
 
+### Shared-source and media-resource telemetry
+
+Production /metrics and /health now read the actual shared-source and media owners.
+They expose source generations/open attempts/faults/subscribers/charges/limits/age,
+three fixed-role media pools, retained live owners and recording history. Health names
+the shared backend and explicitly identifies its status as process liveness.
+
+Local checks verify:
+- Pool snapshots follow held job/byte permits across owner clones and return to zero
+  after release. These checks exercise reservation accounting, not codec allocation/RSS.
+- Source, pool, owner and history values format with fixed labels and units; absent
+  sources are distinguished from registered idle sources.
+- Contended owner/history locks report unavailable without awaiting teardown or
+  substituting zero counts. The pipeline gauge becomes NaN when unavailable.
+- HTTP routes expose the health schema and Prometheus values without credentials/URLs
+  or opening acquisition. Existing cancelled-teardown checks observe retained owners
+  before their joins complete.
+
+Validation passed: **51 library +73 application +16 HAP tests**, workspace integration
+checks and three HAP doctests, all-target compilation, strict application-library Clippy,
+formatting, two sampler tests and the pinned Nix package. The bounded review returned
+no findings. The existing metrics `fetch_update` warning remains unchanged.
+
+The old awaited recorder-state scrape is removed. Samples are not globally atomic,
+and source charges/history bytes/full-job reservations overlap. No new camera access,
+deployment, recovery soak, RSS measurement or matched-workload savings claim is made.
+
 ### RTP-service Active and independent live shutdown
 
 The previously hard-coded RTP Stream Management Active value is now backed by a

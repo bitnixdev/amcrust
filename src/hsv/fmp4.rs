@@ -128,7 +128,38 @@ pub struct Recorder {
     mux_pool: fmp4::Pool,
     metrics: Arc<Metrics>,
 }
+#[derive(Debug, serde::Serialize)]
+pub struct RecordingResources {
+    pub aac: amcrust::media::PoolSnapshot,
+    pub mux: amcrust::media::PoolSnapshot,
+    pub history: Option<HistoryResources>,
+}
+#[derive(Debug, serde::Serialize)]
+pub struct HistoryResources {
+    pub pipeline_running: bool,
+    pub bytes: usize,
+    pub entries: usize,
+    pub end_span_seconds: f64,
+    pub clip_owners: usize,
+}
+
 impl Recorder {
+    /// Do not wait behind publication/teardown on the metrics HTTP path.
+    pub fn resources(&self) -> RecordingResources {
+        RecordingResources {
+            aac: self.audio_pool.snapshot(),
+            mux: self.mux_pool.snapshot(),
+            history: self.state.try_lock().ok().map(|state| HistoryResources {
+                pipeline_running: state.stop.as_ref().is_some_and(Lease::current),
+                bytes: state.bytes,
+                entries: state.frames.len(),
+                clip_owners: state.clips.len(),
+                end_span_seconds: state.frames.front().map_or(0.0, |oldest| {
+                    (state.latest - oldest.end).max(0) as f64 / 1_000_000_000.0
+                }),
+            }),
+        }
+    }
     pub fn new(source: Source, metrics: Arc<Metrics>) -> Self {
         Self {
             lifetime: Arc::new(Lifetime::default()),
@@ -246,6 +277,7 @@ impl Recorder {
             .unwrap_or_else(|p| p.into_inner())
             .take();
     }
+    #[cfg(test)]
     pub async fn is_running(&self) -> bool {
         self.state
             .lock()

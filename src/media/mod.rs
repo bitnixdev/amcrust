@@ -1,5 +1,15 @@
 //! Rust media building blocks and the shared production SRTP/SRTCP boundary.
 //! Application producers retain these grants through their HomeKit transports.
+/// Logical admission reservations, including ownership retained by escaped outputs.
+/// Fields are sampled independently; this is not allocator usage or RSS.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct PoolSnapshot {
+    pub reserved_jobs: usize,
+    pub job_limit: usize,
+    pub reserved_bytes: usize,
+    pub byte_limit: usize,
+}
+
 pub mod audio;
 mod audio_clock;
 mod audio_recovery;
