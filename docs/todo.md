@@ -112,8 +112,10 @@ upstream FFmpeg libraries are not legacy acquisition fallbacks.
     A real camera relay check then recovered authenticated IDR output in generation 3
     after two setup failures, without source reset or endpoint replacement. Mid-stream
     outages, physical camera reboot and production recovery are still unqualified.
-  - [ ] Exercise real disconnect/stall/retry and changing camera parameters; connect
-    source recovery/configuration to production owners.
+  - [x] Connect production encoder configuration to source retirement and fresh retry
+    state, with live-profile updates and independent recording-output changes.
+  - [ ] Exercise real disconnect/stall/retry and approved changing camera parameters;
+    qualify controller recovery rather than merely fresh application demand.
 - [ ] Device clocks: handle the observed missing first video PTS/DTS and irregular
   clock steps explicitly. Measure real RTCP cadence and A/V behavior; do not paste in
   fixture deadlines, invent reordered DTS, independently zero tracks or silently keep
@@ -330,8 +332,12 @@ upstream FFmpeg libraries are not legacy acquisition fallbacks.
     Local encrypted delivery/backpressure checks pass; no new camera access was used.
   - [ ] Qualify per-stream Active behavior, other Home camera modes and Apple behavior
     when snapshot retirement closes a connection mid-response.
-  - [ ] Retire affected shared sources before encoder changes and refresh live profile
-    selection; recording-only reconciliation is not complete configuration ownership.
+  - [x] Retire the main source and join affected live/recording owners before encoder
+    writes; invalidate snapshot epochs, publish refreshed live profiles only on success,
+    and propagate settings errors. Failed/cancelled encoder transitions stay blocked
+    across privacy toggles until a successful retry. Remove wrong-format substitution.
+  - [ ] Qualify approved real encoder transitions and firmware-induced substream resets;
+    the transaction/isolation evidence is local and does not establish Apple recovery.
   - [x] Join recording disable/configuration replacement and preserve live subscribers;
     simultaneous production live A/V survived recording stop in the 60-second check.
     Recording output-rate changes no longer reconfigure acquisition audio.

@@ -334,6 +334,7 @@ pub(super) struct Video {
     pub interval: Duration,
 }
 pub(super) fn spawn(video: Video, metrics: Arc<Metrics>) -> MediaProxy {
+    let source = video.source.clone();
     let control = Control::pending();
     let owner = control.clone();
     let task_metrics = metrics.clone();
@@ -355,6 +356,7 @@ pub(super) fn spawn(video: Video, metrics: Arc<Metrics>) -> MediaProxy {
         }
     });
     MediaProxy {
+        source,
         transport: control,
         task: Some(task),
     }

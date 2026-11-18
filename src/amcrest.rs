@@ -273,6 +273,7 @@ pub struct VideoProfile {
 }
 
 impl VideoProfile {
+    #[cfg(test)]
     pub const LIVE_1080P: Self = Self {
         width: 1920,
         height: 1080,

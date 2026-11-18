@@ -18,6 +18,7 @@ mod privacy_tests;
 mod shared;
 
 struct MediaProxy {
+    source: amcrust::source::Source,
     transport: shared::Control,
     task: Option<tokio::task::JoinHandle<()>>,
 }
@@ -116,6 +117,7 @@ struct Session {
 #[derive(Default)]
 struct Inner {
     disabled: bool,
+    main_blocked: bool,
     shutdown: bool,
     /// Prepared sessions and running streams, keyed by HAP session id.
     sessions: std::collections::HashMap<Vec<u8>, Session>,
@@ -164,6 +166,7 @@ pub struct VideoSource {
 pub struct StreamManager {
     inner: Arc<Mutex<Inner>>,
     video_sources: Vec<VideoSource>,
+    main_profile: Arc<std::sync::RwLock<Option<VideoProfile>>>,
     audio_source: amcrust::source::Source,
     audio_pool: amcrust::media::audio::Pool,
     audio: bool,
@@ -183,7 +186,12 @@ impl StreamManager {
             !video_sources.is_empty(),
             "at least one live source is required"
         );
+        let main_profile = video_sources
+            .iter()
+            .find(|v| v.source.same_owner(&audio_source))
+            .map(|v| v.profile);
         Self {
+            main_profile: Arc::new(std::sync::RwLock::new(main_profile)),
             inner: Arc::new(Mutex::new(Inner::default())),
             video_sources,
             audio_source,
@@ -199,10 +207,26 @@ impl StreamManager {
         self.audio
     }
 
+    fn available_video_sources(&self) -> Vec<VideoSource> {
+        let mut sources: Vec<_> = self
+            .video_sources
+            .iter()
+            .filter(|v| !v.source.same_owner(&self.audio_source))
+            .cloned()
+            .collect();
+        if let Some(profile) = *self.main_profile.read().unwrap() {
+            sources.push(VideoSource {
+                source: self.audio_source.clone(),
+                profile,
+            });
+        }
+        sources
+    }
+
     pub fn supported_video_config(&self) -> Vec<u8> {
         supported_video_config(
             &self
-                .video_sources
+                .available_video_sources()
                 .iter()
                 .map(|source| source.profile)
                 .collect::<Vec<_>>(),
@@ -214,9 +238,7 @@ impl StreamManager {
     pub async fn handle_setup_write(&self, payload: Vec<u8>) {
         let items = tlv8::parse(&payload);
 
-        // hap-rs applies on_read results via set_value, which re-fires this
-        // on_update handler with our own response. Requests never carry a
-        // status tag — if one is present, this is that echo; ignore it.
+        // Status is a response-only tag, not a valid setup request.
         if tlv8::find(&items, SETUP_STATUS).is_some() {
             return;
         }
@@ -228,7 +250,7 @@ impl StreamManager {
 
         // Serialize admission, socket reservation and publication with privacy.
         let mut inner = self.inner.lock().await;
-        if inner.disabled || inner.shutdown {
+        if inner.disabled || inner.shutdown || self.available_video_sources().is_empty() {
             inner.setup_response = tlv8::Writer::new()
                 .bytes(SETUP_SESSION_ID, &session_id)
                 .u8(SETUP_STATUS, 2)
@@ -351,7 +373,7 @@ impl StreamManager {
         tlv8::Writer::new()
             .u8(
                 0x01,
-                if inner.disabled || inner.shutdown {
+                if inner.disabled || inner.shutdown || self.available_video_sources().is_empty() {
                     2
                 } else {
                     0
@@ -361,7 +383,10 @@ impl StreamManager {
     }
 
     /// Handles a controller write to SelectedRTPStreamConfiguration.
-    pub async fn handle_selected_write(&self, payload: Vec<u8>) {
+    pub async fn handle_selected_write(
+        &self,
+        payload: Vec<u8>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let items = tlv8::parse(&payload);
 
         let control = tlv8::find(&items, SELECTED_SESSION_CONTROL)
@@ -382,9 +407,11 @@ impl StreamManager {
                 let selected_width = tlv8::find_u16(&video_attributes, 0x01);
                 let selected_height = tlv8::find_u16(&video_attributes, 0x02);
                 let selected_fps = tlv8::find_u8(&video_attributes, 0x03);
+                let sources = self.available_video_sources();
                 let source =
-                    select_video_source(&self.video_sources, selected_width, selected_height)
-                        .clone();
+                    select_video_source(&sources, selected_width, selected_height, selected_fps)
+                        .cloned()
+                        .ok_or("selected live format has no current packet-copy source")?;
                 let rtp_params = tlv8::find(&video_params, VIDEO_RTP_PARAMS)
                     .map(|v| tlv8::parse(v))
                     .unwrap_or_default();
@@ -432,20 +459,24 @@ impl StreamManager {
                         _ => 16000,
                     };
 
-                self.start_stream(
-                    session_id,
-                    source,
-                    payload_type,
-                    max_mtu,
-                    audio_payload_type,
-                    audio_rate_hz,
-                    audio_packet_time,
-                    audio_max_bitrate,
-                    audio_rtcp_interval,
-                    audio_max_mtu,
-                    video_rtcp_interval,
-                )
-                .await;
+                if !self
+                    .start_stream(
+                        session_id,
+                        source,
+                        payload_type,
+                        max_mtu,
+                        audio_payload_type,
+                        audio_rate_hz,
+                        audio_packet_time,
+                        audio_max_bitrate,
+                        audio_rtcp_interval,
+                        audio_max_mtu,
+                        video_rtcp_interval,
+                    )
+                    .await
+                {
+                    return Err("live stream unavailable or unsupported".into());
+                }
             }
             Some(COMMAND_END) => {
                 debug!("stream end requested");
@@ -456,10 +487,11 @@ impl StreamManager {
                 self.end_session(session_id).await;
             }
             Some(COMMAND_RESUME) | Some(COMMAND_RECONFIGURE) => {
-                debug!("stream resume/reconfigure requested (ignored)");
+                return Err("resume/reconfigure requires fresh stream setup".into());
             }
-            other => warn!("unknown stream command: {other:?}"),
+            _ => return Err("unknown stream command".into()),
         }
+        Ok(())
     }
 
     async fn start_stream(
@@ -475,15 +507,21 @@ impl StreamManager {
         audio_rtcp_interval: f32,
         audio_max_mtu: u16,
         video_rtcp_interval: f32,
-    ) {
+    ) -> bool {
         if !video_rtcp_interval.is_finite() || !(0.0..=60.0).contains(&video_rtcp_interval) {
             self.metrics.error(ErrorSubsystem::LiveStream);
-            return;
+            return false;
         }
         let mut inner = self.inner.lock().await;
 
         if inner.disabled || inner.shutdown {
-            return;
+            return false;
+        }
+        if video_source.source.same_owner(&self.audio_source)
+            && (inner.main_blocked
+                || *self.main_profile.read().unwrap() != Some(video_source.profile))
+        {
+            return false;
         }
         let session = match &session_id {
             Some(sid) => inner.sessions.remove(sid),
@@ -496,7 +534,7 @@ impl StreamManager {
         };
         let Some(mut session) = session else {
             warn!("start requested but no matching session prepared");
-            return;
+            return false;
         };
 
         // Fence both tracks and retain their joins before replacing the session.
@@ -514,11 +552,11 @@ impl StreamManager {
         if wire_mtu < 188 {
             self.metrics.error(ErrorSubsystem::LiveStream);
             warn!("unsupported video MTU");
-            return;
+            return false;
         }
         let Ok(controller_ip) = session.controller_ip.parse() else {
             self.metrics.error(ErrorSubsystem::LiveStream);
-            return;
+            return false;
         };
         let clock = amcrust::media::presentation::PresentationClock::new();
         let video_proxy = shared::spawn(
@@ -544,6 +582,7 @@ impl StreamManager {
             warn!("unsupported audio MTU, audio disabled");
         }
         let audio_enabled = self.audio
+            && !inner.main_blocked
             && !session.audio_key.is_empty()
             && session.audio_out_socket.is_some()
             && audio_wire_mtu >= 188;
@@ -579,6 +618,7 @@ impl StreamManager {
             );
             inner.audio_proxies.insert(session.id.clone(), proxy);
         }
+        true
     }
 
     /// Ends the stream for one session (or all, if no id was given).
@@ -616,7 +656,9 @@ impl StreamManager {
             .map(|v| &v.source)
             .chain(std::iter::once(&self.audio_source))
         {
-            if let Err(error) = source.set_enabled(enabled).await {
+            let source_enabled =
+                enabled && !(inner.main_blocked && source.same_owner(&self.audio_source));
+            if let Err(error) = source.set_enabled(source_enabled).await {
                 failure = Some(error);
             }
         }
@@ -636,6 +678,61 @@ impl StreamManager {
             return Err(error);
         }
         inner.disabled = !enabled;
+        Ok(())
+    }
+
+    /// Fail-closed main-encoder transition. Unrelated video remains usable.
+    pub async fn begin_main_reconfiguration(&self) -> Result<(), amcrust::source::Terminal> {
+        let mut inner = self.inner.lock().await;
+        if inner.shutdown {
+            return Err(amcrust::source::Terminal::Shutdown);
+        }
+        inner.main_blocked = true;
+        *self.main_profile.write().unwrap() = None;
+        inner.sessions.clear();
+        inner.setup_response.clear();
+        for owner in inner
+            .video_proxies
+            .values()
+            .chain(inner.audio_proxies.values())
+        {
+            if owner.source.same_owner(&self.audio_source) {
+                owner.transport.revoke();
+            }
+        }
+        self.audio_source.set_enabled(false).await?;
+        for owner in inner.video_proxies.values_mut() {
+            if owner.source.same_owner(&self.audio_source) {
+                owner.join().await;
+            }
+        }
+        for owner in inner.audio_proxies.values_mut() {
+            if owner.source.same_owner(&self.audio_source) {
+                owner.join().await;
+            }
+        }
+        inner
+            .video_proxies
+            .retain(|_, p| !p.source.same_owner(&self.audio_source));
+        inner
+            .audio_proxies
+            .retain(|_, p| !p.source.same_owner(&self.audio_source));
+        Ok(())
+    }
+
+    pub async fn finish_main_reconfiguration(
+        &self,
+        profile: Option<VideoProfile>,
+    ) -> Result<(), amcrust::source::Terminal> {
+        let mut inner = self.inner.lock().await;
+        if inner.shutdown {
+            return Err(amcrust::source::Terminal::Shutdown);
+        }
+        // Confirmed settings define a fresh attempt, not the failed old policy's cooldown.
+        self.audio_source.reset().await?;
+        self.audio_source.set_enabled(!inner.disabled).await?;
+        *self.main_profile.write().unwrap() = profile;
+        inner.main_blocked = false;
         Ok(())
     }
 
@@ -720,11 +817,19 @@ fn select_video_source(
     sources: &[VideoSource],
     width: Option<u16>,
     height: Option<u16>,
-) -> &VideoSource {
-    sources
-        .iter()
-        .find(|source| Some(source.profile.width) == width && Some(source.profile.height) == height)
-        .unwrap_or(&sources[0])
+    fps: Option<u8>,
+) -> Option<&VideoSource> {
+    match (width, height) {
+        (None, None) => sources
+            .iter()
+            .find(|source| fps.is_none_or(|fps| source.profile.fps == fps)),
+        (Some(width), Some(height)) => sources.iter().find(|source| {
+            source.profile.width == width
+                && source.profile.height == height
+                && fps.is_none_or(|fps| source.profile.fps == fps)
+        }),
+        _ => None,
+    }
 }
 
 // --- Supported configuration TLVs, advertised via the stream management service ---
@@ -986,13 +1091,31 @@ mod tests {
             },
         ];
         assert_eq!(
-            select_video_source(&sources, Some(1280), Some(720)).profile,
+            select_video_source(&sources, Some(1280), Some(720), None)
+                .unwrap()
+                .profile,
             VideoProfile::LIVE_720P
         );
         assert_eq!(
-            select_video_source(&sources, Some(1920), Some(1080)).profile,
+            select_video_source(&sources, Some(1920), Some(1080), None)
+                .unwrap()
+                .profile,
             VideoProfile::LIVE_1080P
         );
+        let mut faster = sources[1].clone();
+        faster.profile.fps = 30;
+        let same_dimensions = [sources[1].clone(), faster];
+        assert_eq!(
+            select_video_source(&same_dimensions, Some(1920), Some(1080), Some(30))
+                .unwrap()
+                .profile
+                .fps,
+            30
+        );
+        assert!(select_video_source(&same_dimensions, Some(1920), Some(1080), Some(60)).is_none());
+        assert!(select_video_source(&sources, Some(640), Some(480), None).is_none());
+        assert!(select_video_source(&sources, Some(1920), None, None).is_none());
+        assert!(select_video_source(&[], None, None, None).is_none());
         registry.shutdown().await.unwrap();
     }
 }

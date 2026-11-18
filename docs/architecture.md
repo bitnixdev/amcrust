@@ -348,6 +348,38 @@ lock before acknowledging changes. Whole-camera live privacy transitions, automa
 controller outage recovery, allocator-wide accounting, and Apple recording acceptance
 remain separate open work.
 
+## Encoder configuration transactions
+
+Recording selection now coordinates configuration, camera mode and recorder ownership.
+Before an encoder-affecting write it marks configuration uncertain, retires snapshot
+epochs, closes main-source admission, revokes/joins affected live owners and stops
+recording. Prepared live sessions are discarded; an already running independent
+substream video owner is not stopped by this application. Firmware may still reset
+other streams when Encode settings change; that behavior needs real qualification.
+
+The existing camera settings/readback helpers run only after retirement. Their errors
+are propagated instead of logged-and-continued. Success resets the main supervisor's
+retry state, publishes the new live profile and reopens main demand only if privacy and
+shutdown allow it. Old subscriptions, transports and snapshot copies never revive.
+A failed or cancelled encoder transition leaves a sticky uncertain state; camera-on or
+a snapshot switch cannot bypass it. Retrying even the last accepted selection performs
+repair rather than being ignored as a duplicate. External camera writes are not atomic:
+there is no fabricated success or automatic rollback after a partial camera failure.
+
+Recording-output-only AAC changes restart recording without mutating the encoder,
+retiring live acquisition or invalidating snapshots. Incomplete recording reconciliation
+is tracked separately from uncertain camera configuration so a retry does not needlessly
+reconfigure live media. Persisted settings are forcibly reconciled before startup exposure;
+a startup settings failure is now an error, not best-effort continuation.
+
+Live configuration reads reflect current profiles. Selection matches dimensions and
+frame rate, refuses absent/stale formats and rechecks the main profile under admission
+ownership to close selection/reconfiguration races. The old arbitrary first-source
+fallback is removed. Failed starts and unsupported resume/reconfigure commands now
+surface errors to HAP; fresh setup is required rather than reusing retired session state.
+This does not establish that Apple clients refresh cached capabilities or recover
+automatically after a source change.
+
 ## Camera-mode lifetime
 
 HomeKit Camera Active now reconciles live admission, all encoder sources and recording
@@ -384,8 +416,8 @@ local snapshot saves carry the same permission in an awaited blocking-file job. 
 clears cache storage; retirement alone invalidates retained copies rather than claiming
 their memory is freed.
 
-Per-stream Active behavior, encoder-change retirement/profile updates, actual Home
-behavior on mid-response close, and long outage/reboot recovery remain open. This wiring
+Per-stream Active behavior, real encoder-change/firmware and controller qualification,
+actual Home behavior on mid-response close, and long outage/reboot recovery remain open. This wiring
 is not complete camera-wide Apple privacy acceptance.
 
 ## Implemented secure transport boundary

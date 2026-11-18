@@ -14,6 +14,10 @@ use crate::hsv::fmp4::{Recorder, RecorderConfig};
 use crate::metrics::Metrics;
 use crate::tlv8;
 
+#[cfg(test)]
+#[path = "configuration_tests.rs"]
+mod configuration_tests;
+
 pub const PREBUFFER_MS: u32 = 4000;
 pub const FRAGMENT_MS: u32 = 4000;
 
@@ -60,6 +64,8 @@ pub struct HsvState {
     recorder_lock: Mutex<()>,
     camera_lock: Mutex<()>,
     stopped: AtomicBool,
+    configuration_ready: AtomicBool,
+    encoder_dirty: AtomicBool,
     capabilities: EncoderCapabilities,
 }
 
@@ -126,6 +132,8 @@ impl HsvState {
             recorder_lock: Mutex::new(()),
             camera_lock: Mutex::new(()),
             stopped: AtomicBool::new(false),
+            configuration_ready: AtomicBool::new(true),
+            encoder_dirty: AtomicBool::new(false),
             capabilities,
         })
     }
@@ -136,21 +144,11 @@ impl HsvState {
 
     /// Native main-stream profile available to live view without transcoding.
     pub async fn selected_main_profile(&self) -> Option<VideoProfile> {
-        self.selected.lock().await.as_ref().map(|selected| {
-            if (selected.width, selected.height, selected.fps) == (1920, 1080, 15) {
-                VideoProfile {
-                    bitrate_kbps: selected.video_bitrate_kbps,
-                    ..VideoProfile::LIVE_1080P
-                }
-            } else {
-                VideoProfile {
-                    width: selected.width,
-                    height: selected.height,
-                    fps: selected.fps,
-                    bitrate_kbps: selected.video_bitrate_kbps,
-                }
-            }
-        })
+        self.selected
+            .lock()
+            .await
+            .as_ref()
+            .map(selected_video_profile)
     }
 
     pub async fn persist(&self) {
@@ -176,13 +174,13 @@ impl HsvState {
         }
     }
 
-    /// Handles a SelectedCameraRecordingConfiguration write: parse, persist,
-    /// reconfigure the camera encoder, restart the recording pipeline.
-    pub async fn handle_selected_write(self: &Arc<Self>, raw: Vec<u8>) {
-        let Some(config) = parse_selected(&raw) else {
-            warn!("could not parse selected recording configuration");
-            return;
-        };
+    /// Reconcile external settings only after all affected media has retired.
+    pub async fn handle_selected_write(
+        self: &Arc<Self>,
+        streams: &crate::stream::StreamManager,
+        raw: Vec<u8>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let config = parse_selected(&raw).ok_or("invalid recording configuration")?;
         if !supported_selection(&config)
             || !self.capabilities.recording_attributes().contains(&(
                 config.width,
@@ -190,67 +188,99 @@ impl HsvState {
                 config.fps,
             ))
         {
-            warn!(
-                "rejecting unsupported recording configuration {}x{}@{}",
-                config.width, config.height, config.fps
-            );
-            return;
+            return Err("unsupported recording configuration".into());
         }
-        let _configuration_guard = self.configuration_lock.lock().await;
-        let current = self.selected.lock().await.clone();
-        if current
-            .as_ref()
-            .is_some_and(|selected| selected.raw == config.raw)
-        {
-            debug!("ignoring duplicate selected recording configuration");
-            return;
-        }
-        debug!(
-            "selected recording config: {}x{}@{} {}kbps, iframe {}ms, fragment {}ms, prebuffer {}ms, audio rate code {}",
-            config.width,
-            config.height,
-            config.fps,
-            config.video_bitrate_kbps,
-            config.iframe_interval_ms,
-            config.fragment_ms,
-            config.prebuffer_ms,
-            config.audio_sample_rate,
-        );
+        self.reconcile_configuration(streams, Some(config), false, |config| async move {
+            self.apply_configuration(config.as_ref()).await
+        })
+        .await
+    }
 
-        let recorder_guard = self.recorder_lock.lock().await;
-        // The camera may reset its RTSP encoder when these settings change.
-        // Revoke and join recording first; never rebind a clip to new settings.
-        self.recorder.stop().await;
-        if current
-            .as_ref()
-            .is_none_or(|selected| !same_encoder_settings(selected, &config))
-        {
-            self.apply_camera_settings(&config).await;
-            self.restore_dependent_camera_profiles(Some((config.width, config.height)))
-                .await;
+    pub async fn resume_recorder(
+        self: &Arc<Self>,
+        streams: &crate::stream::StreamManager,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let selected = self.selected.lock().await.clone();
+        self.reconcile_configuration(streams, selected, true, |config| async move {
+            self.apply_configuration(config.as_ref()).await
+        })
+        .await
+    }
+
+    // Injecting the settings operation keeps tests read-only: the production operation
+    // below is the sole camera-mutating path through this transaction.
+    async fn reconcile_configuration<F, Fut>(
+        self: &Arc<Self>,
+        streams: &crate::stream::StreamManager,
+        next: Option<SelectedConfig>,
+        force: bool,
+        apply: F,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+    where
+        F: FnOnce(Option<SelectedConfig>) -> Fut,
+        Fut: std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>,
+    {
+        let _configuration = self.configuration_lock.lock().await;
+        let _camera = self.camera_lock.lock().await;
+        if self.stopped.load(Ordering::SeqCst) {
+            return Err("camera shut down".into());
         }
-        *self.selected.lock().await = Some(config);
+        let current = self.selected.lock().await.clone();
+        let ready = self.configuration_ready.load(Ordering::SeqCst);
+        if !force && ready && current.as_ref().map(|c| &c.raw) == next.as_ref().map(|c| &c.raw) {
+            debug!("ignoring duplicate selected recording configuration");
+            return Ok(());
+        }
+        let encoder_change = force
+            || self.encoder_dirty.load(Ordering::SeqCst)
+            || match (&current, &next) {
+                (Some(current), Some(next)) => !same_encoder_settings(current, next),
+                _ => true,
+            };
+        let recorder_guard = self.recorder_lock.lock().await;
+        // Sticky until the whole operation succeeds, including across cancelled waits.
+        self.configuration_ready.store(false, Ordering::SeqCst);
+        if encoder_change {
+            self.encoder_dirty.store(true, Ordering::SeqCst);
+            self.snapshots.invalidate(false);
+            streams.begin_main_reconfiguration().await?;
+        }
+        self.recorder.stop().await;
+        if encoder_change {
+            apply(next.clone()).await?;
+            streams
+                .finish_main_reconfiguration(next.as_ref().map(selected_video_profile))
+                .await?;
+            self.encoder_dirty.store(false, Ordering::SeqCst);
+        }
+        *self.selected.lock().await = next;
+        self.configuration_ready.store(true, Ordering::SeqCst);
+        if encoder_change {
+            self.snapshots.invalidate(self.snapshots_enabled());
+        }
         self.persist().await;
         drop(recorder_guard);
         self.sync_recorder().await;
+        Ok(())
     }
 
-    /// Restores persisted camera encoder settings before resuming recording.
-    pub async fn resume_recorder(self: &Arc<Self>) {
-        let _configuration_guard = self.configuration_lock.lock().await;
-        let recorder_guard = self.recorder_lock.lock().await;
-        let selected = self.selected.lock().await.clone();
-        if let Some(config) = &selected {
-            self.apply_camera_settings(config).await;
+    async fn apply_configuration(
+        &self,
+        selected: Option<&SelectedConfig>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(config) = selected {
+            self.apply_camera_settings(config).await?;
         }
-        self.restore_dependent_camera_profiles(
-            selected
-                .as_ref()
-                .map(|config| (config.width, config.height)),
-        )
-        .await;
-        drop(recorder_guard);
-        self.sync_recorder().await;
+        self.restore_dependent_camera_profiles(selected.map(|c| (c.width, c.height)))
+            .await
+    }
+
+    fn snapshots_enabled(&self) -> bool {
+        self.homekit_active.load(Ordering::SeqCst)
+            && !self.encoder_dirty.load(Ordering::SeqCst)
+            && !self.stopped.load(Ordering::SeqCst)
+            && (self.periodic_snapshots.load(Ordering::SeqCst)
+                || self.event_snapshots.load(Ordering::SeqCst))
     }
 
     /// The value returned for reads of SelectedCameraRecordingConfiguration.
@@ -261,60 +291,37 @@ impl HsvState {
     /// Adjusts the camera's main-stream encoder to exactly match the selected
     /// video configuration. Keep acquisition AAC at 48 kHz; the Rust recording
     /// encoder owns the independently negotiated 32/48-kHz output rate.
-    async fn apply_camera_settings(&self, config: &SelectedConfig) {
+    async fn apply_camera_settings(
+        &self,
+        config: &SelectedConfig,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let gop = config.fps as u32 * config.iframe_interval_ms / 1000;
-        let video_bitrate_kbps = self
+        let bitrate = self
             .capabilities
             .main_bitrate_range
-            .map(|(_, max)| max)
-            .map_or(config.video_bitrate_kbps, |max| {
+            .map_or(config.video_bitrate_kbps, |(_, max)| {
                 config.video_bitrate_kbps.min(max)
             });
-        let audio_hz = 48000;
-        match self
-            .camera
-            .ensure_recording_encoder(
-                config.width,
-                config.height,
-                config.fps,
-                gop,
-                video_bitrate_kbps,
-                audio_hz,
-            )
-            .await
-        {
-            Ok(_) => {
-                info!(
-                    "[{}] camera main stream set to {}x{}@{} GOP {} for recording",
-                    self.camera_name, config.width, config.height, config.fps, gop
-                );
-            }
-            Err(e) => warn!(
-                "[{}] failed to set camera encoder config: {e}",
-                self.camera_name
-            ),
-        }
+        self.camera
+            .ensure_recording_encoder(config.width, config.height, config.fps, gop, bitrate, 48000)
+            .await?;
+        info!(
+            "[{}] camera main stream set to {}x{}@{} GOP {} for recording",
+            self.camera_name, config.width, config.height, config.fps, gop
+        );
+        Ok(())
     }
 
-    /// Restores camera profiles that an encoder write may reset. Motion must
-    /// remain last because some firmware resets it when other profiles change.
-    async fn restore_dependent_camera_profiles(&self, main_resolution: Option<(u16, u16)>) {
-        if let Err(e) = self
-            .camera
+    /// Motion remains last because firmware may reset it on other profile writes.
+    async fn restore_dependent_camera_profiles(
+        &self,
+        main_resolution: Option<(u16, u16)>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.camera
             .ensure_snapshot_profile(&self.capabilities, main_resolution)
-            .await
-        {
-            warn!(
-                "[{}] failed to restore preview-optimized snapshot profile: {e}",
-                self.camera_name
-            );
-        }
-        if let Err(e) = self.camera.ensure_smart_motion().await {
-            warn!(
-                "[{}] failed to restore AI/motion profile after encoder config: {e}",
-                self.camera_name
-            );
-        }
+            .await?;
+        self.camera.ensure_smart_motion().await?;
+        Ok(())
     }
 
     /// Starts or stops the recording pipeline according to the current state.
@@ -330,11 +337,7 @@ impl HsvState {
             return Err(amcrust::source::Terminal::Shutdown);
         }
         self.homekit_active.store(active, Ordering::SeqCst);
-        self.snapshots.invalidate(
-            active
-                && (self.periodic_snapshots.load(Ordering::SeqCst)
-                    || self.event_snapshots.load(Ordering::SeqCst)),
-        );
+        self.snapshots.invalidate(self.snapshots_enabled());
         let result = streams.set_enabled(active).await;
         if result.is_err() {
             self.homekit_active.store(false, Ordering::SeqCst);
@@ -352,12 +355,7 @@ impl HsvState {
         } else {
             self.event_snapshots.store(active, Ordering::SeqCst);
         }
-        self.snapshots.invalidate(
-            self.homekit_active.load(Ordering::SeqCst)
-                && !self.stopped.load(Ordering::SeqCst)
-                && (self.periodic_snapshots.load(Ordering::SeqCst)
-                    || self.event_snapshots.load(Ordering::SeqCst)),
-        );
+        self.snapshots.invalidate(self.snapshots_enabled());
         self.persist().await;
     }
 
@@ -374,7 +372,8 @@ impl HsvState {
         // callback must never restart recording after a disable acknowledgement.
         let _guard = self.recorder_lock.lock().await;
         let selected = self.selected.lock().await.clone();
-        let active = !self.stopped.load(Ordering::SeqCst)
+        let active = self.configuration_ready.load(Ordering::SeqCst)
+            && !self.stopped.load(Ordering::SeqCst)
             && self.recording_active.load(Ordering::SeqCst)
             && self.homekit_active.load(Ordering::SeqCst);
         match (active, selected) {
@@ -406,7 +405,8 @@ impl HsvState {
 
     /// Whether a dataSend open for `ipcamera.recording` is currently allowed.
     pub async fn recording_allowed(&self) -> Result<(), u8> {
-        if self.selected.lock().await.is_none() {
+        if !self.configuration_ready.load(Ordering::SeqCst) || self.selected.lock().await.is_none()
+        {
             return Err(9); // INVALID_CONFIGURATION
         }
         if self.stopped.load(Ordering::SeqCst)
@@ -416,6 +416,15 @@ impl HsvState {
             return Err(1); // NOT_ALLOWED
         }
         Ok(())
+    }
+}
+
+fn selected_video_profile(config: &SelectedConfig) -> VideoProfile {
+    VideoProfile {
+        width: config.width,
+        height: config.height,
+        fps: config.fps,
+        bitrate_kbps: config.video_bitrate_kbps,
     }
 }
 

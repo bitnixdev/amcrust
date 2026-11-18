@@ -28,6 +28,45 @@ as application library code and is wired into `src/main.rs` for live video/audio
 MediaMTX was investigated but not added or launched. Apple HSV acceptance, full live
 privacy transitions and unattended recovery remain separate requirements.
 
+### Encoder-change retirement and current live selection
+
+The selected-recording and startup paths now use a shared transaction rather than
+stopping only recording and logging camera-setting failures. Main acquisition and
+affected live owners retire before the settings operation; snapshots and recording
+stay unavailable on an uncertain outcome. Success publishes a current live profile and
+fresh retry state. Recording-output-only AAC changes remain independent of acquisition.
+
+Local evidence, with no real camera access or settings changes:
+- Injected settings failure observes the main source already disabled, old snapshot
+  permission retired and recorder stopped before the operation. The last accepted
+  selection remains unchanged; camera-off/on cannot reopen the uncertain source.
+  Retrying that same accepted selection executes repair and restores availability.
+- Output-only AAC rate/bitrate changes, including an incomplete reconciliation retry,
+  do not invoke camera settings, invalidate snapshots or open acquisition.
+- Cancellation during settings work leaves main admission blocked. Shutdown during
+  the operation prevents completion from reopening it.
+- Successful completion updates live configuration and does not revive old snapshots.
+- Two stalled local RTSP endpoints exercise actual joined live owners: main video and
+  all main audio stop, the independent video control remains current, and a fresh main
+  demand opens a second acquisition while the other endpoint remains on its first.
+  A pre-transition profile cannot start against the changed main profile.
+- Selection checks refuse unavailable/partial dimensions and unsupported frame rates,
+  and distinguish two sources with equal dimensions but different rates.
+
+Removed behavior includes settings-error swallowing, duplicate suppression that prevented
+repair, the production fixed-1080 special case, wrong-resolution fallback, and silently
+acknowledged unsupported stream resume/reconfigure. Current profile reads are dynamic;
+actual Apple capability-cache refresh and recovery remain unqualified.
+
+Validation passed: **49 library +67 application +16 HAP tests**, workspace integration
+checks and three HAP doctests, all-target compilation, strict application-library Clippy,
+formatting, two sampler tests and the pinned Nix package. The bounded review returned
+no findings. The existing metrics `fetch_update` warning remains unchanged.
+
+External camera writes are not atomic. This increment does not prove physical encoder
+readback, Sub Stream 2 survival on either firmware/model, Apple playback after a change,
+or unattended recovery. A real mutation-bearing qualification requires separate approval.
+
 ### Snapshot epochs through encrypted HTTP delivery
 
 The snapshot path no longer relies on before/after booleans alone. Requests capture

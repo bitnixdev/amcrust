@@ -193,7 +193,7 @@ impl CameraAccessory {
         motion_vehicle.active.set_value(json!(1u8)).await?;
 
         let operating_mode = build_operating_mode(id, hsv, streams).await?;
-        let recording_management = build_recording_management(id, hsv).await?;
+        let recording_management = build_recording_management(id, hsv, streams).await?;
         let data_stream = build_data_stream(id, hds, secret_slot).await?;
         let microphone = if streams.audio_enabled() {
             let mut service = MicrophoneService::new(IID_MICROPHONE, id);
@@ -236,6 +236,12 @@ async fn build_stream_management(
     svc.supported_video_stream_configuration
         .set_value(json!(streams.supported_video_config()))
         .await?;
+    let streams_ = streams.clone();
+    svc.supported_video_stream_configuration
+        .on_read_async(Some(move || {
+            let streams = streams_.clone();
+            async move { Ok(Some(streams.supported_video_config())) }.boxed()
+        }));
     svc.supported_audio_stream_configuration
         .set_value(json!(stream::supported_audio_config()))
         .await?;
@@ -264,7 +270,7 @@ async fn build_stream_management(
         .on_update_async(Some(move |_old: Vec<u8>, new: Vec<u8>| {
             let streams = streams_.clone();
             async move {
-                streams.handle_selected_write(new).await;
+                streams.handle_selected_write(new).await?;
                 Ok(())
             }
             .boxed()
@@ -345,6 +351,7 @@ async fn build_operating_mode(
 async fn build_recording_management(
     id: u64,
     hsv: &Arc<HsvState>,
+    streams: &StreamManager,
 ) -> Result<CameraRecordingManagementService> {
     let mut svc = CameraRecordingManagementService::new(IID_RECORDING_MGMT, id);
     svc.set_linked_services(vec![IID_MOTION_PERSON, IID_MOTION_VEHICLE, IID_DATA_STREAM]);
@@ -395,15 +402,15 @@ async fn build_recording_management(
     }
 
     let hsv_ = hsv.clone();
+    let streams_ = streams.clone();
     svc.selected_camera_recording_configuration
-        .on_update_async(Some(move |old: Vec<u8>, new: Vec<u8>| {
+        .on_update_async(Some(move |_old: Vec<u8>, new: Vec<u8>| {
             let hsv = hsv_.clone();
+            let streams = streams_.clone();
             async move {
-                // Ignore the read-back echo of the value we already hold.
-                if new.is_empty() || new == old {
-                    return Ok(());
-                }
-                hsv.handle_selected_write(new).await;
+                // Suppress duplicates only after a successful reconciliation; a
+                // repeated selection must be able to repair a failed transition.
+                hsv.handle_selected_write(&streams, new).await?;
                 Ok(())
             }
             .boxed()

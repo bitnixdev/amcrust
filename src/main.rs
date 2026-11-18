@@ -377,7 +377,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Restore the persisted encoder settings before resuming the recording
     // pipeline, then restore snapshot and motion profiles exactly once. This
     // keeps shared acquisition from attaching to stale camera settings.
-    hsv_state.resume_recorder().await;
+    hsv_state
+        .resume_recorder(&streams)
+        .await
+        .map_err(|error| error as Box<dyn std::error::Error>)?;
 
     // Snapshots for the Home app tiles, served from a background-refreshed
     // cache so requests answer instantly. Secure-video gating: reject when the

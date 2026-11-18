@@ -70,6 +70,12 @@ acceptance. Snapshot JPEG scaling still uses the FFmpeg executable.
   and RTCP in both directions through an SRTP/SRTCP proxy, including sender
   reports and controller feedback. Recording AAC-LC processing is independent of
   live Opus and is toggled by the Home app's recording-audio switch.
+- **Encoder transitions**: affected main-source media is retired before runtime settings
+  writes. Failure leaves main acquisition and recording blocked until a successful retry;
+  unrelated substream video stays owned independently. Live formats refresh after success,
+  and unsupported dimensions/frame rates are refused rather than substituted. Recording-only
+  AAC output changes do not reconfigure the camera. Firmware/Apple transition acceptance
+  remains pending.
 - **Consistent camera profile**: on every connection, amcrust checks and, when
   necessary, normalizes the live substream, microphone/main audio track, image
   profiles, enhancement/ROI/crop controls, exposure, day/night switching,

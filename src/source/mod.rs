@@ -175,6 +175,10 @@ pub struct Source {
     byte_limit: usize,
 }
 impl Source {
+    /// Whether two handles refer to the same registry-owned acquisition supervisor.
+    pub fn same_owner(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.metrics, &other.metrics)
+    }
     pub async fn subscribe(
         &self,
         tracks: Tracks,

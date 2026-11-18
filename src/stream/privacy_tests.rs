@@ -133,7 +133,10 @@ async fn camera_off_joins_all_encoders_and_recording_then_requires_fresh_setup()
         .unwrap()
         .unwrap();
     manager.handle_setup_write(setup(&[1; 16])).await;
-    manager.handle_selected_write(start(&[1; 16])).await;
+    manager
+        .handle_selected_write(start(&[1; 16]))
+        .await
+        .unwrap();
     manager.handle_setup_write(setup(&[2; 16])).await;
     assert!(hsv.recorder.is_running().await);
     {
@@ -191,12 +194,20 @@ async fn camera_off_joins_all_encoders_and_recording_then_requires_fresh_setup()
     hsv.set_camera_active(&manager, true).await.unwrap();
     assert_eq!(status(&manager).await, 0);
     for id in [1, 2, 3] {
-        manager.handle_selected_write(start(&[id; 16])).await;
+        assert!(
+            manager
+                .handle_selected_write(start(&[id; 16]))
+                .await
+                .is_err()
+        );
     }
     assert_eq!(main.snapshot().open_attempts, 1);
     assert_eq!(other.snapshot().open_attempts, 1);
     manager.handle_setup_write(setup(&[4; 16])).await;
-    manager.handle_selected_write(start(&[4; 16])).await;
+    manager
+        .handle_selected_write(start(&[4; 16]))
+        .await
+        .unwrap();
     let (new_peer, _) = tokio::time::timeout(Duration::from_secs(2), main_listener.accept())
         .await
         .unwrap()
@@ -219,6 +230,149 @@ async fn camera_off_joins_all_encoders_and_recording_then_requires_fresh_setup()
             .render(false)
             .contains("amcrust_connections_open{type=\"live_stream\"} 0")
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn main_reconfiguration_joins_only_affected_owners_and_rejects_stale_profile() {
+    use amcrust::source::{SubscriptionLimits, Terminal, Tracks};
+    let main_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let other_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut registry = super::tests::registry();
+    let main = super::tests::register(
+        &mut registry,
+        1,
+        format!("rtsp://{}/main", main_listener.local_addr().unwrap()),
+    );
+    let other = super::tests::register(
+        &mut registry,
+        2,
+        format!("rtsp://{}/other", other_listener.local_addr().unwrap()),
+    );
+    let main_video = VideoSource {
+        source: main.clone(),
+        profile: VideoProfile::LIVE_1080P,
+    };
+    let other_video = VideoSource {
+        source: other.clone(),
+        profile: VideoProfile::LIVE_720P,
+    };
+    let manager = StreamManager::new(
+        vec![other_video.clone(), main_video.clone()],
+        main.clone(),
+        true,
+        Ipv4Addr::LOCALHOST.into(),
+        Metrics::new(),
+    );
+    // Explicit selections avoid default resolution policy in this ownership test.
+    for (id, source) in [(1u8, main_video.clone()), (2, other_video)] {
+        manager.handle_setup_write(setup(&[id; 16])).await;
+        manager
+            .start_stream(
+                Some(vec![id; 16]),
+                source,
+                99,
+                1200,
+                110,
+                16000,
+                20,
+                32,
+                0.5,
+                1200,
+                0.5,
+            )
+            .await;
+    }
+    let (main_peer, _) = tokio::time::timeout(Duration::from_secs(2), main_listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let (other_peer, _) = tokio::time::timeout(Duration::from_secs(2), other_listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut held = main
+        .subscribe(Tracks::Video, SubscriptionLimits::default())
+        .await
+        .unwrap();
+    let (main_control, other_control) = {
+        let inner = manager.inner.lock().await;
+        (
+            inner.video_proxies[&vec![1; 16]].transport.clone(),
+            inner.video_proxies[&vec![2; 16]].transport.clone(),
+        )
+    };
+    tokio::time::timeout(Duration::from_secs(2), manager.begin_main_reconfiguration())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(main_control.is_closed());
+    assert!(!other_control.is_closed());
+    assert_eq!(held.recv().await.err(), Some(Terminal::Disabled));
+    {
+        let inner = manager.inner.lock().await;
+        assert_eq!(inner.video_proxies.len(), 1);
+        assert!(inner.audio_proxies.is_empty());
+        assert!(inner.sessions.is_empty());
+    }
+    let mut new_profile = VideoProfile::LIVE_1080P;
+    new_profile.fps = 30;
+    manager
+        .finish_main_reconfiguration(Some(new_profile))
+        .await
+        .unwrap();
+    assert!(!other_control.is_closed());
+    manager.handle_setup_write(setup(&[3; 16])).await;
+    manager
+        .start_stream(
+            Some(vec![3; 16]),
+            main_video,
+            99,
+            1200,
+            110,
+            16000,
+            20,
+            32,
+            0.5,
+            1200,
+            0.5,
+        )
+        .await;
+    assert!(
+        !manager
+            .inner
+            .lock()
+            .await
+            .video_proxies
+            .contains_key(&vec![3; 16])
+    );
+    assert_eq!(main.snapshot().open_attempts, 1); // stale selection cannot reopen
+    manager
+        .start_stream(
+            Some(vec![3; 16]),
+            VideoSource {
+                source: main.clone(),
+                profile: new_profile,
+            },
+            99,
+            1200,
+            110,
+            16000,
+            20,
+            32,
+            0.5,
+            1200,
+            0.5,
+        )
+        .await;
+    let (fresh_peer, _) = tokio::time::timeout(Duration::from_secs(2), main_listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(main.snapshot().open_attempts, 2);
+    assert_eq!(other.snapshot().open_attempts, 1);
+    manager.stop_stream().await;
+    registry.shutdown().await.unwrap();
+    drop((main_peer, other_peer, fresh_peer, held));
 }
 
 #[tokio::test]
@@ -261,6 +415,7 @@ async fn cancelled_teardown_keeps_join_ownership_and_shutdown_admission_closed()
     let (release, wait) = tokio::sync::oneshot::channel();
     let control = shared::Control::pending();
     let owner = MediaProxy {
+        source: manager.audio_source.clone(),
         transport: control.clone(),
         task: Some(tokio::spawn(async move {
             let _ = wait.await;
@@ -329,7 +484,7 @@ async fn real_camera_privacy_roundtrip_requires_fresh_media() {
             let video = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
             let audio = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
             manager.handle_setup_write(setup_at(&[cycle; 16], video.local_addr().unwrap().port(), audio.local_addr().unwrap().port())).await;
-            manager.handle_selected_write(start(&[cycle; 16])).await;
+            manager.handle_selected_write(start(&[cycle; 16])).await.unwrap();
             let crypto = || Context::new(&[7; 16], &[8; 14], ProtectionProfile::Aes128CmHmacSha1_80, None, None).unwrap();
             let (mut video_crypto, mut audio_crypto) = (crypto(), crypto());
             let (mut video_packets, mut audio_packets) = (0, 0);
@@ -379,7 +534,7 @@ async fn real_camera_privacy_roundtrip_requires_fresh_media() {
             drop((retained, clip));
             assert_eq!(source.snapshot().charged_bytes, 0);
             // A prepared response/session from before privacy is not reusable.
-            manager.handle_selected_write(start(&[cycle; 16])).await;
+            assert!(manager.handle_selected_write(start(&[cycle; 16])).await.is_err());
             assert!(manager.inner.lock().await.video_proxies.is_empty());
             eprintln!("Privacy cycle {cycle}: {video_packets} authenticated video / {audio_packets} audio RTP; retained recording fragment {bytes} bytes refused; acquisition generation {previous_generation} joined, zero released charges");
         }

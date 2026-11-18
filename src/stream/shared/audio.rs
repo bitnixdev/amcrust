@@ -51,6 +51,7 @@ pub(crate) struct Audio {
     pub pool: Pool,
 }
 pub(crate) fn spawn(audio: Audio, metrics: Arc<Metrics>) -> MediaProxy {
+    let source = audio.source.clone();
     let control = Control::pending();
     let owner = control.clone();
     let runtime = tokio::runtime::Handle::current();
@@ -77,6 +78,7 @@ pub(crate) fn spawn(audio: Audio, metrics: Arc<Metrics>) -> MediaProxy {
         owner.revoke();
     });
     MediaProxy {
+        source,
         transport: control,
         task: Some(task),
     }
