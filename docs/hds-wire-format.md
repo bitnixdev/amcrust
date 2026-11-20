@@ -218,4 +218,7 @@ RecordingAudioActive is false. ffmpeg's
   recording-stream graceful close watchdog ~12 s.
 - One recording stream at a time (reject concurrent opens BUSY); multiple HDS
   connections (multiple hubs) supported concurrently.
-- Chunk fragments at 256 KiB.
+- This implementation sends fragments in chunks of at most 64 KiB and paces
+  recording payload at 4 MiB/s per connection. Pacing continues across fragment
+  boundaries so replaying the prebuffer does not enqueue the whole clip at once
+  alongside live SRTP.

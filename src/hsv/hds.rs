@@ -21,7 +21,10 @@ mod tests;
 
 const PREPARED_SESSION_TTL: Duration = Duration::from_secs(10);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_CHUNK: usize = 0x40000;
+// TCP recording replay shares the network with latency-sensitive live SRTP.
+// Send at most one small chunk at a time, even when the prebuffer is ready in bulk.
+const MAX_CHUNK: usize = 64 * 1024;
+const RECORDING_BYTES_PER_SECOND: u64 = 4 * 1024 * 1024;
 const RECORDING_TAIL: Duration = Duration::from_secs(8);
 
 struct PreparedSession {
@@ -223,6 +226,7 @@ impl HdsServer {
             key: keys.accessory_to_controller,
             counter: 0,
             poisoned: false,
+            next_recording_chunk: Instant::now(),
         }));
 
         let mut conn = Connection {
@@ -271,9 +275,33 @@ struct FrameWriter {
     // Set before awaiting a frame write; cancellation leaves this sticky so no
     // later frame can be appended after a truncated encrypted frame.
     poisoned: bool,
+    next_recording_chunk: Instant,
 }
 
 impl FrameWriter {
+    async fn send_recording_chunk(
+        &mut self,
+        header: &Value,
+        message: &Value,
+        bytes: usize,
+        leases: (&Lease, &Lease),
+    ) -> Result<(), String> {
+        tokio::select! {
+            biased;
+            _ = leases.0.retired() => return Err("recording output retired".into()),
+            _ = leases.1.retired() => return Err("recording output retired".into()),
+            _ = tokio::time::sleep_until(self.next_recording_chunk) => (),
+        }
+        self.send_fenced(header, message, Some(leases)).await?;
+        // Charge each chunk after the socket accepts it. A slow socket cannot
+        // accrue credit and send a catch-up burst later or at a fragment boundary.
+        self.next_recording_chunk = Instant::now()
+            + Duration::from_nanos(
+                (bytes as u64 * 1_000_000_000).div_ceil(RECORDING_BYTES_PER_SECOND),
+            );
+        Ok(())
+    }
+
     async fn send(&mut self, header: &Value, message: &Value) -> Result<(), String> {
         self.send_fenced(header, message, None).await
     }
@@ -750,7 +778,7 @@ async fn send_data(
         writer
             .lock()
             .await
-            .send_fenced(&header, &Value::Dict(message), Some(leases))
+            .send_recording_chunk(&header, &Value::Dict(message), chunk.len(), leases)
             .await?;
     }
     Ok(())

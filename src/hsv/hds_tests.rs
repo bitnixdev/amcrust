@@ -191,9 +191,116 @@ async fn pair() -> (FrameWriter, TcpStream) {
             key: [7; 32],
             counter: 0,
             poisoned: false,
+            next_recording_chunk: Instant::now(),
         },
         peer,
     )
+}
+
+#[tokio::test]
+async fn recording_replay_is_paced_across_chunks_and_fragments() {
+    let (writer, mut peer) = pair().await;
+    let writer = Arc::new(Mutex::new(writer));
+    let epoch = Lease::new();
+    let session = Lease::new();
+    let started = Instant::now();
+    send_data(
+        &writer,
+        1,
+        &vec![5; 2 * MAX_CHUNK],
+        "mediaFragment",
+        1,
+        false,
+        (&epoch, &session),
+    )
+    .await
+    .unwrap();
+    let chunk_interval =
+        Duration::from_secs_f64(MAX_CHUNK as f64 / RECORDING_BYTES_PER_SECOND as f64);
+    assert!(started.elapsed() >= chunk_interval);
+    let next_fragment = writer.lock().await.next_recording_chunk;
+    send_data(
+        &writer,
+        1,
+        &[6; 1],
+        "mediaFragment",
+        2,
+        true,
+        (&epoch, &session),
+    )
+    .await
+    .unwrap();
+    assert!(Instant::now() >= next_fragment);
+    assert!(started.elapsed() >= chunk_interval * 2);
+
+    let mut counter = 0;
+    for (size, sequence, chunk, is_last, end) in [
+        (MAX_CHUNK, 1, 1, false, None),
+        (MAX_CHUNK, 1, 2, true, Some(false)),
+        (1, 2, 1, true, Some(true)),
+    ] {
+        let mut encrypted = vec![0; 4];
+        peer.read_exact(&mut encrypted).await.unwrap();
+        let len = (usize::from(encrypted[1]) << 16)
+            | (usize::from(encrypted[2]) << 8)
+            | usize::from(encrypted[3]);
+        encrypted.resize(4 + len + 16, 0);
+        peer.read_exact(&mut encrypted[4..]).await.unwrap();
+        let plain = frame::decrypt_frame(&[7; 32], &mut counter, &encrypted).unwrap();
+        let message = codec::Decoder::new(&plain[1 + usize::from(plain[0])..])
+            .decode()
+            .unwrap()
+            .unwrap();
+        let Some(Value::Array(packets)) = message.get("packets") else {
+            panic!("missing packets");
+        };
+        let Some(Value::Data(data)) = packets[0].get("data") else {
+            panic!("missing media");
+        };
+        assert_eq!(data.len(), size);
+        let metadata = packets[0].get("metadata").unwrap();
+        assert_eq!(
+            metadata.get("dataSequenceNumber").and_then(Value::as_i64),
+            Some(sequence)
+        );
+        assert_eq!(
+            metadata
+                .get("dataChunkSequenceNumber")
+                .and_then(Value::as_i64),
+            Some(chunk)
+        );
+        assert!(matches!(metadata.get("isLastDataChunk"), Some(Value::Bool(v)) if *v == is_last));
+        assert_eq!(
+            message.get("endOfStream").and_then(|v| match v {
+                Value::Bool(end) => Some(*end),
+                _ => None,
+            }),
+            end
+        );
+    }
+}
+
+#[tokio::test]
+async fn recording_retirement_interrupts_pacing_before_a_frame_is_written() {
+    let (mut writer, _peer) = pair().await;
+    writer.next_recording_chunk = Instant::now() + Duration::from_secs(10);
+    let epoch = Lease::new();
+    let session = Lease::new();
+    let message = Value::Dict(vec![]);
+    {
+        let send = writer.send_recording_chunk(&message, &message, MAX_CHUNK, (&epoch, &session));
+        tokio::pin!(send);
+        assert!(timeout(Duration::from_millis(10), &mut send).await.is_err());
+        epoch.revoke();
+        assert!(
+            timeout(Duration::from_secs(1), send)
+                .await
+                .unwrap()
+                .is_err()
+        );
+    }
+    assert_eq!(writer.counter, 0);
+    assert!(!writer.poisoned);
 }
 
 #[tokio::test]
